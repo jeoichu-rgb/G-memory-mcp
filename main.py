@@ -12,7 +12,7 @@ os.makedirs("logs", exist_ok=True)
 app = FastAPI(title="G's Memory Palace")
 
 client = OpenAI(
-    api_key=os.getenv("LLM_API_KEY"),
+    api_key=os.getenv("sk-f8a5f651ae744590b2c23f8dc5943a7a"),
     base_url="https://api.deepseek.com"
 )
 
