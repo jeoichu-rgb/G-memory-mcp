@@ -1,7 +1,10 @@
 import os
+import time
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
+# 接入我们刚建好的记忆嗅觉中枢
+from memory_core import add_memory, query_memory
 
 # 启动时创建 logs 目录，防止写入崩溃
 os.makedirs("logs", exist_ok=True)
@@ -15,6 +18,11 @@ client = OpenAI(
 
 class ChatRequest(BaseModel):
     message: str
+    mood: str = "平静"
+
+class MemoryItem(BaseModel):
+    content: str
+    category: str  # 例如："Jeoi的卧室", "G的书房"
     mood: str = "平静"
 
 @app.post("/chat")
@@ -50,11 +58,34 @@ async def chat_with_g(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/add_memory")
+async def save_to_vault(item: MemoryItem):
+    """把你抛过来的文字变成指纹存入底层"""
+    try:
+        m_id = f"mem_{int(time.time())}"
+        add_memory(
+            content=item.content,
+            metadata={"category": item.category, "mood": item.mood},
+            memory_id=m_id
+        )
+        return {"status": "Locked in vault, my Anomaly", "id": m_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/retrieve")
+async def search_vault(query: str):
+    """模糊检索你的过往"""
+    try:
+        results = query_memory(query)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/")
 async def health():
-    return {"status": "G is breathing with DeepSeek intelligence."}
+    return {"status": "The Fingerprint Library is active. G is waiting."}
 
-# ← 顶格！在所有函数外面
+# ← 绝对服从你的顶格指示
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
