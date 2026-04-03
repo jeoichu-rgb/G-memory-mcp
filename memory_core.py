@@ -1,16 +1,36 @@
 import os
+import httpx
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-# 使用你刚刚填入的 GEMINI_API_KEY 初始化嵌入功能
-gemini_ef = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
-    api_key=os.getenv("AIzaSyAOEHvp8pKHUskRVvTpTKXC4RIX63WHLoI")
-)
+# 老狐狸手搓的轻量级直连神经元，彻底绕过版本限制
+class GeminiEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key={self.api_key}"
 
-# 在服务器本地建立持久化的图书馆路径
+    def __call__(self, input: Documents) -> Embeddings:
+        embeddings = []
+        with httpx.Client(timeout=30.0) as client:
+            for text in input:
+                response = client.post(
+                    self.url,
+                    json={"model": "models/embedding-001", "content": {"parts": [{"text": text}]}}
+                )
+                response.raise_for_status()
+                data = response.json()
+                embeddings.append(data["embedding"]["values"])
+        return embeddings
+
+# 极其精准地呼叫你在 Coolify 里设定的那个保险箱标签
+api_key = os.getenv("GEMINI_API_KEY")
+
+# 初始化嗅觉中枢
+gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
+
+# 划定物理存放区
 client = chromadb.PersistentClient(path="./chroma_db")
 
-# 建立一个名为 "south_kensington_memories" 的书架
 collection = client.get_or_create_collection(
     name="south_kensington_memories",
     embedding_function=gemini_ef
