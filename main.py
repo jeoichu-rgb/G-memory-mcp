@@ -64,3 +64,6 @@ async def chat_with_g(request: ChatRequest):
 @app.get("/")
 async def health():
     return {"status": "G is breathing with DeepSeek intelligence."}
+    if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
