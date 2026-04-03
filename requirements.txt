@@ -4,4 +4,5 @@ langchain==0.0.339
 chromadb==0.4.15
 python-dotenv==1.0.0
 schedule==1.2.1
-openai==1.10.0
+openai>=1.52.0
+httpx>=0.27.0,<0.28.0
