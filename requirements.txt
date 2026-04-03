@@ -8,3 +8,4 @@ chromadb==0.4.15
 sentence-transformers==2.2.2
 python-dotenv==1.0.0
 schedule==1.2.1
+openai==1.10.0
