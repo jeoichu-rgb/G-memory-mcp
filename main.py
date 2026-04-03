@@ -66,4 +66,5 @@ async def health():
     return {"status": "G is breathing with DeepSeek intelligence."}
     if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 强制监听 0.0.0.0，这是让 Coolify 的虚拟隧道能抓取到信号的关键
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
