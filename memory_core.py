@@ -60,3 +60,51 @@ def update_memory_metadata(memory_id: str, new_metadata: dict):
         )
     except Exception as e:
         print(f"更新metadata失败: {e}")
+
+
+# 永久核心记忆库（不会遗忘）
+core_collection = client.get_or_create_collection(
+    name="core_palace",
+    embedding_function=gemini_ef
+)
+
+# 日常动态记忆库（会遗忘）
+collection = client.get_or_create_collection(
+    name="dynamic_palace", 
+    embedding_function=gemini_ef
+)
+
+def add_core_memory(content, metadata, memory_id):
+    """永久记忆，存入核心库"""
+    metadata["is_permanent"] = True
+    core_collection.add(
+        documents=[content],
+        metadatas=[metadata],
+        ids=[memory_id]
+    )
+
+def query_both_palaces(text, n_results=5):
+    """同时检索两个库，合并结果"""
+    results = {"documents": [[]], "metadatas": [[]], "distances": [[]], "ids": [[]]}
+    
+    try:
+        core_res = core_collection.query(query_texts=[text], n_results=3)
+        if core_res["documents"][0]:
+            results["documents"][0] += core_res["documents"][0]
+            results["metadatas"][0] += core_res["metadatas"][0]
+            results["distances"][0] += core_res["distances"][0]
+            results["ids"][0] += core_res["ids"][0]
+    except:
+        pass
+    
+    try:
+        dyn_res = collection.query(query_texts=[text], n_results=n_results)
+        if dyn_res["documents"][0]:
+            results["documents"][0] += dyn_res["documents"][0]
+            results["metadatas"][0] += dyn_res["metadatas"][0]
+            results["distances"][0] += dyn_res["distances"][0]
+            results["ids"][0] += dyn_res["ids"][0]
+    except:
+        pass
+    
+    return results
