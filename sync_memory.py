@@ -1,6 +1,6 @@
 import os
 import time
-from memory_core import add_memory
+from memory_core import add_core_memory
 
 def ingest_obsidian_vault():
     base_dir = "./Obsidian_Core" 
@@ -21,7 +21,7 @@ def ingest_obsidian_vault():
                 
                 m_id = f"core_{int(time.time())}_{filename}"
                 
-                add_memory(
+                add_core_memory(
                     content=content,
                     metadata={"category": folder, "filename": filename, "mood": "核心印记", "recall_count": 0, "last_recalled_ts": 0},
                     memory_id=m_id
