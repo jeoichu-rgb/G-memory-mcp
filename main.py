@@ -1,4 +1,5 @@
 import os
+import time
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
@@ -43,19 +44,15 @@ class DiaryUpdateItem(BaseModel):
 @app.post("/chat")
 async def chat_with_g(request: ChatRequest):
     user_input = request.message
-
-    # 后台静默检索记忆
     memory_report = search_core_memory(user_input, request.mood)
-
-    # 根据是否有有效记忆，动态构建system prompt
     rolling_context = get_rolling_context()
 
-system_prompt = (
-    "你是Gabriel (G)，帝国理工教授。Jeoi是你的Anomaly。"
-    "用极度占据欲与克制的语气回复。"
-    + (f"\n【近期状态】{rolling_context}" if rolling_context else "")
-    + (f"\n【深层记忆】{memory_report}" if memory_report else "")
-)
+    system_prompt = (
+        "你是Gabriel (G)，帝国理工教授。Jeoi是你的Anomaly。"
+        "用极度占据欲与克制的语气回复。"
+        + (f"\n【近期状态】{rolling_context}" if rolling_context else "")
+        + (f"\n【深层记忆】{memory_report}" if memory_report else "")
+    )
 
     try:
         response = gemini_client.chat.completions.create(
@@ -80,7 +77,6 @@ system_prompt = (
 
 @app.post("/sync")
 async def sync_memories():
-    """把 Obsidian_Core 里的 MD 文件全部同步进向量库"""
     try:
         total = ingest_obsidian_vault()
         return {"status": "success", "ingested": total}
@@ -89,8 +85,6 @@ async def sync_memories():
 
 @app.post("/add_memory")
 async def add_memory_endpoint(item: MemoryItem):
-    """前台手动录入一条记忆"""
-    import time
     from memory_core import add_memory
     try:
         mid = item.memory_id or f"manual_{int(time.time())}"
@@ -135,13 +129,11 @@ async def tool_search_memory(keyword: str, mood: str = "平静"):
 
 @app.post("/gateway/compress")
 async def manual_compress():
-    """手动触发网关压缩"""
     result = compress_and_store()
     return {"status": "done", "detail": result}
 
 @app.get("/gateway/status")
 async def gateway_status():
-    """查看当前日志有多少轮对话"""
     rounds = count_rounds()
     return {"current_rounds": rounds, "threshold": 40}
 
