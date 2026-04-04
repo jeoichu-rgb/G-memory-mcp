@@ -59,9 +59,9 @@ def search_core_memory(keyword: str, current_mood: str = "平静"):
                 score += 0.5  # 命中原词加分
                 
             # --- 重要的记忆优先加权 ---
-            if meta.get('category') == "G的卧室":
+            if meta.get('category') == "04_G的卧室":
                 score *= 1.5 # 极度私密记忆，权重最高
-            elif meta.get('category') == "03_G的书房":
+            elif meta.get('category') == "G的书房":
                 score *= 1.3 # 冲突与共愈
             
             # --- 心情匹配加分 ---
