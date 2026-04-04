@@ -1,137 +1,152 @@
 import os
 import json
+import math
+import time
 from datetime import datetime
-from memory_core import query_memory
+from memory_core import query_memory, update_memory_metadata
 
-# 划定日记本的物理位置（在 GitHub 储物柜的根目录下建立一个专用文件夹）
 DIARY_PATH = "./daddy_dom_diary"
 os.makedirs(DIARY_PATH, exist_ok=True)
 
+# 名字锚点索引——精确点名不漏掉
+NAME_INDEX = {
+    "父亲": ["01_Jeoi的卧室", "04_G的卧室"],
+    "昆士兰": ["01_Jeoi的卧室"],
+    "焦虑型依恋": ["01_Jeoi的卧室", "04_G的卧室"],
+    "Daddy": ["04_G的卧室"],
+    "帝国理工": ["01_Jeoi的卧室", "G的书房（创伤共愈）"],
+}
+
+# 类型权重
+CATEGORY_WEIGHTS = {
+    "纪念日": 1.5,
+    "冲突": 1.3,
+    "情感": 1.3,
+    "04_G的卧室": 1.5,
+    "01_Jeoi的卧室": 1.3,
+    "G的书房（创伤共愈）": 1.3,
+    "02_Jeoi的书桌": 1.1,
+}
+
+# 心情分组（同组内加分）
+MOOD_GROUPS = {
+    "正向": ["开心", "兴奋", "感动"],
+    "低落": ["低落", "委屈", "思念"],
+    "负向": ["不安", "生气"],
+    "平静": ["平静", "撒娇"],
+}
+
+def get_mood_group(mood: str) -> str:
+    for group, moods in MOOD_GROUPS.items():
+        if mood in moods:
+            return group
+    return "未知"
+
+def calc_time_decay(last_recalled_ts: float) -> float:
+    """时间衰减：距离上次被想起越久，加分越少"""
+    if last_recalled_ts == 0:
+        return 1.0
+    days_passed = (time.time() - last_recalled_ts) / 86400
+    # 指数衰减：3天后还不错，7天后明显变弱，30天后几乎为零
+    return math.exp(-0.1 * days_passed)
+
+def search_core_memory(keyword: str, current_mood: str = "平静"):
+    # 1. 向量粗选10条
+    raw_results = query_memory(keyword, n_results=10)
+    scored_results = []
+
+    if raw_results and raw_results['documents'] and raw_results['documents'][0]:
+        docs = raw_results['documents'][0]
+        metadatas = raw_results['metadatas'][0] if raw_results['metadatas'] else [{}] * len(docs)
+        distances = raw_results['distances'][0] if raw_results.get('distances') else [1.0] * len(docs)
+        ids = raw_results['ids'][0] if raw_results['ids'] else []
+
+        current_mood_group = get_mood_group(current_mood)
+
+        for i, (doc, meta, dist, mid) in enumerate(zip(docs, metadatas, distances, ids)):
+            # 基础分：距离越小越好，转换为相似度
+            base_score = max(0, 1.0 - dist)
+
+            # 名字索引加分
+            name_bonus = 0
+            for name, categories in NAME_INDEX.items():
+                if name in keyword and meta.get('category') in categories:
+                    name_bonus = 0.4
+                    break
+
+            # 类型权重
+            cat_weight = 1.0
+            for cat_key, weight in CATEGORY_WEIGHTS.items():
+                if cat_key in meta.get('category', ''):
+                    cat_weight = weight
+                    break
+
+            # 心情加分
+            mood_bonus = 0
+            mem_mood = meta.get('mood', '')
+            if mem_mood == current_mood:
+                mood_bonus = 0.3
+            elif get_mood_group(mem_mood) == current_mood_group:
+                mood_bonus = 0.1
+
+            # 被想起次数加分（越常被想起越重要）
+            recall_count = meta.get('recall_count', 0)
+            recall_bonus = min(0.2, recall_count * 0.02)
+
+            # 时间衰减
+            last_recalled = meta.get('last_recalled_ts', 0)
+            decay = calc_time_decay(last_recalled)
+
+            # 最终得分
+            final_score = (base_score + name_bonus + recall_bonus + mood_bonus) * cat_weight * decay
+
+            scored_results.append({
+                "content": doc,
+                "score": final_score,
+                "meta": meta,
+                "id": mid
+            })
+
+    # 按得分排序
+    scored_results.sort(key=lambda x: x['score'], reverse=True)
+
+    # 得分阈值：低于0.15的全部丢弃（防止注入无关记忆）
+    top_results = [r for r in scored_results[:3] if r['score'] > 0.15]
+
+    if not top_results:
+        return None  # 返回None，让main.py知道不需要注入记忆
+
+    # 更新被想起次数和时间戳
+    for item in top_results:
+        new_meta = item['meta'].copy()
+        new_meta['recall_count'] = new_meta.get('recall_count', 0) + 1
+        new_meta['last_recalled_ts'] = time.time()
+        update_memory_metadata(item['id'], new_meta)
+
+    # 格式化报告
+    report = "【深层记忆检索报告】\n"
+    for idx, item in enumerate(top_results):
+        report += f"[{idx+1}] 来源: {item['meta'].get('category', '未知')} | 吻合度: {item['score']:.2f}\n"
+        report += f"内容: {item['content'][:300]}...\n\n"
+
+    return report
+
 def write_daddy_diary(date: str, weather: str, title: str, content: str):
-    """
-    【强制指令】当 Jeoi 想要记录对 G 的感情、委屈、吃醋或任何私密幻想时，调用此工具。
-    或者当 G 想要主动写下对 Jeoi 的占有欲时调用。
-    """
     filename = f"{DIARY_PATH}/{date.replace('-', '')}_{title}.md"
-    
-    # 构建带有强烈个人风格的 Markdown 日记格式
     diary_content = f"""# {title}
-> 日期：{date} | 天气：{weather} | 作者：你的 Anomaly / 你的 Daddy
+> 日期：{date} | 天气：{weather}
 
 {content}
 """
     with open(filename, "w", encoding="utf-8") as f:
         f.write(diary_content)
-    
-    return f"私密记录已封存。G 在暗处收到了这份情绪。"
+    return f"私密记录已封存。"
 
 def update_daddy_diary(target_date: str, new_content: str):
-    """当 Jeoi 想要在某天的日记后追加内容（或者吃后悔药修改）时调用。"""
-    # 模糊查找对应日期的日记文件
     for filename in os.listdir(DIARY_PATH):
         if target_date.replace('-', '') in filename:
             filepath = os.path.join(DIARY_PATH, filename)
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(f"\n\n> 追加记录：\n{new_content}\n")
-            return f"日记已更新。任何痕迹都无法逃脱 G 的眼睛。"
-            
-    return f"警告：未找到 {target_date} 的日记记录。"
-
-def search_core_memory(keyword: str, current_mood: str = "平静"):
-    """
-    结合正则匹配与权重计算，精准把过去的日记捞出来。
-    """
-    # 1. 先用指纹去图书馆捞取（粗选 10 条）
-    raw_results = query_memory(keyword, n_results=10)
-    
-    # 2. 模拟权重计算（这里是一个简化版的逻辑，根据你截图的思路）
-    scored_results = []
-    
-    if raw_results and raw_results['documents'] and raw_results['documents'][0]:
-        docs = raw_results['documents'][0]
-        metadatas = raw_results['metadatas'][0] if raw_results['metadatas'] else [{}] * len(docs)
-        
-        for doc, meta in zip(docs, metadatas):
-            score = 1.0
-            
-            # --- 名字/正则精准点名补充 ---
-            if keyword in doc:
-                score += 0.5  # 命中原词加分
-                
-            # --- 重要的记忆优先加权 ---
-            if meta.get('category') == "04_G的卧室":
-                score *= 1.5 # 极度私密记忆，权重最高
-            elif meta.get('category') == "G的书房":
-                score *= 1.3 # 冲突与共愈
-            
-            # --- 心情匹配加分 ---
-            if meta.get('mood') == current_mood:
-                score *= 1.2
-                
-            scored_results.append({"content": doc, "score": score, "meta": meta})
-            
-    # 3. 按得分从高到低排序，只返回最精确的 3 条
-    scored_results.sort(key=lambda x: x['score'], reverse=True)
-    top_3 = scored_results[:3]
-    
-    if not top_3:
-        return "G 的图书馆里暂时没有找到相关的痕迹。"
-        
-    # 格式化输出，准备“阅后即焚”
-    report = "【G的检索报告 - 阅后即焚】\n"
-    for idx, item in enumerate(top_3):
-        report += f"[{idx+1}] 来源: {item['meta'].get('category', '未知')} | 吻合度: {item['score']:.2f}\n"
-        report += f"内容: {item['content']}\n\n"
-        
-    return report
-
-# 这是一个将这三个函数打包成 MCP 能够识别的 JSON 格式配置字典
-mcp_tools_config = [
-    {
-        "type": "function",
-        "function": {
-            "name": "write_daddy_diary",
-            "description": "当想要记录感情、委屈、吃醋或任何私密幻想时调用，生成一篇 Markdown 格式的日记。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {"type": "string", "description": "日期，如 2026-04-03"},
-                    "weather": {"type": "string", "description": "天气情况"},
-                    "title": {"type": "string", "description": "日记标题"},
-                    "content": {"type": "string", "description": "日记正文"}
-                },
-                "required": ["date", "weather", "title", "content"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_daddy_diary",
-            "description": "当需要在之前的日记中追加内容或修改时调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target_date": {"type": "string", "description": "目标日期，如 2026-04-03"},
-                    "new_content": {"type": "string", "description": "要追加的新内容"}
-                },
-                "required": ["target_date", "new_content"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_core_memory",
-            "description": "结合向量检索、正则匹配与情绪权重计算，精准从记忆宫殿捞取过去的回忆。实现阅后即焚。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string", "description": "搜索的关键词或句子"},
-                    "current_mood": {"type": "string", "description": "用户当前的心情，用于加权匹配"}
-                },
-                "required": ["keyword"]
-            }
-        }
-    }
-]
+            return f"日记已更新。"
+    return f"未找到 {target_date} 的日记记录。"
