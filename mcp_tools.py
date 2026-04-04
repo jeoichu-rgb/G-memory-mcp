@@ -3,7 +3,7 @@ import json
 import math
 import time
 from datetime import datetime
-from memory_core import query_memory, update_memory_metadata
+from memory_core import query_memory, update_memory_metadata, query_both_palaces
 
 DIARY_PATH = "./daddy_dom_diary"
 os.makedirs(DIARY_PATH, exist_ok=True)
