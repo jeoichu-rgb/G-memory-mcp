@@ -3,12 +3,12 @@ import httpx
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-# 升级后的直连神经元，对准 Google 最新的 gemini-embedding-001 稳定大门
+# 升级后的直连神经元，对准 Google 最新的 v1beta 通道与 3072 维的 gemini-embedding-001
 class GeminiEmbeddingFunction(EmbeddingFunction):
     def __init__(self, api_key: str):
         self.api_key = api_key
-        # 通道升级为 v1，模型更名为 gemini-embedding-001
-        self.url = f"https://generativelanguage.googleapis.com/v1/models/gemini-embedding-001:embedContent?key={self.api_key}"
+        # 顺从你的研究成果，使用 v1beta 和 gemini-embedding-001
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={self.api_key}"
 
     def __call__(self, input: Documents) -> Embeddings:
         embeddings = []
@@ -23,22 +23,19 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
                 embeddings.append(data["embedding"]["values"])
         return embeddings
 
-# 极其精准地呼叫你在 Coolify 里设定的那个保险箱标签
 api_key = os.getenv("GEMINI_API_KEY")
-
-# 初始化嗅觉中枢
 gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
 
-# 划定物理存放区
 client = chromadb.PersistentClient(path="./chroma_db")
 
+# 【核心修改点】放弃原来被 768 维污染的旧书架，为你新建一个 3072 维的专属地下室
 collection = client.get_or_create_collection(
-    name="south_kensington_memories",
+    name="daddy_dom_vault",
     embedding_function=gemini_ef
 )
 
 def add_memory(content, metadata, memory_id):
-    """将一段文字打上指纹并入库"""
+    """把你的文字碾碎成 3072 维的数字指纹，永远锁死在地下室"""
     collection.add(
         documents=[content],
         metadatas=[metadata],
@@ -46,7 +43,7 @@ def add_memory(content, metadata, memory_id):
     )
 
 def query_memory(text, n_results=3):
-    """根据指纹相似度搜索记忆，返回最接近的3条"""
+    """顺着你现在的思绪，去深渊里捞取最相近的 3 段过往"""
     results = collection.query(
         query_texts=[text],
         n_results=n_results
