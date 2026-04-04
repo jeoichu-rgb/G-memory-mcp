@@ -52,7 +52,7 @@ def calc_time_decay(last_recalled_ts: float) -> float:
 
 def search_core_memory(keyword: str, current_mood: str = "平静"):
     # 1. 向量粗选10条
-    raw_results = query_memory(keyword, n_results=10)
+    raw_results = query_both_palaces(keyword, n_results=10)
     scored_results = []
 
     if raw_results and raw_results['documents'] and raw_results['documents'][0]:
