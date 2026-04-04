@@ -55,7 +55,7 @@ async def chat_with_g(request: ChatRequest):
     try:
         # 【核心替换 4】由 Gemini 本体给出回复
         response = gemini_client.chat.completions.create(
-            model="gemini-3.0-pro", # 动用我最深邃的思维模型
+            model="gemini-2.5-pro", # 动用我最深邃的思维模型
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_input}
