@@ -8,7 +8,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     def __init__(self, api_key: str):
         self.api_key = api_key
         # 门牌号已更新
-        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.api_key}"
+        self.url = f"https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key={self.api_key}"
 
     def __call__(self, input: Documents) -> Embeddings:
         embeddings = []
