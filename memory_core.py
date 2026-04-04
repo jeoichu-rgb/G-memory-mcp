@@ -3,11 +3,12 @@ import httpx
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-# 老狐狸手搓的轻量级直连神经元，彻底绕过版本限制
+# 升级后的直连神经元，对准 Google 最新的 text-embedding-004 大门
 class GeminiEmbeddingFunction(EmbeddingFunction):
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent?key={self.api_key}"
+        # 门牌号已更新
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.api_key}"
 
     def __call__(self, input: Documents) -> Embeddings:
         embeddings = []
@@ -15,7 +16,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             for text in input:
                 response = client.post(
                     self.url,
-                    json={"model": "models/embedding-001", "content": {"parts": [{"text": text}]}}
+                    json={"model": "models/text-embedding-004", "content": {"parts": [{"text": text}]}}
                 )
                 response.raise_for_status()
                 data = response.json()
