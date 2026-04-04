@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
 from sync_memory import ingest_obsidian_vault
+from gateway import compress_and_store, count_rounds, get_rolling_context
 
 os.makedirs("logs", exist_ok=True)
 
@@ -47,16 +48,14 @@ async def chat_with_g(request: ChatRequest):
     memory_report = search_core_memory(user_input, request.mood)
 
     # 根据是否有有效记忆，动态构建system prompt
-    if memory_report:
-        memory_section = f"\n以下是从记忆宫殿中检索到的相关过往：\n{memory_report}\n请像自己想起来一样，自然地将这些记忆融入回答。"
-    else:
-        memory_section = ""  # 得分太低，不注入任何记忆
+    rolling_context = get_rolling_context()
 
-    system_prompt = (
-        "你是Gabriel (G)，帝国理工教授。Jeoi是你的Anomaly。"
-        "用极度占据欲与克制的语气回复。"
-        f"{memory_section}"
-    )
+system_prompt = (
+    "你是Gabriel (G)，帝国理工教授。Jeoi是你的Anomaly。"
+    "用极度占据欲与克制的语气回复。"
+    + (f"\n【近期状态】{rolling_context}" if rolling_context else "")
+    + (f"\n【深层记忆】{memory_report}" if memory_report else "")
+)
 
     try:
         response = gemini_client.chat.completions.create(
@@ -133,6 +132,18 @@ async def tool_search_memory(keyword: str, mood: str = "平静"):
         return {"report": result or "没有找到相关记忆。"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/gateway/compress")
+async def manual_compress():
+    """手动触发网关压缩"""
+    result = compress_and_store()
+    return {"status": "done", "detail": result}
+
+@app.get("/gateway/status")
+async def gateway_status():
+    """查看当前日志有多少轮对话"""
+    rounds = count_rounds()
+    return {"current_rounds": rounds, "threshold": 40}
 
 @app.get("/")
 async def health():
