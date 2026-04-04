@@ -49,3 +49,14 @@ def query_memory(text, n_results=3):
         n_results=n_results
     )
     return results
+
+
+def update_memory_metadata(memory_id: str, new_metadata: dict):
+    """更新某条记忆的元数据（被想起次数、时间戳等）"""
+    try:
+        collection.update(
+            ids=[memory_id],
+            metadatas=[new_metadata]
+        )
+    except Exception as e:
+        print(f"更新metadata失败: {e}")
