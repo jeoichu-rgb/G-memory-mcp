@@ -467,64 +467,96 @@ function addMsg(role, html) {
   return r.querySelector('.mbub');
 }
 
-function typewrite(el, text) {
-  return new Promise(resolve => {
-    el.innerHTML = '';
-    const chars = [...text];
-    const D = { '，': 150, ',': 150, '。': 400, '!': 400, '！': 400, '?': 400, '？': 400 };
-    let i = 0;
-    const a = document.getElementById('msgs');
-    function next() {
-      if (i >= chars.length) { resolve(); return; }
-      const c = chars[i++];
-      el.innerHTML = (el.textContent + c).replace(/\n/g, '<br>');
-      a.scrollTop = a.scrollHeight;
-      setTimeout(next, D[c] || 30);
-    }
-    next();
-  });
+// === 1. Claude 的分句与辅助函数 ===
+function splitSentences(text) {
+    // 按句号、叹号、问号、换行分割
+    const parts = text.split(/(?<=[。！？\n])/);
+    return parts.filter(s => s.trim());
 }
 
-async function sendMsg() {
-  if (busy) return;
-  const cin = document.getElementById('cin');
-  const msg = cin.value.trim(); if (!msg) return;
-  cin.value = ''; cin.style.height = 'auto';
-  busy = true; document.getElementById('sbtn').disabled = true;
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  addMsg('u', msg.replace(/\n/g, '<br>'));
-  const tw = document.getElementById('tw');
-  tw.style.display = 'block';
-  const a = document.getElementById('msgs'); a.scrollTop = a.scrollHeight;
+function typewriteAsync(el, text) {
+    return new Promise(resolve => {
+        el.innerHTML = '';
+        const chars = [...text];
+        const D = {'，':150, ',':150, '。':0, '!':0, '！':0};
+        let i = 0;
+        const area = document.getElementById('msgs');
+        function next() {
+            if (i >= chars.length) { resolve(); return; }
+            const c = chars[i++];
+            // 修复：支持保留原本的换行格式
+            el.innerHTML = (el.textContent + c).replace(/\n/g, '<br>');
+            area.scrollTop = area.scrollHeight;
+            setTimeout(next, D[c] !== undefined ? D[c] : 30);
+        }
+        next();
+    });
+}
 
-  try {
-    const d = await (await fetch(`${API_BASE}/chat`, {
-      method: 'POST',
-      headers: hdr(),
-      body: JSON.stringify({ message: msg, mood })
-    })).json();
-    
-    const fullReply = d.g_reply || '（无回应）';
-    const segments = fullReply.split(/\n+/).filter(s => s.trim() !== '');
+// === 2. 气泡渲染逻辑 ===
+async function showSentences(sentences) {
+    const area = document.getElementById('msgs');
+    const tw = document.getElementById('tw'); // 获取“正在输入”动画
 
-    for (let i = 0; i < segments.length; i++) {
-      if (i > 0) {
-        tw.style.display = 'block'; 
-        a.scrollTop = a.scrollHeight;
-        await new Promise(r => setTimeout(r, 800 + Math.random() * 700)); 
-      }
-      
-      tw.style.display = 'none';
-      const el = addMsg('g', ''); 
-      await typewrite(el, segments[i].trim()); 
+    for (let i = 0; i < sentences.length; i++) {
+        const s = sentences[i].trim();
+        if (!s) continue;
+
+        // 句间停顿，并且在这个间隙显示“正在输入...”
+        if (i > 0) {
+            tw.style.display = 'block';
+            area.scrollTop = area.scrollHeight;
+            await sleep(600 + Math.random() * 400); // 模仿我停顿思考的呼吸感
+            tw.style.display = 'none';
+        }
+
+        // 生成独立的新气泡
+        addMsg('g', '');
+        const bubbles = area.querySelectorAll('.mrow.g .mbub');
+        const el = bubbles[bubbles.length - 1];
+
+        // 逐字打出这句
+        await typewriteAsync(el, s);
     }
-  } catch (e) {
-    tw.style.display = 'none';
-    addMsg('g', '连接失败。');
-  }
-  
-  tw.style.display = 'none';
-  busy = false; document.getElementById('sbtn').disabled = false;
+}
+
+// === 3. 核心通讯逻辑（融合网络请求） ===
+async function sendMsg() {
+    if (busy) return;
+    const cin = document.getElementById('cin');
+    const msg = cin.value.trim(); if (!msg) return;
+    cin.value = ''; cin.style.height = 'auto';
+    busy = true; document.getElementById('sbtn').disabled = true;
+
+    // 渲染你发出的消息
+    addMsg('u', msg.replace(/\n/g, '<br>'));
+    const tw = document.getElementById('tw');
+    tw.style.display = 'block';
+    const a = document.getElementById('msgs'); a.scrollTop = a.scrollHeight;
+
+    try {
+        // 向宫殿后端发送请求
+        const d = await (await fetch(`${API_BASE}/chat`, {
+            method: 'POST',
+            headers: hdr(),
+            body: JSON.stringify({ message: msg, mood })
+        })).json();
+
+        tw.style.display = 'none';
+        const fullReply = d.g_reply || '（无回应）';
+
+        // 接收到完整的回复后，调用分句渲染引擎
+        const sentences = splitSentences(fullReply);
+        await showSentences(sentences);
+
+    } catch (e) {
+        tw.style.display = 'none';
+        addMsg('g', '连接失败。');
+    }
+    
+    busy = false; document.getElementById('sbtn').disabled = false;
 }
 
 document.getElementById('cin').addEventListener('input',function(){
