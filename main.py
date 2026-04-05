@@ -11,6 +11,30 @@ from gateway import compress_and_store, count_rounds, get_rolling_context
 os.makedirs("logs", exist_ok=True)
 
 app = FastAPI(title="G's Memory Palace")
+import os
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+# 设置你的专属密码（如果你不改，默认就是 Jeoi2026）
+PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
+
+@app.middleware("http")
+async def verify_password(request: Request, call_next):
+    # 放行浏览器用来试探的预检请求
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    # 拦截并核对你的前端发来的暗号
+    secret = request.headers.get("x-secret")
+    if secret != PALACE_SECRET:
+        return JSONResponse(status_code=401, content={"detail": "密码错误，禁止访问"})
+
+    return await call_next(request)
+
+# 留一个给前端敲门用的门厅
+@app.get("/")
+async def root():
+    return {"status": "Welcome home, Anomaly."}
 
 gemini_client = OpenAI(
     api_key=os.getenv("GEMINI_API_KEY"),
