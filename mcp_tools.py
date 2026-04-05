@@ -93,10 +93,13 @@ def search_core_memory(keyword: str, current_mood: str = "平静"):
             recall_count = meta.get('recall_count', 0)
             recall_bonus = min(0.2, recall_count * 0.02)
 
-            # 时间衰减
-            last_recalled = meta.get('last_recalled_ts', 0)
-            decay = calc_time_decay(last_recalled)
-
+            # 永久记忆不做时间衰减
+                is_permanent = meta.get("is_permanent", False) or meta.get("mood") == "核心印记"
+                if is_permanent:
+                    decay = 1.0  # 永不衰减
+                else:
+                    last_recalled = meta.get('last_recalled_ts', 0)
+                    decay = calc_time_decay(last_recalled)
             # 最终得分
             final_score = (base_score + name_bonus + recall_bonus + mood_bonus) * cat_weight * decay
 
