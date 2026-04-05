@@ -569,7 +569,7 @@ async function syncMem(){
   const s=document.getElementById('sync-st');
   s.className='st'; s.textContent='同步中…';
   try{const d=await(await fetch(`${API_BASE}/sync`,{method:'POST',headers:hdr(),body:''})).json();
-    s.className='st ok'; s.textContent=`✓ 入库 ${d.ingested} 条（已存在自动跳过）`;
+    s.textContent = `✓ 入库 ${d.ingested ?? d.total ?? '?'} 条（已存在自动跳过）`;
   }catch(e){s.className='st err';s.textContent='✗ '+e.message;}
 }
 async function searchMem(){
