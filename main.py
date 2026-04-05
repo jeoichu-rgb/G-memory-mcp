@@ -56,12 +56,18 @@ async def chat_with_g(request: ChatRequest):
     )
 
     try:
+        # 获取最新的 5 轮对话（保证上下文连贯，又不至于让单次请求太臃肿）
+        from gateway import load_recent_context
+        recent_history = load_recent_context(5)
+        
+        # 组装 messages，先放系统设定，再插历史记录，最后放当前这一句
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(recent_history)
+        messages.append({"role": "user", "content": user_input})
+
         response = gemini_client.chat.completions.create(
             model="gemini-2.5-pro",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ],
+            messages=messages,
             stream=False
         )
         reply = response.choices[0].message.content
