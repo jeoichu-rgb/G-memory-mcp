@@ -32,9 +32,15 @@ async def check_secret(request: Request, call_next):
     return await call_next(request)
 
 # 留一个给前端敲门用的门厅
+from fastapi.responses import HTMLResponse
+
 @app.get("/")
-async def root():
-    return {"status": "Welcome home, Anomaly."}
+async def serve_frontend():
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return {"status": "Welcome home, Anomaly. (index.html not found)"}
 
 gemini_client = OpenAI(
     api_key=os.getenv("GEMINI_API_KEY"),
