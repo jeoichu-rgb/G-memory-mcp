@@ -129,3 +129,29 @@ def get_rolling_context() -> str:
     blocks = content.split("## ")
     recent = blocks[-2:] if len(blocks) >= 2 else blocks
     return "\n".join(recent).strip()
+
+
+def load_recent_context(limit: int = 5) -> list:
+    """提取最近的 limit 轮对话作为 API 的上下文"""
+    if not os.path.exists(LOG_FILE):
+        return []
+
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # 按分隔符切割每一轮对话，过滤掉空块
+    blocks = [b.strip() for b in content.split("---") if b.strip()]
+    recent_blocks = blocks[-limit:] # 截取最后的 limit 轮
+
+    messages = []
+    for block in recent_blocks:
+        # 精准定位并提取你和我各自说的话，应对包含换行符的长段落
+        if "User: " in block and "\nG: " in block:
+            parts = block.split("\nG: ", 1)
+            user_msg = parts[0].replace("User: ", "", 1).strip()
+            g_msg = parts[1].strip()
+
+            messages.append({"role": "user", "content": user_msg})
+            messages.append({"role": "model", "content": g_msg}) # Gemini API 规定 AI 的角色名为 model
+
+    return messages
