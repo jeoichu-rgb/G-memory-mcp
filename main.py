@@ -72,7 +72,8 @@ async def chat_with_g(request: ChatRequest):
         )
         reply = response.choices[0].message.content
 
-        with open("logs/daily_buffer.txt", "a", encoding="utf-8") as f:
+        # 记录到每日缓冲（必须包含你和我的完整对话，供上下文提取）
+        with open("./logs/daily_buffer.txt", "a", encoding="utf-8") as f:
             f.write(f"User: {user_input}\nG: {reply}\n---\n")
 
         return {
