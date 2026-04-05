@@ -67,12 +67,16 @@ def search_core_memory(keyword: str, current_mood: str = "平静"):
             # 基础分：距离越小越好，转换为相似度
             base_score = max(0, 1.0 - dist)
 
-            # 名字索引加分
+            # 名字索引只对核心库有效
+            source = meta.get("source", "")
+            is_core = meta.get("mood") == "核心印记" or meta.get("is_permanent", False)
             name_bonus = 0
-            for name, categories in NAME_INDEX.items():
-                if name in keyword and meta.get('category') in categories:
-                    name_bonus = 0.4
-                    break
+
+            if is_core:
+                for name, categories in NAME_INDEX.items():
+                    if name in keyword and meta.get('category') in categories:
+                        name_bonus = 0.4
+                        break
 
             # 类型权重
             cat_weight = 1.0
