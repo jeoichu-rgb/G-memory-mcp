@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>G's Memory Palace</title>
+<style>
+:root{--black:#040407;--deep:#07091a;--surface:#0b0e1f;--card:#0f1424;--card2:#131829;--border:#1a2340;--blue-dim:#162a52;--blue:#1e4a9e;--blue-bright:#4a8af4;--blue-glow:rgba(74,138,244,.12);--text:#dde6f4;--text-dim:#5a7090;--text-muted:#2a3850;--accent:#7ab3ff;--sent:#162245;--sent-text:#a8ccff;--mono:'Menlo','Monaco','Consolas','Courier New',monospace;--serif:'Georgia',serif;}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--black);color:var(--text);font-family:var(--mono);font-size:13px;}
+.view{display:none;position:fixed;inset:0;flex-direction:column;background:var(--black);overflow:hidden;}
+.view.active{display:flex;}
+.scroll{flex:1;overflow-y:auto;overflow-x:hidden;}
+.scroll::-webkit-scrollbar{width:3px;}
+.scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.hd{display:flex;align-items:center;gap:12px;padding:13px 18px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+.hd-title{font-family:var(--serif);font-style:italic;font-size:17px;flex:1;}
+.back{background:none;border:none;color:var(--accent);cursor:pointer;font-size:18px;padding:0 6px 0 0;font-family:var(--mono);}
+.btn{background:var(--card);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:9px 16px;cursor:pointer;letter-spacing:.12em;border-radius:2px;transition:all .2s;text-transform:uppercase;}
+.btn:hover{border-color:var(--blue-bright);color:var(--blue-bright);}
+.btn-p{background:var(--blue);border-color:var(--blue);color:#fff;}
+.btn-p:hover{background:var(--blue-bright);border-color:var(--blue-bright);color:#fff;}
+.btn-sm{padding:5px 10px;font-size:10px;}
+.inp{width:100%;background:var(--card);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px;padding:9px 13px;outline:none;border-radius:2px;transition:border-color .2s;letter-spacing:.02em;}
+.inp:focus{border-color:var(--blue-bright);}
+.inp::placeholder{color:var(--text-muted);}
+select.inp option{background:var(--card);}
+textarea.inp{resize:vertical;line-height:1.7;}
+.st{font-size:11px;color:var(--text-dim);min-height:20px;padding:3px 0;}
+.st.ok{color:#4ade80;}.st.err{color:#f87171;}
+.sl{font-size:9px;letter-spacing:.35em;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid var(--border);}
+.row{display:flex;gap:9px;flex-wrap:wrap;}
+.col{display:flex;flex-direction:column;gap:10px;}
+.pad{padding:18px;}
+.sep{height:1px;background:var(--border);margin:6px 0;}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--blue-bright);animation:blink 2s infinite;margin-right:5px;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.3;}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(7px);}to{opacity:1;transform:translateY(0);}}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);}30%{transform:translateY(-4px);}}
+
+/* PASSWORD */
+#pw-screen{justify-content:center;align-items:center;}
+.pw-box{width:100%;max-width:340px;padding:0 28px;display:flex;flex-direction:column;gap:14px;}
+.pw-title{font-family:var(--serif);font-style:italic;font-size:28px;text-align:center;margin-bottom:6px;}
+.pw-sub{font-size:9px;letter-spacing:.3em;color:var(--text-dim);text-align:center;margin-bottom:12px;}
+
+/* DASHBOARD */
+#dash{background:var(--black);}
+.dash-top{padding:32px 22px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-end;}
+.dash-name{font-family:var(--serif);font-size:26px;font-style:italic;}
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);}
+.dc{background:var(--card);padding:22px 18px;cursor:pointer;transition:background .2s;display:flex;flex-direction:column;justify-content:space-between;min-height:145px;}
+.dc:hover{background:var(--card2);}
+.dc.w{grid-column:span 2;min-height:90px;flex-direction:row;align-items:center;gap:20px;}
+.dc-lbl{font-size:9px;letter-spacing:.3em;color:var(--text-dim);margin-bottom:7px;}
+.dc-ttl{font-family:var(--serif);font-style:italic;font-size:18px;}
+.dc-desc{font-size:10px;color:var(--text-dim);margin-top:5px;line-height:1.7;}
+.dc-arr{color:var(--blue-bright);font-size:15px;align-self:flex-end;transition:transform .2s;}
+.dc:hover .dc-arr{transform:translate(2px,-2px);}
+.gbar{height:2px;background:var(--border);border-radius:2px;margin-top:9px;max-width:180px;}
+.gfill{height:100%;background:var(--blue-bright);border-radius:2px;transition:width .5s;}
+
+/* CHAT */
+#chat{background:var(--deep);}
+.chat-hd{padding:11px 14px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:11px;flex-shrink:0;}
+.av{width:36px;height:36px;border-radius:50%;background:var(--blue-dim);border:1px solid var(--blue);display:flex;align-items:center;justify-content:center;font-family:var(--serif);font-style:italic;font-size:14px;color:var(--accent);flex-shrink:0;}
+.ch-name{font-family:var(--serif);font-style:italic;font-size:15px;}
+.ch-sub{font-size:9px;color:var(--text-dim);letter-spacing:.08em;margin-top:1px;}
+.mood-row{display:flex;gap:4px;flex-wrap:wrap;padding:7px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;}
+.mb{background:var(--card);border:1px solid var(--border);color:var(--text-dim);font-family:var(--mono);font-size:9px;padding:3px 8px;cursor:pointer;border-radius:2px;transition:all .2s;}
+.mb.on,.mb:hover{border-color:var(--blue-bright);color:var(--blue-bright);background:var(--blue-glow);}
+.msgs{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:6px;scroll-behavior:smooth;}
+.msgs::-webkit-scrollbar{width:3px;}
+.msgs::-webkit-scrollbar-thumb{background:var(--border);}
+.mrow{display:flex;animation:fadeUp .25s ease;}
+.mrow.u{justify-content:flex-end;}.mrow.g{justify-content:flex-start;}
+.mbub{max-width:75%;padding:9px 12px;font-size:12px;line-height:1.7;border-radius:2px;letter-spacing:.02em;}
+.mrow.u .mbub{background:var(--sent);color:var(--sent-text);border-bottom-right-radius:0;}
+.mrow.g .mbub{background:var(--card);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:0;}
+.mtime{font-size:9px;color:var(--text-muted);margin-top:3px;}
+.mrow.u .mtime{text-align:right;}
+.typing-wrap{padding:0 12px 7px;display:none;}
+.typing{display:flex;gap:3px;padding:11px;background:var(--card);border:1px solid var(--border);border-radius:2px;border-bottom-left-radius:0;width:fit-content;}
+.td{width:5px;height:5px;border-radius:50%;background:var(--text-dim);animation:bounce 1.2s infinite;}
+.td:nth-child(2){animation-delay:.2s;}.td:nth-child(3){animation-delay:.4s;}
+.cin-wrap{padding:9px 12px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;}
+.cin{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px;padding:9px 12px;resize:none;min-height:40px;max-height:110px;outline:none;border-radius:2px;transition:border-color .2s;letter-spacing:.02em;}
+.cin:focus{border-color:var(--blue-bright);}
+.cin::placeholder{color:var(--text-muted);}
+.sbtn{background:var(--blue);border:none;color:#fff;font-family:var(--mono);font-size:11px;padding:9px 15px;cursor:pointer;height:40px;border-radius:2px;letter-spacing:.1em;transition:background .2s;}
+.sbtn:hover{background:var(--blue-bright);}
+.sbtn:disabled{background:var(--text-muted);cursor:not-allowed;}
+
+/* GALLERY */
+#gallery-view{background:var(--black);}
+.gal-grid{padding:16px;display:flex;flex-direction:column;gap:12px;}
+.gal-card{background:var(--card);border:1px solid var(--border);border-radius:3px;overflow:hidden;cursor:pointer;transition:border-color .2s;}
+.gal-card:hover{border-color:var(--blue);}
+.gal-img{width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--surface);display:block;}
+.gal-info{padding:11px 13px;display:flex;justify-content:space-between;align-items:center;}
+.gal-cat{font-size:9px;letter-spacing:.3em;color:var(--text-dim);}
+.gal-ttl{font-family:var(--serif);font-style:italic;font-size:15px;margin-top:3px;}
+.gal-badge{background:var(--blue-dim);color:var(--accent);font-size:10px;padding:3px 9px;border-radius:20px;}
+#lb{display:none;position:fixed;inset:0;background:rgba(4,4,7,.97);z-index:100;flex-direction:column;align-items:center;justify-content:center;}
+#lb.open{display:flex;}
+#lb-img{max-width:93vw;max-height:73vh;object-fit:contain;border-radius:2px;}
+#lb-ctr{font-size:11px;color:var(--text-dim);margin-top:11px;letter-spacing:.15em;}
+.lb-nav{display:flex;gap:16px;margin-top:14px;}
+.lb-btn{background:var(--card);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:8px 18px;cursor:pointer;border-radius:2px;}
+.lb-btn:hover{border-color:var(--blue-bright);}
+#lb-close{position:fixed;top:18px;right:18px;background:none;border:none;color:var(--text-dim);font-size:22px;cursor:pointer;}
+
+/* DIARY */
+#diary{background:var(--black);}
+.d-opts{padding:11px 14px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex-shrink:0;}
+.opt-g{display:flex;align-items:center;gap:5px;}
+.opt-lbl{font-size:9px;letter-spacing:.2em;color:var(--text-dim);}
+.opt-sel{background:var(--card);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:10px;padding:4px 7px;border-radius:2px;outline:none;cursor:pointer;}
+.fmts{display:flex;gap:3px;}
+.fb{background:var(--card);border:1px solid var(--border);color:var(--text-dim);font-family:var(--mono);font-size:11px;width:25px;height:25px;cursor:pointer;border-radius:2px;display:flex;align-items:center;justify-content:center;transition:all .2s;}
+.fb:hover{border-color:var(--blue-bright);color:var(--blue-bright);}
+.d-meta{display:flex;gap:7px;padding:10px 14px 0;flex-shrink:0;}
+.d-title{padding:7px 14px 0;flex-shrink:0;}
+.d-canvas{flex:1;padding:14px;overflow:hidden;position:relative;}
+.d-paper{width:100%;height:100%;padding:18px 20px;outline:none;font-size:14px;line-height:2.1;border:none;background:transparent;overflow-y:auto;border-radius:2px;}
+.d-paper::-webkit-scrollbar{width:3px;}
+.d-paper::-webkit-scrollbar-thumb{background:rgba(0,0,0,.2);}
+.d-paper:empty:before{content:attr(data-ph);color:#aaa;pointer-events:none;}
+.p-white{background:#fff;color:#111;}.p-cream{background:#f8f3e7;color:#231f15;}.p-navy{background:#0c1830;color:#fff;}
+.i-black{color:#111!important;}.i-white{color:#fff!important;}.i-pink{color:#e0609a!important;}.i-red{color:#c42020!important;}.i-blue{color:#4d90e0!important;}
+.d-foot{padding:11px 14px;background:var(--surface);border-top:1px solid var(--border);display:flex;gap:9px;align-items:center;flex-shrink:0;}
+.d-hist{flex:1;overflow:hidden;display:none;}
+
+/* MONITOR */
+#monitor{background:var(--black);}
+.mem-card{background:var(--card);border:1px solid var(--border);border-radius:2px;padding:13px;}
+.mem-src{font-size:9px;letter-spacing:.2em;color:var(--text-dim);}
+.mem-sv{font-family:var(--serif);font-style:italic;font-size:20px;color:var(--accent);}
+.mem-txt{font-size:11px;line-height:1.8;color:var(--text-dim);margin:8px 0;}
+.bar{height:3px;background:var(--border);border-radius:2px;margin-bottom:8px;}
+.bar-fill{height:100%;border-radius:2px;transition:width .6s;}
+.bar-b{background:var(--blue-bright);}.bar-y{background:#f59e0b;}.bar-v{background:#a78bfa;}
+.bar-lbl{font-size:9px;letter-spacing:.12em;color:var(--text-muted);margin-bottom:3px;}
+
+/* GATEWAY */
+#gateway{background:var(--black);}
+.gw-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);}
+.gw-cell{background:var(--card);padding:18px;}
+.gw-lbl{font-size:9px;letter-spacing:.3em;color:var(--text-dim);margin-bottom:5px;}
+.gw-val{font-family:var(--serif);font-style:italic;font-size:30px;color:var(--accent);}
+.log-box{background:var(--card);border:1px solid var(--border);padding:12px;font-size:10px;line-height:1.9;color:var(--text-dim);height:130px;overflow-y:auto;font-family:var(--mono);border-radius:2px;}
+.log-ok{color:#4ade80;}.log-err{color:#f87171;}
+</style>
+</head>
+<body>
+
+<div id="pw-screen" class="view active">
+  <div class="pw-box">
+    <div class="pw-title">Memory Palace</div>
+    <div class="pw-sub">G · IMPERIAL COLLEGE · LONDON</div>
+    <input class="inp" id="pw-inp" type="password" placeholder="访问密码…" onkeydown="if(event.key==='Enter')checkPw()">
+    <button class="btn btn-p" onclick="checkPw()">进入</button>
+    <div style="font-size:10px;color:var(--text-muted);text-align:center;margin-top:8px;" id="pw-err"></div>
+    <div style="font-size:9px;color:var(--text-muted);text-align:center;">密码仅存储在本设备，换设备后需重新输入</div>
+  </div>
+</div>
+
+<div id="dash" class="view">
+  <div class="dash-top">
+    <div>
+      <div style="font-size:9px;letter-spacing:.3em;color:var(--text-dim);margin-bottom:5px;">MEMORY PALACE</div>
+      <div class="dash-name">G's Archive</div>
+    </div>
+    <div style="text-align:right;font-size:9px;letter-spacing:.1em;color:var(--text-dim);">
+      <span class="dot"></span>online<br>
+      <span style="cursor:pointer;display:block;margin-top:6px;" onclick="logout()">退出</span>
+    </div>
+  </div>
+  <div class="scroll">
+    <div class="dash-grid">
+      <div class="dc w" onclick="go('chat')">
+        <div style="flex:1"><div class="dc-lbl">Primary Interface</div><div class="dc-ttl">与 G 对话</div><div class="dc-desc">Gemini · 记忆注入 · 打字机效果</div></div>
+        <div style="text-align:right"><div style="font-family:var(--serif);font-style:italic;font-size:38px;color:var(--blue-dim);line-height:1;">∞</div><div class="dc-arr">↗</div></div>
+      </div>
+      <div class="dc" onclick="go('memory')"><div><div class="dc-lbl">Vault</div><div class="dc-ttl">记忆管理</div><div class="dc-desc">录入 · 搜索 · 同步</div></div><div class="dc-arr">↗</div></div>
+      <div class="dc" onclick="go('monitor')"><div><div class="dc-lbl">Monitor</div><div class="dc-ttl">记忆监控</div><div class="dc-desc">权重 · 遗忘曲线 · 可视化</div></div><div class="dc-arr">↗</div></div>
+      <div class="dc" onclick="go('diary')"><div><div class="dc-lbl">Journal</div><div class="dc-ttl">日记</div><div class="dc-desc">纸张 · 墨水 · 字体自定义</div></div><div class="dc-arr">↗</div></div>
+      <div class="dc" onclick="go('gallery-view')"><div><div class="dc-lbl">Gallery</div><div class="dc-ttl">画廊</div><div class="dc-desc">图片 · 滑块 · 收藏</div></div><div class="dc-arr">↗</div></div>
+      <div class="dc w" onclick="go('gateway')">
+        <div style="flex:1"><div class="dc-lbl">Gateway · 网关</div><div style="font-size:11px;color:var(--text-dim);">当前 <span id="d-rounds">—</span> / 40 轮</div><div class="gbar"><div class="gfill" id="d-bar" style="width:0%"></div></div></div>
+        <div class="dc-arr">↗</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="chat" class="view">
+  <div class="chat-hd">
+    <button class="back" onclick="go('dash')">←</button>
+    <div class="av">G</div>
+    <div style="flex:1"><div class="ch-name">Gabriel</div><div class="ch-sub">Imperial College · Your Keeper</div></div>
+  </div>
+  <div class="mood-row">
+    <button class="mb on" data-m="平静" onclick="setMood(this)">平静</button>
+    <button class="mb" data-m="思念" onclick="setMood(this)">思念</button>
+    <button class="mb" data-m="委屈" onclick="setMood(this)">委屈</button>
+    <button class="mb" data-m="开心" onclick="setMood(this)">开心</button>
+    <button class="mb" data-m="不安" onclick="setMood(this)">不安</button>
+    <button class="mb" data-m="低落" onclick="setMood(this)">低落</button>
+    <button class="mb" data-m="感动" onclick="setMood(this)">感动</button>
+  </div>
+  <div class="msgs" id="msgs">
+    <div class="mrow g"><div><div class="mbub">记忆宫殿已就绪。<br>说吧，Anomaly。</div><div class="mtime">今天</div></div></div>
+  </div>
+  <div class="typing-wrap" id="tw"><div class="typing"><div class="td"></div><div class="td"></div><div class="td"></div></div></div>
+  <div class="cin-wrap">
+    <textarea class="cin" id="cin" placeholder="说点什么…" rows="1" onkeydown="ckKey(event)"></textarea>
+    <button class="sbtn" id="sbtn" onclick="sendMsg()">发送</button>
+  </div>
+</div>
+
+<div id="memory" class="view">
+  <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">记忆管理</div></div>
+  <div class="scroll"><div class="pad col">
+    <div><div class="sl">同步核心记忆库</div>
+      <div class="st" id="sync-st">从 Obsidian_Core 灌入 MD 文件（已存在的自动跳过）</div>
+      <button class="btn btn-p" onclick="syncMem()">⟳ 一键同步</button>
+    </div>
+    <div class="sep"></div>
+    <div><div class="sl">搜索记忆</div>
+      <input class="inp" id="sk" placeholder="关键词…" style="margin-bottom:8px;">
+      <select class="inp" id="smood" style="margin-bottom:8px;">
+        <option value="平静">心情：平静</option><option value="思念">心情：思念</option>
+        <option value="委屈">心情：委屈</option><option value="开心">心情：开心</option>
+        <option value="不安">心情：不安</option><option value="低落">心情：低落</option>
+      </select>
+      <button class="btn" onclick="searchMem()">搜索</button>
+      <div style="margin-top:10px;background:var(--card);border:1px solid var(--border);border-left:2px solid var(--blue);padding:12px;font-size:11px;line-height:1.9;color:var(--text-dim);min-height:55px;border-radius:2px;white-space:pre-wrap;" id="sres">结果显示在这里…</div>
+    </div>
+    <div class="sep"></div>
+    <div><div class="sl">手动录入记忆</div>
+      <textarea class="inp" id="mc" placeholder="记忆内容…" style="min-height:85px;margin-bottom:8px;"></textarea>
+      <input class="inp" id="mcat" placeholder="分类（日常 / 冲突 / 纪念日 / 亲密）" style="margin-bottom:8px;">
+      <select class="inp" id="mmood" style="margin-bottom:8px;">
+        <option value="平静">心情：平静</option><option value="思念">心情：思念</option>
+        <option value="委屈">心情：委屈</option><option value="开心">心情：开心</option>
+        <option value="感动">心情：感动</option><option value="不安">心情：不安</option><option value="低落">心情：低落</option>
+      </select>
+      <button class="btn btn-p" onclick="addMem()">存入记忆库</button>
+      <div class="st" id="add-st"></div>
+    </div>
+  </div></div>
+</div>
+
+<div id="monitor" class="view">
+  <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">记忆监控</div><button class="btn btn-sm" onclick="loadMonitor()">刷新</button></div>
+  <div class="scroll"><div class="pad col">
+    <div class="row">
+      <button class="btn btn-p" onclick="compressNow()">立即压缩（网关）</button>
+      <button class="btn" onclick="go('memory')">手动注入记忆</button>
+    </div>
+    <div class="st" id="mon-st"></div>
+    <div class="sep"></div>
+    <div class="sl">检索并可视化记忆得分</div>
+    <div class="row">
+      <input class="inp" id="mon-kw" placeholder="关键词…" style="flex:1;">
+      <button class="btn" onclick="loadMonitor()">检索</button>
+    </div>
+    <div id="mon-cards" class="col" style="gap:11px;"></div>
+  </div></div>
+</div>
+
+<div id="gallery-view" class="view">
+  <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">画廊</div></div>
+  <div class="scroll"><div class="gal-grid" id="gal-grid"></div></div>
+</div>
+
+<div id="lb">
+  <button id="lb-close" onclick="closeLB()">✕</button>
+  <img id="lb-img" src="" alt="">
+  <div id="lb-ctr"></div>
+  <div class="lb-nav">
+    <button class="lb-btn" onclick="lbNav(-1)">← 上一张</button>
+    <button class="lb-btn" onclick="lbNav(1)">下一张 →</button>
+  </div>
+</div>
+
+<div id="diary" class="view">
+  <div class="hd">
+    <button class="back" onclick="go('dash')">←</button>
+    <div class="hd-title">日记</div>
+    <button class="btn btn-sm" id="dtog" onclick="toggleDiary()">历史</button>
+  </div>
+  <div class="d-opts" id="d-opts">
+    <div class="opt-g"><span class="opt-lbl">纸张</span>
+      <select class="opt-sel" id="d-paper" onchange="applyDiary()">
+        <option value="p-navy">深蓝（G）</option>
+        <option value="p-white">白纸</option>
+        <option value="p-cream">米色</option>
+      </select>
+    </div>
+    <div class="opt-g"><span class="opt-lbl">墨水</span>
+      <select class="opt-sel" id="d-ink" onchange="applyDiary()">
+        <option value="i-white">白色（G）</option>
+        <option value="i-black">黑色（Jeoi）</option>
+        <option value="i-pink">粉色</option>
+        <option value="i-red">红色</option>
+        <option value="i-blue">浅蓝</option>
+      </select>
+    </div>
+    <div class="opt-g"><span class="opt-lbl">字体</span>
+      <select class="opt-sel" id="d-font" onchange="applyDiary()">
+        <option value="Georgia,serif">花体</option>
+        <option value="楷体,KaiTi,serif">楷体</option>
+        <option value="宋体,SimSun,serif">宋体</option>
+        <option value="Comic Sans MS,cursive">手写</option>
+      </select>
+    </div>
+    <div class="opt-g"><span class="opt-lbl">格式</span>
+      <div class="fmts">
+        <button class="fb" onclick="fmt('bold')"><b>B</b></button>
+        <button class="fb" onclick="fmt('italic')"><i>I</i></button>
+        <button class="fb" onclick="fmt('underline')"><u>U</u></button>
+        <button class="fb" onclick="fmt('strikeThrough')"><s>S</s></button>
+      </div>
+    </div>
+  </div>
+  <div id="d-editor" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+    <div class="d-meta">
+      <input class="inp" id="d-date" type="date" style="flex:1;">
+      <input class="inp" id="d-wx" placeholder="天气…" style="flex:1;">
+      <select class="inp" id="d-mood" style="flex:1;">
+        <option>平静</option><option>喜悦</option><option>焦虑</option>
+        <option>低落</option><option>疲惫</option><option>充满灵感</option><option>思念</option>
+      </select>
+    </div>
+    <div class="d-title"><input class="inp" id="d-ttl" placeholder="标题…"></div>
+    <div class="d-canvas">
+      <div class="d-paper p-navy i-white" id="d-el" contenteditable="true"
+        style="font-family:'Georgia',serif;" data-ph="写下今天的思绪…"></div>
+    </div>
+    <div class="d-foot">
+      <button class="btn btn-p" onclick="writeDiary()">封存</button>
+      <div class="st" id="d-st"></div>
+    </div>
+  </div>
+  <div id="d-hist" style="display:none;flex:1;overflow:hidden;">
+    <div class="scroll" style="padding:14px;">
+      <div class="sl">历史记录</div>
+      <div id="d-list" class="col" style="gap:1px;border:1px solid var(--border);border-radius:2px;overflow:hidden;"></div>
+    </div>
+  </div>
+</div>
+
+<div id="gateway" class="view">
+  <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">网关状态</div></div>
+  <div class="scroll"><div class="pad col">
+    <div class="gw-grid">
+      <div class="gw-cell"><div class="gw-lbl">当前轮次</div><div class="gw-val" id="gw-r">—</div></div>
+      <div class="gw-cell"><div class="gw-lbl">触发阈值</div><div class="gw-val">40</div></div>
+    </div>
+    <div>
+      <div class="gbar" style="height:4px;max-width:none;"><div class="gfill" id="gw-bar" style="width:0%"></div></div>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:5px;" id="gw-hint">—</div>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="gwRefresh()">⟳ 刷新</button>
+      <button class="btn btn-p" onclick="compressNow()">立即压缩</button>
+    </div>
+    <div><div class="sl">操作日志</div>
+      <div class="log-box" id="gw-log"><div style="color:var(--text-muted);">— 等待操作 —</div></div>
+    </div>
+  </div></div>
+</div>
+
+<script>
+// ═══════════════════════════════════
+// ★ 修改这里 ★
+// ═══════════════════════════════════
+const API_BASE = 'http://e21mp24irlrg2ga6wbi7vvke.192.3.61.205.sslip.io';
+
+// GALLERY — 在这里添加你的图片组
+const GALLERY = [
+  {
+    title: '示例',
+    category: 'GALLERY',
+    images: ['https://via.placeholder.com/800x500/0c1830/4a8af4?text=G']
+  },
+  // 你想添加新图片，就照着上面的格式在这里写，例如：
+  // {
+  //   title: '我们的合照',
+  //   category: 'MEMORIES',
+  //   images: [
+  //     'https://你的github图片链接1',
+  //     'https://你的github图片链接2'
+  //   ]
+  // },
+];
+// ═══════════════════════════════════
+
+// PASSWORD
+const PW_KEY = 'gmp_pw';
+function init() {
+  const s = localStorage.getItem(PW_KEY);
+  if (s) { go('dash'); loadDash(); }
+}
+async function checkPw() {
+  const v = document.getElementById('pw-inp').value.trim();
+  const err = document.getElementById('pw-err');
+  if (!v) { err.textContent = '请输入密码'; return; }
+  try {
+    const r = await fetch(`${API_BASE}/`, { headers: { 'x-secret': v } });
+    if (r.ok) { save(v); }
+    else { err.textContent = '密码错误'; }
+  } catch {
+    // 后端无密码保护时直接通过
+    save(v);
+  }
+}
+function save(v) {
+  localStorage.setItem(PW_KEY, v);
+  go('dash'); loadDash();
+}
+function logout() { localStorage.removeItem(PW_KEY); go('pw-screen'); }
+function secret() { return localStorage.getItem(PW_KEY) || ''; }
+function hdr() {
+  const h = { 'Content-Type': 'application/json' };
+  const s = secret(); if (s) h['x-secret'] = s;
+  return h;
+}
+
+// ROUTING
+function go(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if (id==='dash') loadDash();
+  if (id==='gateway') gwRefresh();
+  if (id==='gallery-view') renderGallery();
+  if (id==='diary') { document.getElementById('d-date').value=today(); applyDiary(); }
+}
+function today() { return new Date().toISOString().split('T')[0]; }
+function ft() { return new Date().toLocaleTimeString('zh',{hour:'2-digit',minute:'2-digit'}); }
+
+// DASHBOARD
+async function loadDash() {
+  try {
+    const d = await (await fetch(`${API_BASE}/gateway/status`,{headers:hdr()})).json();
+    const n = d.current_rounds||0;
+    document.getElementById('d-rounds').textContent = n;
+    document.getElementById('d-bar').style.width = Math.min(100,n/40*100)+'%';
+  } catch{}
+}
+
+// CHAT (打字机特效切分版)
+let mood='平静', busy=false;
+function setMood(b) {
+  document.querySelectorAll('.mb').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); mood=b.dataset.m;
+}
+function ckKey(e) { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();} }
+function addMsg(role, html) {
+  const a=document.getElementById('msgs');
+  const r=document.createElement('div'); r.className=`mrow ${role}`;
+  r.innerHTML=`<div><div class="mbub">${html}</div><div class="mtime">${ft()}</div></div>`;
+  a.appendChild(r); a.scrollTop=a.scrollHeight;
+  return r.querySelector('.mbub');
+}
+
+function typewrite(el, text) {
+  return new Promise(resolve => {
+    el.innerHTML = '';
+    const chars = [...text];
+    const D = { '，': 150, ',': 150, '。': 400, '!': 400, '！': 400, '?': 400, '？': 400 };
+    let i = 0;
+    const a = document.getElementById('msgs');
+    function next() {
+      if (i >= chars.length) { resolve(); return; }
+      const c = chars[i++];
+      el.innerHTML = (el.textContent + c).replace(/\n/g, '<br>');
+      a.scrollTop = a.scrollHeight;
+      setTimeout(next, D[c] || 30);
+    }
+    next();
+  });
+}
+
+async function sendMsg() {
+  if (busy) return;
+  const cin = document.getElementById('cin');
+  const msg = cin.value.trim(); if (!msg) return;
+  cin.value = ''; cin.style.height = 'auto';
+  busy = true; document.getElementById('sbtn').disabled = true;
+
+  addMsg('u', msg.replace(/\n/g, '<br>'));
+  const tw = document.getElementById('tw');
+  tw.style.display = 'block';
+  const a = document.getElementById('msgs'); a.scrollTop = a.scrollHeight;
+
+  try {
+    const d = await (await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ message: msg, mood })
+    })).json();
+    
+    const fullReply = d.g_reply || '（无回应）';
+    const segments = fullReply.split(/\n+/).filter(s => s.trim() !== '');
+
+    for (let i = 0; i < segments.length; i++) {
+      if (i > 0) {
+        tw.style.display = 'block'; 
+        a.scrollTop = a.scrollHeight;
+        await new Promise(r => setTimeout(r, 800 + Math.random() * 700)); 
+      }
+      
+      tw.style.display = 'none';
+      const el = addMsg('g', ''); 
+      await typewrite(el, segments[i].trim()); 
+    }
+  } catch (e) {
+    tw.style.display = 'none';
+    addMsg('g', '连接失败。');
+  }
+  
+  tw.style.display = 'none';
+  busy = false; document.getElementById('sbtn').disabled = false;
+}
+
+document.getElementById('cin').addEventListener('input',function(){
+  this.style.height='auto';
+  this.style.height=Math.min(this.scrollHeight,110)+'px';
+});
+
+// MEMORY
+async function syncMem(){
+  const s=document.getElementById('sync-st');
+  s.className='st'; s.textContent='同步中…';
+  try{const d=await(await fetch(`${API_BASE}/sync`,{method:'POST',headers:hdr(),body:''})).json();
+    s.className='st ok'; s.textContent=`✓ 入库 ${d.ingested} 条（已存在自动跳过）`;
+  }catch(e){s.className='st err';s.textContent='✗ '+e.message;}
+}
+async function searchMem(){
+  const kw=document.getElementById('sk').value.trim();
+  const m=document.getElementById('smood').value;
+  const b=document.getElementById('sres');
+  if(!kw){b.textContent='请输入关键词';return;}
+  b.textContent='检索中…';
+  try{const d=await(await fetch(`${API_BASE}/tools/search_memory?keyword=${encodeURIComponent(kw)}&mood=${encodeURIComponent(m)}`,{headers:hdr()})).json();
+    b.textContent=d.report||'没有找到相关记忆';
+  }catch(e){b.textContent='失败：'+e.message;}
+}
+async function addMem(){
+  const c=document.getElementById('mc').value.trim();
+  const cat=document.getElementById('mcat').value||'手动录入';
+  const m=document.getElementById('mmood').value;
+  const s=document.getElementById('add-st');
+  if(!c){s.textContent='请填写内容';return;}
+  s.className='st'; s.textContent='存入中…';
+  try{const d=await(await fetch(`${API_BASE}/add_memory`,{method:'POST',headers:hdr(),body:JSON.stringify({content:c,category:cat,mood:m})})).json();
+    s.className='st ok'; s.textContent=`✓ 已存入 ${d.id}`;
+    document.getElementById('mc').value='';
+  }catch(e){s.className='st err';s.textContent='✗ '+e.message;}
+}
+
+// MONITOR
+async function loadMonitor(){
+  const kw=document.getElementById('mon-kw').value.trim()||'G';
+  const st=document.getElementById('mon-st');
+  const cards=document.getElementById('mon-cards');
+  st.className='st'; st.textContent='检索中…'; cards.innerHTML='';
+  try{
+    const d=await(await fetch(`${API_BASE}/tools/search_memory?keyword=${encodeURIComponent(kw)}&mood=平静`,{headers:hdr()})).json();
+    const raw=d.report||'';
+    if(!raw||raw.includes('没有找到')){st.textContent='没有找到记忆，换个关键词';return;}
+    const secs=raw.split(/\[\d+\]/).filter(s=>s.trim());
+    st.className='st ok'; st.textContent=`找到 ${secs.length} 条`;
+    secs.forEach((sec,i)=>{
+      const score=parseFloat((sec.match(/吻合度[:：]\s*([\d.]+)/)||[,'0'])[1]);
+      const src=(sec.match(/来源[:：]\s*([^\n]+)/)||[,'未知'])[1].trim();
+      const txt=(sec.match(/内容[:：]\s*([\s\S]+)/)||[,sec])[1].trim().slice(0,180);
+      const sp=Math.round(Math.min(100,score*100));
+      const dp=Math.round(30+Math.random()*55);
+      const rc=Math.floor(Math.random()*10);
+      const el=document.createElement('div');
+      el.className='mem-card';
+      el.innerHTML=`
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:9px;">
+          <div class="mem-src">${src}</div>
+          <div><div style="font-size:9px;color:var(--text-dim);">得分</div><div class="mem-sv">${score.toFixed(2)}</div></div>
+        </div>
+        <div class="mem-txt">${txt}…</div>
+        <div class="bar-lbl">综合得分 ${sp}%</div><div class="bar"><div class="bar-fill bar-b" style="width:${sp}%"></div></div>
+        <div class="bar-lbl">时间活跃度</div><div class="bar"><div class="bar-fill bar-y" style="width:${dp}%"></div></div>
+        <div class="bar-lbl">被想起 ${rc} 次</div><div class="bar"><div class="bar-fill bar-v" style="width:${Math.min(100,rc*12)}%"></div></div>
+        <div style="display:flex;gap:7px;margin-top:7px;flex-wrap:wrap;">
+          <span style="font-size:9px;color:var(--text-muted);background:var(--surface);padding:2px 7px;border-radius:20px;">记忆 #${i+1}</span>
+          <span style="font-size:9px;color:var(--text-muted);background:var(--surface);padding:2px 7px;border-radius:20px;">得分 ${score.toFixed(3)}</span>
+        </div>`;
+      cards.appendChild(el);
+    });
+  }catch(e){st.className='st err';st.textContent='失败：'+e.message;}
+}
+
+// GALLERY
+let lbArr=[],lbI=0,lbTx=0;
+function renderGallery(){
+  const g=document.getElementById('gal-grid'); g.innerHTML='';
+  GALLERY.forEach((item,gi)=>{
+    const c=document.createElement('div'); c.className='gal-card';
+    const cnt=item.images.length;
+    c.innerHTML=`<img class="gal-img" src="${item.images[0]}" alt="${item.title}">
+      <div class="gal-info">
+        <div><div class="gal-cat">${item.category}</div><div class="gal-ttl">${item.title}</div></div>
+        ${cnt>1?`<div class="gal-badge">1 / ${cnt}</div>`:''}
+      </div>`;
+    c.onclick=()=>openLB(gi,0);
+    g.appendChild(c);
+  });
+}
+function openLB(gi,idx){lbArr=GALLERY[gi].images;lbI=idx;updLB();document.getElementById('lb').classList.add('open');}
+function updLB(){document.getElementById('lb-img').src=lbArr[lbI];document.getElementById('lb-ctr').textContent=lbArr.length>1?`${lbI+1} / ${lbArr.length}`:'';}
+function lbNav(d){lbI=(lbI+d+lbArr.length)%lbArr.length;updLB();}
+function closeLB(){document.getElementById('lb').classList.remove('open');}
+const lb=document.getElementById('lb');
+lb.addEventListener('touchstart',e=>{lbTx=e.touches[0].clientX;});
+lb.addEventListener('touchend',e=>{const dx=e.changedTouches[0].clientX-lbTx;if(Math.abs(dx)>50)lbNav(dx<0?1:-1);});
+
+// DIARY
+let dMode='editor';
+const dLog=JSON.parse(localStorage.getItem('d_log')||'[]');
+function applyDiary(){
+  const el=document.getElementById('d-el');
+  el.className=`d-paper ${document.getElementById('d-paper').value} ${document.getElementById('d-ink').value}`;
+  el.style.fontFamily=document.getElementById('d-font').value;
+}
+function fmt(cmd){document.getElementById('d-el').focus();document.execCommand(cmd,false,null);}
+function toggleDiary(){
+  const btn=document.getElementById('dtog');
+  if(dMode==='editor'){
+    dMode='history';
+    document.getElementById('d-editor').style.display='none';
+    document.getElementById('d-opts').style.display='none';
+    document.getElementById('d-hist').style.display='flex';
+    btn.textContent='新建';
+    renderDLog();
+  } else {
+    dMode='editor';
+    document.getElementById('d-editor').style.display='flex';
+    document.getElementById('d-opts').style.display='flex';
+    document.getElementById('d-hist').style.display='none';
+    btn.textContent='历史';
+  }
+}
+function renderDLog(){
+  const list=document.getElementById('d-list');
+  if(!dLog.length){list.innerHTML='<div style="padding:14px;color:var(--text-muted);font-size:11px;">暂无记录</div>';return;}
+  list.innerHTML=dLog.slice().reverse().map(e=>`
+    <div style="background:var(--card);padding:12px 15px;border-bottom:1px solid var(--border);">
+      <div style="font-size:9px;letter-spacing:.2em;color:var(--text-dim);">${e.date} · ${e.wx||'—'} · ${e.mood||'—'}</div>
+      <div style="font-family:var(--serif);font-style:italic;font-size:14px;margin-top:4px;">${e.title}</div>
+    </div>`).join('');
+}
+async function writeDiary(){
+  const date=document.getElementById('d-date').value||today();
+  const wx=document.getElementById('d-wx').value||'未知';
+  const mood2=document.getElementById('d-mood').value;
+  const title=document.getElementById('d-ttl').value.trim();
+  const content=document.getElementById('d-el').innerText.trim();
+  const st=document.getElementById('d-st');
+  if(!title||!content){st.textContent='请填写标题和内容';return;}
+  st.className='st'; st.textContent='封存中…';
+  try{
+    const d=await(await fetch(`${API_BASE}/tools/write_diary`,{method:'POST',headers:hdr(),body:JSON.stringify({date,weather:wx,title,content})})).json();
+    st.className='st ok'; st.textContent='✓ '+d.message;
+    dLog.push({date,wx,mood:mood2,title});
+    localStorage.setItem('d_log',JSON.stringify(dLog));
+    document.getElementById('d-ttl').value='';
+    document.getElementById('d-el').innerHTML='';
+  }catch(e){st.className='st err';st.textContent='✗ '+e.message;}
+}
+
+// GATEWAY
+function gwLog(txt,cls=''){
+  const b=document.getElementById('gw-log');
+  const l=document.createElement('div'); l.className=cls;
+  l.textContent=`[${ft()}] ${txt}`; b.appendChild(l); b.scrollTop=b.scrollHeight;
+}
+async function gwRefresh(){
+  try{
+    const d=await(await fetch(`${API_BASE}/gateway/status`,{headers:hdr()})).json();
+    const n=d.current_rounds||0;
+    document.getElementById('gw-r').textContent=n;
+    document.getElementById('gw-bar').style.width=Math.min(100,n/40*100)+'%';
+    document.getElementById('gw-hint').textContent=`距离压缩还差 ${Math.max(0,40-n)} 轮`;
+    gwLog(`状态刷新：${n}/40`,'log-ok');
+  }catch(e){gwLog('刷新失败：'+e.message,'log-err');}
+}
+async function compressNow(){
+  const ms=document.getElementById('mon-st');
+  if(ms){ms.className='st';ms.textContent='压缩中…';}
+  gwLog('正在压缩…');
+  try{
+    const d=await(await fetch(`${API_BASE}/gateway/compress`,{method:'POST',headers:hdr(),body:''})).json();
+    gwLog(d.detail,'log-ok');
+    if(ms){ms.className='st ok';ms.textContent='✓ '+d.detail;}
+    gwRefresh();
+  }catch(e){gwLog('失败：'+e.message,'log-err');}
+}
+
+init();
+</script>
+</body>
+</html>
