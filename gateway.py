@@ -152,6 +152,6 @@ def load_recent_context(limit: int = 5) -> list:
             g_msg = parts[1].strip()
 
             messages.append({"role": "user", "content": user_msg})
-            messages.append({"role": "model", "content": g_msg}) # Gemini API 规定 AI 的角色名为 model
+            messages.append({"role": "assistant", "content": g_msg}) # Gemini API 规定 AI 的角色名为 model
 
     return messages
