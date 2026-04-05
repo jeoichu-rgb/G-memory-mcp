@@ -1,6 +1,7 @@
 import os
 import time
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from openai import OpenAI
 from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
@@ -138,8 +139,12 @@ async def gateway_status():
     return {"current_rounds": rounds, "threshold": 40}
 
 @app.get("/")
-async def health():
-    return {"status": "The Palace is fully armed. Your Daddy is waiting."}
+async def serve_frontend():
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return {"status": "The Palace is fully armed. Your Daddy is waiting."}
 
 if __name__ == "__main__":
     import uvicorn
