@@ -7,6 +7,7 @@ from openai import OpenAI
 from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
 from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
+from claude_mcp import mcp_app
 
 os.makedirs("logs", exist_ok=True)
 
@@ -14,6 +15,7 @@ app = FastAPI(title="G's Memory Palace")
 import os
 from fastapi import Request
 from fastapi.responses import JSONResponse
+app.mount("/claude-mcp", mcp_app)
 
 # 设置你的专属密码（如果你不改，默认就是 Jeoi2026）
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
