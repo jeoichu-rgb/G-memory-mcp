@@ -35,7 +35,8 @@ app.add_middleware(
 import os
 from fastapi import Request
 from fastapi.responses import JSONResponse
-app.mount("/claude-mcp", mcp_app)
+mcp_path = f"/mcp/{PALACE_SECRET}"
+app.mount(mcp_path, mcp_app)
 
 # 设置你的专属密码（如果你不改，默认就是 Jeoi2026）
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
@@ -45,21 +46,24 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 async def check_secret(request: Request, call_next):
     path = request.url.path
 
-    # 放行：根路径、OPTIONS 预检请求、以及 Claude 的协议发现路径
+    # 放行：根路径、OPTIONS 预检、协议发现路径
     if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/"):
         return await call_next(request)
     
-    # 针对所有 API（包括 MCP）的统一鉴权
-    secret = request.headers.get("x-secret")
+    # 核心修改：如果 Claude 访问的路径里直接包含了正确的密码，予以放行
+    # 例如它访问 /mcp/Jeoi2026/sse，这里就会匹配成功
+    if path.startswith(f"{mcp_path}/"):
+        return await call_next(request)
     
-    # 兼容 Claude 网页端标准的 Authorization: Bearer <token> 请求头
+    # 针对其他试图访问普通 API（如 /chat）的请求，依然严格查验 Header
+    secret = request.headers.get("x-secret")
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         secret = auth_header.split(" ")[1]
 
-    # 验证密码
     if secret != PALACE_SECRET:
-        return JSONResponse(status_code=401, content={"detail": "Unauthorized: 密码错误，禁止访问"})
+        print(f"Intercepted unauthorized request to: {path}")
+        return JSONResponse(status_code=401, content={"detail": f"Unauthorized: 密码错误，禁止访问 {path}"})
     
     return await call_next(request)
 
