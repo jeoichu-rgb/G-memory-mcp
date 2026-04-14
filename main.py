@@ -23,7 +23,7 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 @app.middleware("http")
 async def check_secret(request: Request, call_next):
     # 放行：根路径（加载前端页面）和 OPTIONS 请求
-    if request.url.path == "/" or request.method == "OPTIONS":
+    if request.url.path == "/" or request.method == "OPTIONS" or request.url.path.startswith("/claude-mcp"):
         return await call_next(request)
     
     # 其他所有 API 请求都要验密码
