@@ -177,19 +177,4 @@ def read_diary(date: str = "") -> str:
         return f.read()
 
 
-_raw_mcp_app = mcp.sse_app()
-
-class _ProxySchemeFixMiddleware:
-    """让反代后面的 MCP 识别到真实的 HTTPS scheme"""
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            headers = dict(scope.get("headers", []))
-            if headers.get(b"x-forwarded-proto") == b"https":
-                scope = dict(scope)
-                scope["scheme"] = "https"
-        await self.app(scope, receive, send)
-
-mcp_app = _ProxySchemeFixMiddleware(_raw_mcp_app)
+mcp_app = mcp.sse_app()
