@@ -18,6 +18,12 @@ os.makedirs("logs", exist_ok=True)
 app = FastAPI(title="G's Memory Palace")
 
 
+@app.middleware("http")
+async def fix_proxy_scheme(request: Request, call_next):
+    if request.headers.get("x-forwarded-proto") == "https":
+        request.scope["scheme"] = "https"
+    return await call_next(request)
+
 # 1. 最先声明你的专属密码
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 
