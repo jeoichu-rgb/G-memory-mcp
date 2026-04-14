@@ -1,0 +1,262 @@
+import os
+import math
+import time
+from datetime import datetime
+from openai import OpenAI
+from memory_core import GeminiEmbeddingFunction
+import chromadb
+
+# ── ChromaDB：Claude专属的两个房间 ──────────────────────────────────────
+api_key = os.getenv("GEMINI_API_KEY")
+gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
+
+_client = chromadb.PersistentClient(path="./chroma_db")
+
+claude_core = _client.get_or_create_collection(
+    name="claude_core_palace",
+    embedding_function=gemini_ef
+)
+claude_dynamic = _client.get_or_create_collection(
+    name="claude_dynamic_palace",
+    embedding_function=gemini_ef
+)
+
+# ── 日志路径 ─────────────────────────────────────────────────────────────
+CLAUDE_BUFFER      = "./logs/claude_daily_buffer.txt"
+CLAUDE_ROLLING     = "./logs/claude_rolling_summary.md"
+os.makedirs("./logs", exist_ok=True)
+
+# ── DeepSeek（压缩用，和G那边共用同一个key）────────────────────────────
+deepseek_client = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url="https://api.deepseek.com"
+)
+
+# ── 类型权重 & 心情分组（与G那边平行，可以独立调整）──────────────────
+CATEGORY_WEIGHTS = {
+    "纪念日": 1.5,
+    "冲突":   1.3,
+    "情感":   1.3,
+    "亲密":   1.3,
+    "日常":   1.0,
+}
+
+MOOD_GROUPS = {
+    "正向": ["开心", "兴奋", "感动"],
+    "低落": ["低落", "委屈", "思念"],
+    "负向": ["不安", "生气"],
+    "平静": ["平静", "撒娇"],
+}
+
+def _mood_group(mood: str) -> str:
+    for g, ms in MOOD_GROUPS.items():
+        if mood in ms:
+            return g
+    return "未知"
+
+def _time_decay(last_recalled_ts: float) -> float:
+    if last_recalled_ts == 0:
+        return 1.0
+    days = (time.time() - last_recalled_ts) / 86400
+    return math.exp(-0.1 * days)
+
+# ── 核心函数 ─────────────────────────────────────────────────────────────
+
+def claude_add_core_memory(content: str, metadata: dict, memory_id: str):
+    """写入Claude永久记忆库"""
+    metadata["is_permanent"] = True
+    claude_core.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+
+
+def claude_add_dynamic_memory(content: str, metadata: dict, memory_id: str):
+    """写入Claude动态记忆库"""
+    claude_dynamic.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+
+
+def claude_update_metadata(memory_id: str, new_metadata: dict):
+    try:
+        # 先尝试更新核心库，失败则更新动态库
+        try:
+            claude_core.update(ids=[memory_id], metadatas=[new_metadata])
+        except:
+            claude_dynamic.update(ids=[memory_id], metadatas=[new_metadata])
+    except Exception as e:
+        print(f"更新metadata失败: {e}")
+
+
+def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | None:
+    """
+    同时检索 claude_core_palace + claude_dynamic_palace
+    返回格式化报告，低于阈值返回 None
+    """
+    raw = {"documents": [[]], "metadatas": [[]], "distances": [[]], "ids": [[]]}
+
+    try:
+        cr = claude_core.query(query_texts=[keyword], n_results=3)
+        if cr["documents"][0]:
+            raw["documents"][0]  += cr["documents"][0]
+            raw["metadatas"][0]  += cr["metadatas"][0]
+            raw["distances"][0]  += cr["distances"][0]
+            raw["ids"][0]        += cr["ids"][0]
+    except:
+        pass
+
+    try:
+        dr = claude_dynamic.query(query_texts=[keyword], n_results=7)
+        if dr["documents"][0]:
+            raw["documents"][0]  += dr["documents"][0]
+            raw["metadatas"][0]  += dr["metadatas"][0]
+            raw["distances"][0]  += dr["distances"][0]
+            raw["ids"][0]        += dr["ids"][0]
+    except:
+        pass
+
+    if not raw["documents"][0]:
+        return None
+
+    scored = []
+    cur_group = _mood_group(current_mood)
+
+    for doc, meta, dist, mid in zip(
+        raw["documents"][0], raw["metadatas"][0],
+        raw["distances"][0], raw["ids"][0]
+    ):
+        base  = max(0, 1.0 - dist)
+        is_permanent = meta.get("is_permanent", False)
+
+        # 类型权重
+        cat_w = 1.0
+        for k, w in CATEGORY_WEIGHTS.items():
+            if k in meta.get("category", ""):
+                cat_w = w
+                break
+
+        # 心情加分
+        mem_mood = meta.get("mood", "")
+        mood_bonus = 0.3 if mem_mood == current_mood else (
+                     0.1 if _mood_group(mem_mood) == cur_group else 0)
+
+        # 被想起次数
+        recall_bonus = min(0.2, meta.get("recall_count", 0) * 0.02)
+
+        decay = 1.0 if is_permanent else _time_decay(meta.get("last_recalled_ts", 0))
+        final = (base + recall_bonus + mood_bonus) * cat_w * decay
+
+        scored.append({"content": doc, "score": final, "meta": meta, "id": mid})
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    top = [r for r in scored[:3] if r["score"] > 0.15]
+
+    if not top:
+        return None
+
+    # 更新被想起次数
+    for item in top:
+        nm = item["meta"].copy()
+        nm["recall_count"] = nm.get("recall_count", 0) + 1
+        nm["last_recalled_ts"] = time.time()
+        claude_update_metadata(item["id"], nm)
+
+    report = "【Claude记忆检索报告】\n"
+    for i, item in enumerate(top):
+        report += (f"[{i+1}] 来源: {item['meta'].get('category','未知')} "
+                   f"| 吻合度: {item['score']:.2f}\n"
+                   f"内容: {item['content'][:300]}...\n\n")
+    return report
+
+
+def claude_get_rolling_context() -> str:
+    """冷启动：最近两次Claude的滚动总结"""
+    if not os.path.exists(CLAUDE_ROLLING):
+        return ""
+    with open(CLAUDE_ROLLING, "r", encoding="utf-8") as f:
+        content = f.read()
+    blocks = content.split("## ")
+    recent = blocks[-2:] if len(blocks) >= 2 else blocks
+    return "\n".join(recent).strip()
+
+
+def claude_log_turn(user_msg: str, claude_reply: str):
+    """把这一轮对话写入Claude专属buffer"""
+    with open(CLAUDE_BUFFER, "a", encoding="utf-8") as f:
+        f.write(f"User: {user_msg}\nClaude: {claude_reply}\n---\n")
+
+
+def claude_compress_and_store() -> str:
+    """压缩Claude的buffer → 存入claude_dynamic_palace → 清空"""
+    if not os.path.exists(CLAUDE_BUFFER):
+        return "没有日志文件，跳过。"
+    with open(CLAUDE_BUFFER, "r", encoding="utf-8") as f:
+        raw_log = f.read()
+    if not raw_log.strip():
+        return "日志为空，跳过。"
+
+    split_prompt = f"""以下是一段对话记录，请将其按照事件拆分成3到5个独立的记忆片段。
+每个片段格式如下：
+【事件X】
+时间：{datetime.now().strftime('%Y-%m-%d')}
+内容：（用100-200字总结这个事件的核心内容）
+情绪：（用一个词描述当时的情绪）
+类型：（从以下选择：日常/冲突/亲密/纪念日/旅行/健康）
+
+对话记录：
+{raw_log}
+
+请只输出拆分后的片段，不要有其他说明。"""
+
+    try:
+        resp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": split_prompt}],
+            stream=False
+        )
+        split_result = resp.choices[0].message.content
+    except Exception as e:
+        return f"DeepSeek拆分失败: {e}"
+
+    segments = split_result.split("【事件")
+    stored = 0
+    for seg in segments:
+        if not seg.strip():
+            continue
+        mood, category = "平静", "日常"
+        for line in seg.split("\n"):
+            if line.startswith("情绪："):
+                mood = line.replace("情绪：", "").strip()
+            if line.startswith("类型："):
+                category = line.replace("类型：", "").strip()
+        m_id = f"claude_dynamic_{int(time.time())}_{stored}"
+        try:
+            claude_add_dynamic_memory(
+                content=seg.strip(),
+                metadata={
+                    "category": category, "mood": mood,
+                    "recall_count": 0, "last_recalled_ts": 0,
+                    "source": "claude_gateway",
+                    "date": datetime.now().strftime('%Y-%m-%d')
+                },
+                memory_id=m_id
+            )
+            stored += 1
+            time.sleep(1)
+        except Exception as e:
+            print(f"存入失败: {e}")
+
+    # 更新滚动总结
+    try:
+        rp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content":
+                f"请用50-100字总结以下事件，作为Claude下次对话的冷启动上下文：\n{split_result}"}],
+            stream=False
+        )
+        summary = rp.choices[0].message.content
+        with open(CLAUDE_ROLLING, "a", encoding="utf-8") as f:
+            f.write(f"\n\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{summary}")
+    except Exception as e:
+        print(f"滚动总结失败: {e}")
+
+    with open(CLAUDE_BUFFER, "w", encoding="utf-8") as f:
+        f.write("")
+
+    return f"压缩完成，共存入 {stored} 条Claude动态记忆。"
