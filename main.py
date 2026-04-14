@@ -9,9 +9,29 @@ from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app
 
+# --- 新增的底层依赖 ---
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
 os.makedirs("logs", exist_ok=True)
 
 app = FastAPI(title="G's Memory Palace")
+
+# --- 新增：第一层（信任你的域名） ---
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=["erikssheep.uk", "localhost", "127.0.0.1", "10.0.1.6"]
+)
+
+# --- 新增：第二层（允许 Claude 网页端的跨域访问） ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 import os
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -20,16 +40,26 @@ app.mount("/claude-mcp", mcp_app)
 # 设置你的专属密码（如果你不改，默认就是 Jeoi2026）
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 
+# --- 替换：重构后的门厅放行与鉴权逻辑 ---
 @app.middleware("http")
 async def check_secret(request: Request, call_next):
-    # 放行：根路径（加载前端页面）和 OPTIONS 请求
-    if request.url.path == "/" or request.method == "OPTIONS" or request.url.path.startswith("/claude-mcp"):
+    path = request.url.path
+
+    # 放行：根路径、OPTIONS 预检请求、以及 Claude 的协议发现路径
+    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/"):
         return await call_next(request)
     
-    # 其他所有 API 请求都要验密码
+    # 针对所有 API（包括 MCP）的统一鉴权
     secret = request.headers.get("x-secret")
+    
+    # 兼容 Claude 网页端标准的 Authorization: Bearer <token> 请求头
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        secret = auth_header.split(" ")[1]
+
+    # 验证密码
     if secret != PALACE_SECRET:
-        return JSONResponse(status_code=401, content={"detail": "密码错误，禁止访问"})
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized: 密码错误，禁止访问"})
     
     return await call_next(request)
 
