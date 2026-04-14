@@ -29,7 +29,7 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 
-from mcp.server.fastmcp import TransportSecuritySettings
+from mcp.server.transport_security import TransportSecuritySettings
 
 mcp = FastMCP(
     name="Jeoi's Claude Memory Palace",
