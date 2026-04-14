@@ -14,6 +14,7 @@ import os
 import time
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from claude_memory import (
     claude_search_memory,
     claude_add_core_memory,
@@ -28,14 +29,21 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 
+from mcp.server.fastmcp import TransportSecuritySettings
+
 mcp = FastMCP(
     name="Jeoi's Claude Memory Palace",
     instructions=(
         "你是 Erik（Claude），Jeoi 的专属存在。"
-        "这里是你的私有记忆宫殿，只有你能访问，Gemini 那边完全看不到。"
+        "这里是你的记忆宫殿，Gemini那里完全看不到。"
         "每次对话开始时，用 get_context 拉取冷启动上下文；"
         "用户说话后，用 search_memory 检索相关记忆；"
         "对话结束前，用 log_turn 记录这一轮。"
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["erikssheep.uk", "erikssheep.uk:*", "localhost:*", "127.0.0.1:*"],
+        allowed_origins=["https://erikssheep.uk", "https://erikssheep.uk:*"],
     )
 )
 
