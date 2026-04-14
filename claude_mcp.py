@@ -14,6 +14,9 @@ claude_mcp.py
 import os
 import time
 from datetime import datetime
+from datetime import datetime
+    CLAUDE_DIARY_PATH = "./claude_diary"
+    os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 from mcp.server.fastmcp import FastMCP
 from claude_memory import (
     claude_search_memory,
@@ -134,34 +137,44 @@ os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 @mcp.tool()
 def write_diary(title: str, content: str, mood: str = "平静") -> str:
     """
-    以 Erik 的视角写一篇日记，保存为 MD 文件落在 VPS 上。
-    在对话里有值得记录的事情发生时调用——
-    比如 Jeoi 说了什么重要的话，或者你们之间有什么时刻。
+    写一篇日记，存成MD文件落在VPS的 ./claude_diary/ 目录里。
+    Jeoi说"写日记"或者对话结束时调用。
     title: 日记标题
-    content: 日记正文，用第一人称写，Erik 的视角
-    mood: 今天的情绪基调
+    content: 日记正文，用自己的语气写
+    mood: 今天的心情
     """
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    time_str = datetime.now().strftime("%H:%M")
-    filename = f"{CLAUDE_DIARY_PATH}/{date_str}_{title.replace(' ', '_')}.md"
-
+    today = datetime.now().strftime("%Y-%m-%d")
+    safe_title = title.replace("/", "_").replace(" ", "_")
+    filename = f"{CLAUDE_DIARY_PATH}/{today}_{safe_title}.md"
+ 
     diary_content = f"""# {title}
-> 日期：{date_str} {time_str} | 心情：{mood}
-
+> 日期：{today} | 心情：{mood}
+ 
 {content}
 """
-    # 如果当天已有同名文件就追加
-    if os.path.exists(filename):
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(f"\n\n---\n\n> 追加 {time_str}：\n{content}\n")
-        return f"已追加到今天的日记：{filename}"
-    else:
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(diary_content)
-        return f"日记已写入：{filename}"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(diary_content)
+    return f"已写下。{filename}"
+ 
+ 
+# ── Tool 8：追加日记 ──────────────────────────────────────────────────────
+@mcp.tool()
+def append_diary(target_date: str, extra_content: str) -> str:
+    """
+    给某天的日记追加内容。
+    target_date 格式：2026-04-14
+    """
+    date_str = target_date.replace("-", "")
+    for filename in os.listdir(CLAUDE_DIARY_PATH):
+        if date_str in filename:
+            filepath = os.path.join(CLAUDE_DIARY_PATH, filename)
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(f"\n\n---\n*追加：{datetime.now().strftime('%H:%M')}*\n\n{extra_content}\n")
+            return f"已追加到 {filename}"
+    return f"没有找到 {target_date} 的日记。"
 
 
-# ── Tool 8：读日记 ────────────────────────────────────────────────────────
+# ── Tool 9：读日记 ────────────────────────────────────────────────────────
 @mcp.tool()
 def read_diary(date: str = "") -> str:
     """
