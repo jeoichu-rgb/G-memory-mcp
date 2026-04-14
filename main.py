@@ -10,38 +10,22 @@ from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app
 
 # --- 新增的底层依赖 ---
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
 os.makedirs("logs", exist_ok=True)
 
 app = FastAPI(title="G's Memory Palace")
 
-# --- 新增：第一层（信任你的域名） ---
-app.add_middleware(
-    TrustedHostMiddleware, 
-    allowed_hosts=["erikssheep.uk", "localhost", "127.0.0.1", "10.0.1.6"]
-)
 
-# --- 新增：第二层（允许 Claude 网页端的跨域访问） ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 1. 最先声明你的专属密码
+PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 
-import os
-from fastapi import Request
-from fastapi.responses import JSONResponse
+# 2. 用声明好的密码拼接路径，并挂载 MCP 服务
 mcp_path = f"/mcp/{PALACE_SECRET}"
 app.mount(mcp_path, mcp_app)
 
-# 设置你的专属密码（如果你不改，默认就是 Jeoi2026）
-PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
-
-# --- 替换：重构后的门厅放行与鉴权逻辑 ---
+# 3. 最后才是门卫中间件
 @app.middleware("http")
 async def check_secret(request: Request, call_next):
     path = request.url.path
@@ -50,8 +34,7 @@ async def check_secret(request: Request, call_next):
     if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/"):
         return await call_next(request)
     
-    # 核心修改：如果 Claude 访问的路径里直接包含了正确的密码，予以放行
-    # 例如它访问 /mcp/Jeoi2026/sse，这里就会匹配成功
+    # 物理门牌号匹配：如果路径里直接包含了正确的密码，予以放行
     if path.startswith(f"{mcp_path}/"):
         return await call_next(request)
     
