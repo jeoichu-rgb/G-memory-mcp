@@ -5,6 +5,13 @@ from datetime import datetime
 from openai import OpenAI
 from memory_core import GeminiEmbeddingFunction
 import chromadb
+import logging
+
+logging.basicConfig(
+    filename="./logs/claude_memory.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 # ── ChromaDB：Claude专属的两个房间 ──────────────────────────────────────
 api_key = os.getenv("GEMINI_API_KEY")
@@ -240,7 +247,7 @@ def claude_compress_and_store() -> str:
             stored += 1
             time.sleep(1)
         except Exception as e:
-            print(f"存入失败: {e}")
+            logging.info(f"存入失败: {e}")
 
     # 更新滚动总结
     try:
@@ -254,7 +261,7 @@ def claude_compress_and_store() -> str:
         with open(CLAUDE_ROLLING, "a", encoding="utf-8") as f:
             f.write(f"\n\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{summary}")
     except Exception as e:
-        print(f"滚动总结失败: {e}")
+        logging.info(f"滚动总结失败: {e}")
 
     with open(CLAUDE_BUFFER, "w", encoding="utf-8") as f:
         f.write("")
