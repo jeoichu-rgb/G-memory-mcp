@@ -297,3 +297,43 @@ def claude_list_room(room_name: str) -> str:
         lines.append(f"[{i+1}] {date} | {category}\n    {preview}…\n")
 
     return "\n".join(lines)
+
+
+ def claude_delete_core_memory(memory_id: str) -> str:
+    """删除核心库里的一条记忆，同时删除 VPS 上对应的 MD 文件"""
+    try:
+        result = claude_core.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        meta = result["metadatas"][0]
+        folder = meta.get("folder", "")
+        filename = meta.get("filename", "")
+        if folder and filename:
+            filepath = f"./Obsidian_Core/Eric_memory/{folder}/{filename}"
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        claude_core.delete(ids=[memory_id])
+        return f"已删除：{memory_id}"
+    except Exception as e:
+        return f"删除失败：{e}"
+
+
+def claude_edit_core_memory(memory_id: str, new_content: str) -> str:
+    """修改核心库里的一条记忆内容，同时更新 VPS 上对应的 MD 文件"""
+    try:
+        result = claude_core.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        meta = result["metadatas"][0]
+        claude_core.delete(ids=[memory_id])
+        claude_core.add(documents=[new_content], metadatas=[meta], ids=[memory_id])
+        folder = meta.get("folder", "")
+        filename = meta.get("filename", "")
+        if folder and filename:
+            filepath = f"./Obsidian_Core/Eric_memory/{folder}/{filename}"
+            if os.path.exists(filepath):
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+        return f"已更新：{memory_id}"
+    except Exception as e:
+        return f"修改失败：{e}"
