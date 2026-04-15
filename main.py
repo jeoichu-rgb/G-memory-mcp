@@ -232,6 +232,8 @@ async def github_webhook(request: Request):
 
     # 触发同步
     try:
+        import subprocess
+        subprocess.run(["git", "pull"], cwd="/app", check=True)
         from sync_claude_memory import sync_claude_vault
         total = sync_claude_vault()
         return {"status": "success", "synced": total}
