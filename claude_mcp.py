@@ -155,7 +155,13 @@ def append_diary(target_date: str, extra_content: str) -> str:
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(f"\n\n---\n*追加：{datetime.now().strftime('%H:%M')}*\n\n{extra_content}\n")
             return f"已追加到 {filename}"
-    return f"没有找到 {target_date} 的日记。"
+    # 没找到则新建
+        safe_title = f"补记_{target_date}"
+        filename = f"{CLAUDE_DIARY_PATH}/{target_date}_{safe_title}.md"
+        diary_content = f"# 补记\n> 日期: {target_date}\n\n{extra_content}\n"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(diary_content)
+        return f"未找到当天日记，已新建: {filename}"
 
 
 @mcp.tool()
