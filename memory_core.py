@@ -16,7 +16,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             for text in input:
                 response = client.post(
                     self.url,
-                    json={"model": "models/gemini-embedding-001", "content": {"parts": [{"text": text}]}}
+                    json={"content": {"parts": [{"text": text}]}}
                 )
                 response.raise_for_status()
                 data = response.json()
