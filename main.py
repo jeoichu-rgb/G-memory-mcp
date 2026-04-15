@@ -233,10 +233,35 @@ async def github_webhook(request: Request):
     # 触发同步
     try:
         import subprocess
-        subprocess.run(["git", "config", "--global", "safe.directory", "/app"], check=True)
+        import base64, httpx
+
+        added_or_modified = []
+        for commit in commits:
+            added_or_modified += commit.get("added", []) + commit.get("modified", [])
+
+# 网页上传时commits为空，从payload里取文件列表
+        if not commits:
+            added_or_modified = [
+                f for f in payload.get("head_commit", {}).get("added", []) +
+                payload.get("head_commit", {}).get("modified", [])
+                if "Obsidian_Core/Eric_memory/" in f
+            ]
+ 
+        repo = payload.get("repository", {}).get("full_name", "")
+        ref = payload.get("ref", "refs/heads/main").replace("refs/heads/", "")
         token = os.getenv("GITHUB_TOKEN", "")
-        subprocess.run(["git", "remote", "set-url", "origin", f"https://{token}@github.com/jeoichu-rgb/G-memory-mcp.git"], cwd="/app", check=True)
-        subprocess.run(["git", "pull"], cwd="/app", check=True)
+        for filepath in added_or_modified:
+            if "Obsidian_Core/Eric_memory/" not in filepath:
+                continue
+            api_url = f"https://api.github.com/repos/{repo}/contents/{filepath}?ref={ref}"
+            headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+            r = httpx.get(api_url, headers=headers)
+            if r.status_code == 200:
+                content = base64.b64decode(r.json()["content"]).decode("utf-8")
+                local_path = os.path.join("/app", filepath)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, "w", encoding="utf-8") as f:
+                    f.write(content)
         from sync_claude_memory import sync_claude_vault
         total = sync_claude_vault()
         return {"status": "success", "synced": total}
