@@ -56,6 +56,9 @@ def sync_claude_vault():
             file_path = os.path.join(folder_path, filename)
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
+            if not content.strip():
+                print(f"空文件，跳过: [{folder}] - {filename}")
+                continue
 
             claude_add_core_memory(
                 content=content,
