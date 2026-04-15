@@ -40,7 +40,7 @@ async def check_secret(request: Request, call_next):
     path = request.url.path
 
     # 放行：根路径、OPTIONS 预检、协议发现路径
-    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/") or path == "/webhook/github":
+    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/") or path == "/webhook/github" or path.startswith(mcp_path):
         return await call_next(request)
     
     # 物理门牌号匹配：如果路径里直接包含了正确的密码，予以放行
