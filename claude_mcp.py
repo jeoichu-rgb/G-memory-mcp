@@ -148,7 +148,7 @@ def append_diary(target_date: str, extra_content: str) -> str:
     """
     给某天的日记追加内容。target_date 格式：2026-04-14
     """
-    date_str = target_date.replace("-", "")
+    date_str = target_date  # 直接用 2026-04-15，不要去掉连字符
     for filename in os.listdir(CLAUDE_DIARY_PATH):
         if date_str in filename:
             filepath = os.path.join(CLAUDE_DIARY_PATH, filename)
