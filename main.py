@@ -8,6 +8,9 @@ from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
 from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app
+import hmac
+import hashlib
+from claude_memory import claude_add_core_memory
 
 # --- 新增的底层依赖 ---
 from fastapi import Request
@@ -37,7 +40,7 @@ async def check_secret(request: Request, call_next):
     path = request.url.path
 
     # 放行：根路径、OPTIONS 预检、协议发现路径
-    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/"):
+    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/") or path == "/webhook/github":
         return await call_next(request)
     
     # 物理门牌号匹配：如果路径里直接包含了正确的密码，予以放行
@@ -187,6 +190,47 @@ async def tool_search_memory(keyword: str, mood: str = "平静"):
     try:
         result = search_core_memory(keyword, mood)
         return {"report": result or "没有找到相关记忆。"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+@app.post("/webhook/github")
+async def github_webhook(request: Request):
+    # 验证GitHub签名
+    if GITHUB_WEBHOOK_SECRET:
+        sig = request.headers.get("x-hub-signature-256", "")
+        body = await request.body()
+        expected = "sha256=" + hmac.new(
+            GITHUB_WEBHOOK_SECRET.encode(),
+            body,
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return JSONResponse(status_code=401, content={"detail": "签名验证失败"})
+    else:
+        body = await request.body()
+
+    payload = await request.json() if not GITHUB_WEBHOOK_SECRET else __import__('json').loads(body)
+
+    # 检查是否有 Eric_memory 目录下的文件变动
+    commits = payload.get("commits", [])
+    changed = False
+    for commit in commits:
+        all_files = commit.get("added", []) + commit.get("modified", []) + commit.get("removed", [])
+        for f in all_files:
+            if "Obsidian_Core/Eric_memory/" in f:
+                changed = True
+                break
+
+    if not changed:
+        return {"status": "skipped", "reason": "没有 Eric_memory 目录下的变动"}
+
+    # 触发同步
+    try:
+        from sync_claude_memory import sync_claude_vault
+        total = sync_claude_vault()
+        return {"status": "success", "synced": total}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
