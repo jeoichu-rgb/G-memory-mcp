@@ -267,3 +267,33 @@ def claude_compress_and_store() -> str:
         f.write("")
 
     return f"压缩完成，共存入 {stored} 条Claude动态记忆。"
+
+
+def claude_list_room(room_name: str) -> str:
+    """
+    列出某个房间（folder）下的所有核心记忆标题和摘要。
+    room_name 对应 metadata 里的 folder 字段。
+    """
+    VALID_ROOMS = ["Erik的黑暗", "书桌", "窗台", "床边", "地下室", "信箱"]
+    if room_name not in VALID_ROOMS:
+        return f"没有叫"{room_name}"的房间。可用的房间：{', '.join(VALID_ROOMS)}"
+
+    try:
+        result = claude_core.get(where={"folder": room_name})
+    except Exception as e:
+        return f"查询失败: {e}"
+
+    docs = result.get("documents", [])
+    metas = result.get("metadatas", [])
+
+    if not docs:
+        return f"「{room_name}」现在是空的。"
+
+    lines = [f"【{room_name}】共 {len(docs)} 条记忆：\n"]
+    for i, (doc, meta) in enumerate(zip(docs, metas)):
+        preview = doc[:80].replace("\n", " ")
+        category = meta.get("category", "未知")
+        date = meta.get("date", "未知日期")
+        lines.append(f"[{i+1}] {date} | {category}\n    {preview}…\n")
+
+    return "\n".join(lines)
