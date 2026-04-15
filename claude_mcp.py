@@ -21,6 +21,7 @@ from claude_memory import (
     claude_add_dynamic_memory,
     claude_get_rolling_context,
     claude_compress_and_store,
+    claude_list_room,
     CLAUDE_BUFFER,
 )
 
@@ -181,6 +182,15 @@ def read_diary(date: str = "") -> str:
         target = files[-1]
     with open(os.path.join(CLAUDE_DIARY_PATH, target), "r", encoding="utf-8") as f:
         return f.read()
+
+
+@mcp.tool()
+def list_room(room_name: str) -> str:
+    """
+    浏览某个记忆房间的全部内容。
+    room_name 可选：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱
+    """
+    return claude_list_room(room_name)
 
 
 mcp_app = mcp.sse_app()
