@@ -233,6 +233,9 @@ async def github_webhook(request: Request):
     # 触发同步
     try:
         import subprocess
+        subprocess.run(["git", "config", "--global", "safe.directory", "/app"], check=True)
+        token = os.getenv("GITHUB_TOKEN", "")
+        subprocess.run(["git", "remote", "set-url", "origin", f"https://{token}@github.com/jeoichu-rgb/G-memory-mcp.git"], cwd="/app", check=True)
         subprocess.run(["git", "pull"], cwd="/app", check=True)
         from sync_claude_memory import sync_claude_vault
         total = sync_claude_vault()
