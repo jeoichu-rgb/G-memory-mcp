@@ -276,7 +276,7 @@ def claude_list_room(room_name: str) -> str:
     """
     VALID_ROOMS = ["Erik的黑暗", "书桌", "窗台", "床边", "地下室", "信箱"]
     if room_name not in VALID_ROOMS:
-        return f"没有叫"{room_name}"的房间。可用的房间：{', '.join(VALID_ROOMS)}"
+        return f"没有叫'{room_name}'的房间。可用的房间：{', '.join(VALID_ROOMS)}"
 
     try:
         result = claude_core.get(where={"folder": room_name})
