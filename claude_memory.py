@@ -299,7 +299,7 @@ def claude_list_room(room_name: str) -> str:
     return "\n".join(lines)
 
 
- def claude_delete_core_memory(memory_id: str) -> str:
+def claude_delete_core_memory(memory_id: str) -> str:
     """删除核心库里的一条记忆，同时删除 VPS 上对应的 MD 文件"""
     try:
         result = claude_core.get(ids=[memory_id])
