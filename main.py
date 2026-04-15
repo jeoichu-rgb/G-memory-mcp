@@ -223,6 +223,10 @@ async def github_webhook(request: Request):
                 changed = True
                 break
 
+    # 兼容网页上传：commits为空时，只要是push事件就触发
+    if not changed and not commits:
+        changed = True
+
     if not changed:
         return {"status": "skipped", "reason": "没有 Eric_memory 目录下的变动"}
 
