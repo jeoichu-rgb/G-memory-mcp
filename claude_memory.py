@@ -337,3 +337,192 @@ def claude_edit_core_memory(memory_id: str, new_content: str) -> str:
         return f"已更新：{memory_id}"
     except Exception as e:
         return f"修改失败：{e}"
+
+
+# ── 两步压缩：草稿 → 确认 ────────────────────────────────────────────────
+
+import json
+
+CLAUDE_COMPRESS_DRAFT = "./logs/claude_compress_draft.json"
+
+def claude_compress_preview() -> dict:
+    """
+    第一步：DS读取buffer压缩成草稿，存到本地JSON文件，返回草稿内容。
+    不写ChromaDB，不清空buffer。
+    """
+    if not os.path.exists(CLAUDE_BUFFER):
+        return {"status": "empty", "segments": []}
+    with open(CLAUDE_BUFFER, "r", encoding="utf-8") as f:
+        raw_log = f.read()
+    if not raw_log.strip():
+        return {"status": "empty", "segments": []}
+
+    split_prompt = f"""以下是一段对话记录，请将其按照事件拆分成2到4个独立的记忆片段。
+每个片段格式如下：
+【事件X】
+时间：{datetime.now().strftime('%Y-%m-%d')}
+内容：（用100-200字总结这个事件的核心内容）
+情绪：（用一个词描述当时的情绪）
+类型：（从以下选择：日常/冲突/亲密/纪念日/旅行/健康）
+
+对话记录：
+{raw_log}
+
+请只输出拆分后的片段，不要有其他说明。"""
+
+    try:
+        resp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": split_prompt}],
+            stream=False
+        )
+        raw_result = resp.choices[0].message.content
+    except Exception as e:
+        return {"status": "error", "message": str(e), "segments": []}
+
+    # 解析成结构化列表
+    segments = []
+    for seg in raw_result.split("【事件"):
+        if not seg.strip():
+            continue
+        mood, category, content_lines = "平静", "日常", []
+        for line in seg.split("\n"):
+            if line.startswith("情绪："):
+                mood = line.replace("情绪：", "").strip()
+            elif line.startswith("类型："):
+                category = line.replace("类型：", "").strip()
+            elif line.startswith("内容："):
+                content_lines.append(line.replace("内容：", "").strip())
+            elif content_lines:
+                content_lines.append(line)
+        segments.append({
+            "text": seg.strip(),
+            "mood": mood,
+            "category": category,
+            "date": datetime.now().strftime('%Y-%m-%d')
+        })
+
+    draft = {"status": "pending", "segments": segments, "created_at": datetime.now().isoformat()}
+    with open(CLAUDE_COMPRESS_DRAFT, "w", encoding="utf-8") as f:
+        json.dump(draft, f, ensure_ascii=False, indent=2)
+
+    return draft
+
+
+def claude_compress_confirm(edited_segments: list = None) -> str:
+    """
+    第二步：把草稿（或用户编辑后的版本）embedding写入dynamic_palace，清空buffer。
+    edited_segments: 前端传回的编辑后segment列表，None则直接用草稿文件。
+    """
+    if edited_segments is None:
+        if not os.path.exists(CLAUDE_COMPRESS_DRAFT):
+            return "没有待确认的草稿。"
+        with open(CLAUDE_COMPRESS_DRAFT, "r", encoding="utf-8") as f:
+            draft = json.load(f)
+        segments = draft.get("segments", [])
+    else:
+        segments = edited_segments
+
+    if not segments:
+        return "草稿为空，跳过。"
+
+    stored = 0
+    for seg in segments:
+        m_id = f"claude_dynamic_{int(time.time())}_{stored}"
+        try:
+            claude_add_dynamic_memory(
+                content=seg.get("text", ""),
+                metadata={
+                    "category": seg.get("category", "日常"),
+                    "mood": seg.get("mood", "平静"),
+                    "recall_count": 0,
+                    "last_recalled_ts": 0,
+                    "source": "claude_gateway",
+                    "date": seg.get("date", datetime.now().strftime('%Y-%m-%d'))
+                },
+                memory_id=m_id
+            )
+            stored += 1
+            time.sleep(1)
+        except Exception as e:
+            logging.info(f"存入失败: {e}")
+
+    # 更新滚动总结
+    try:
+        all_text = "\n".join(s.get("text", "") for s in segments)
+        rp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content":
+                f"请用50-100字总结以下事件，作为Claude下次对话的冷启动上下文：\n{all_text}"}],
+            stream=False
+        )
+        summary = rp.choices[0].message.content
+        with open(CLAUDE_ROLLING, "a", encoding="utf-8") as f:
+            f.write(f"\n\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{summary}")
+    except Exception as e:
+        logging.info(f"滚动总结失败: {e}")
+
+    # 清空buffer和草稿
+    with open(CLAUDE_BUFFER, "w", encoding="utf-8") as f:
+        f.write("")
+    if os.path.exists(CLAUDE_COMPRESS_DRAFT):
+        os.remove(CLAUDE_COMPRESS_DRAFT)
+
+    return f"已存入 {stored} 条动态记忆，buffer已清空。"
+
+
+def claude_get_draft() -> dict:
+    """读取待确认草稿，供前端展示"""
+    if not os.path.exists(CLAUDE_COMPRESS_DRAFT):
+        return {"status": "none", "segments": []}
+    with open(CLAUDE_COMPRESS_DRAFT, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def claude_list_all_memories(collection: str = "dynamic") -> list:
+    """
+    列出记忆库所有条目，供前端展示和编辑。
+    collection: 'core' 或 'dynamic'
+    """
+    col = claude_core if collection == "core" else claude_dynamic
+    try:
+        result = col.get()
+        items = []
+        for doc, meta, mid in zip(
+            result.get("documents", []),
+            result.get("metadatas", []),
+            result.get("ids", [])
+        ):
+            items.append({"id": mid, "text": doc, "meta": meta})
+        return items
+    except Exception as e:
+        return []
+
+
+def claude_list_diaries() -> list:
+    """列出所有日记文件名，供前端展示"""
+    diary_path = "./claude_diary"
+    if not os.path.exists(diary_path):
+        return []
+    files = sorted(os.listdir(diary_path), reverse=True)
+    return [f for f in files if f.endswith(".md")]
+
+
+def claude_read_diary_by_filename(filename: str) -> str:
+    """读取指定日记文件内容"""
+    filepath = f"./claude_diary/{filename}"
+    if not os.path.exists(filepath):
+        return ""
+    with open(filepath, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def claude_write_diary_by_filename(filename: str, content: str) -> bool:
+    """覆盖写入日记文件（前端编辑保存用）"""
+    filepath = f"./claude_diary/{filename}"
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        return True
+    except:
+        return False
