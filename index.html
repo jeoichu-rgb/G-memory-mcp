@@ -959,7 +959,7 @@ async function erikLoadMemories(collection, sourceFilter = 'all') {
     return `
     <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid ${srcColor};padding:10px;border-radius:2px;" id="mem-${item.id}">
       <div style="display:flex;align-items:flex-start;gap:8px;">
-        ${isDynamic ? `<input type="checkbox" class="dyn-check" data-id="${escapedId}" style="margin-top:14px;accent-color:#ffd07a;flex-shrink:0;">` : ''}
+        ${isDynamic ? '<input type="checkbox" class="dyn-check" data-id="'+escapedId+'" style="margin-top:14px;accent-color:#ffd07a;flex-shrink:0;">' : ''}
         <div style="flex:1;">
           <div style="font-size:9px;margin-bottom:4px;">
             <span style="color:${srcColor};font-weight:bold;">[${srcLabel}]</span>
