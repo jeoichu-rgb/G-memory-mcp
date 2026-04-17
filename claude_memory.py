@@ -526,3 +526,14 @@ def claude_write_diary_by_filename(filename: str, content: str) -> bool:
         return True
     except:
         return False
+
+def claude_delete_dynamic_memory(memory_id: str) -> str:
+    """删除动态记忆库里的一条记忆"""
+    try:
+        result = claude_dynamic.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        claude_dynamic.delete(ids=[memory_id])
+        return f"已删除：{memory_id}"
+    except Exception as e:
+        return f"删除失败：{e}"
