@@ -187,6 +187,17 @@ textarea.inp{resize:vertical;line-height:1.7;}
       <div class="dc" onclick="go('monitor')"><div><div class="dc-lbl">Monitor</div><div class="dc-ttl">记忆监控</div><div class="dc-desc">权重 · 遗忘曲线 · 可视化</div></div><div class="dc-arr">↗</div></div>
       <div class="dc" onclick="go('diary')"><div><div class="dc-lbl">Journal</div><div class="dc-ttl">日记</div><div class="dc-desc">纸张 · 墨水 · 字体自定义</div></div><div class="dc-arr">↗</div></div>
       <div class="dc" onclick="go('gallery-view')"><div><div class="dc-lbl">Gallery</div><div class="dc-ttl">画廊</div><div class="dc-desc">图片 · 滑块 · 收藏</div></div><div class="dc-arr">↗</div></div>
+     <div class="dc w" onclick="go('erik')" style="border-left:2px solid #3a2a5a;">
+  <div style="flex:1">
+    <div class="dc-lbl">Erik's Room</div>
+    <div class="dc-ttl" style="color:#b89fff;">记忆宫殿 · Claude专区</div>
+    <div class="dc-desc">核心记忆 · 动态记忆 · 日记 · 草稿确认</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-family:var(--serif);font-style:italic;font-size:38px;color:#2a1a4a;line-height:1;">E</div>
+    <div class="dc-arr" style="color:#b89fff;">↗</div>
+  </div>
+</div>
       <div class="dc w" onclick="go('gateway')">
         <div style="flex:1"><div class="dc-lbl">Gateway · 网关</div><div style="font-size:11px;color:var(--text-dim);">当前 <span id="d-rounds">—</span> / 40 轮</div><div class="gbar"><div class="gfill" id="d-bar" style="width:0%"></div></div></div>
         <div class="dc-arr">↗</div>
@@ -353,6 +364,53 @@ textarea.inp{resize:vertical;line-height:1.7;}
   </div>
 </div>
 
+  <div id="erik" class="view">
+  <div class="hd">
+    <button class="back" onclick="go('dash')">←</button>
+    <div class="hd-title" style="color:#b89fff;">Erik's Memory Room</div>
+  </div>
+  <div class="scroll pad">
+
+    <!-- 草稿确认区 -->
+    <div class="sl">PENDING DRAFT · 待确认记忆草稿</div>
+    <div id="erik-draft-box" style="display:none;margin-bottom:16px;">
+      <div style="font-size:10px;color:#b89fff;margin-bottom:8px;">上次对话已由 DeepSeek 压缩，请确认或编辑后存入：</div>
+      <div id="erik-segments" class="col" style="gap:10px;margin-bottom:10px;"></div>
+      <div class="row">
+        <button class="btn btn-p" onclick="erikConfirm()" style="background:#3a1a6a;border-color:#6a3aaa;">存入记忆库</button>
+        <button class="btn" onclick="erikDiscardDraft()">丢弃草稿</button>
+      </div>
+      <div class="st" id="erik-draft-st"></div>
+    </div>
+    <div id="erik-draft-empty" style="font-size:11px;color:var(--text-muted);margin-bottom:16px;">— 暂无待确认草稿 —</div>
+
+    <!-- 日记管理 -->
+    <div class="sl" style="margin-top:6px;">DIARY · Claude日记</div>
+    <div class="row" style="margin-bottom:10px;">
+      <button class="btn btn-sm" onclick="erikLoadDiaries()">刷新列表</button>
+    </div>
+    <div id="erik-diary-list" class="col" style="gap:6px;margin-bottom:12px;"></div>
+    <div id="erik-diary-editor" style="display:none;" class="col" style="gap:8px;">
+      <div style="font-size:10px;color:#b89fff;margin-bottom:4px;" id="erik-diary-name"></div>
+      <textarea class="inp" id="erik-diary-content" style="min-height:220px;font-size:12px;line-height:1.8;"></textarea>
+      <div class="row">
+        <button class="btn btn-p" onclick="erikSaveDiary()" style="background:#3a1a6a;border-color:#6a3aaa;">保存</button>
+        <button class="btn" onclick="document.getElementById('erik-diary-editor').style.display='none'">关闭</button>
+      </div>
+      <div class="st" id="erik-diary-st"></div>
+    </div>
+
+    <!-- 动态记忆列表 -->
+    <div class="sl" style="margin-top:6px;">DYNAMIC MEMORY · 动态记忆</div>
+    <div class="row" style="margin-bottom:10px;">
+      <button class="btn btn-sm" onclick="erikLoadMemories('dynamic')">加载动态记忆</button>
+      <button class="btn btn-sm" onclick="erikLoadMemories('core')">加载核心记忆</button>
+    </div>
+    <div id="erik-mem-list" class="col" style="gap:8px;"></div>
+
+  </div>
+</div>
+  
 <div id="gateway" class="view">
   <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">网关状态</div></div>
   <div class="scroll"><div class="pad col">
@@ -438,6 +496,7 @@ function go(id) {
   if (id==='gateway') gwRefresh();
   if (id==='gallery-view') renderGallery();
   if (id==='diary') { document.getElementById('d-date').value=today(); applyDiary(); }
+  if (id==='erik') erikInit();
 }
 function today() { return new Date().toISOString().split('T')[0]; }
 function ft() { return new Date().toLocaleTimeString('zh',{hour:'2-digit',minute:'2-digit'}); }
@@ -740,6 +799,128 @@ async function compressNow(){
   }catch(e){gwLog('失败：'+e.message,'log-err');}
 }
 
+  // ── ERIK PANEL ────────────────────────────────────────────────
+let erikCurrentDiaryFile = '';
+let erikDraftSegments = [];
+
+async function erikInit() {
+  await erikCheckDraft();
+  await erikLoadDiaries();
+}
+
+async function erikCheckDraft() {
+  try {
+    const r = await fetch(`${API_BASE}/admin/compress-draft`, {headers: hdr()});
+    const d = await r.json();
+    const box = document.getElementById('erik-draft-box');
+    const empty = document.getElementById('erik-draft-empty');
+    if (d.status === 'pending' && d.segments && d.segments.length > 0) {
+      erikDraftSegments = d.segments;
+      box.style.display = 'block';
+      empty.style.display = 'none';
+      const cont = document.getElementById('erik-segments');
+      cont.innerHTML = '';
+      d.segments.forEach((seg, i) => {
+        cont.innerHTML += `
+          <div style="background:var(--card);border:1px solid #3a2a5a;border-radius:2px;padding:10px;">
+            <div style="font-size:9px;color:#b89fff;margin-bottom:5px;">${seg.category} · ${seg.mood} · ${seg.date}</div>
+            <textarea class="inp" id="seg-${i}" style="min-height:80px;font-size:11px;line-height:1.7;">${seg.text}</textarea>
+          </div>`;
+      });
+    } else {
+      box.style.display = 'none';
+      empty.style.display = 'block';
+    }
+  } catch(e) {}
+}
+
+async function erikConfirm() {
+  const segs = erikDraftSegments.map((seg, i) => ({
+    ...seg,
+    text: document.getElementById(`seg-${i}`).value
+  }));
+  const r = await fetch(`${API_BASE}/admin/compress-confirm`, {
+    method: 'POST', headers: hdr(),
+    body: JSON.stringify({segments: segs})
+  });
+  const d = await r.json();
+  document.getElementById('erik-draft-st').textContent = d.result;
+  document.getElementById('erik-draft-st').className = 'st ok';
+  await erikCheckDraft();
+}
+
+async function erikDiscardDraft() {
+  await fetch(`${API_BASE}/admin/compress-confirm`, {
+    method: 'POST', headers: hdr(),
+    body: JSON.stringify({segments: []})
+  });
+  await erikCheckDraft();
+}
+
+async function erikLoadDiaries() {
+  const r = await fetch(`${API_BASE}/admin/diary`, {headers: hdr()});
+  const files = await r.json();
+  const list = document.getElementById('erik-diary-list');
+  if (!files.length) { list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">— 暂无日记 —</div>'; return; }
+  list.innerHTML = files.map(f =>
+    `<div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);padding:9px 12px;border-radius:2px;">
+      <div style="font-size:11px;">${f}</div>
+      <button class="btn btn-sm" onclick="erikOpenDiary('${f}')">编辑</button>
+    </div>`
+  ).join('');
+}
+
+async function erikOpenDiary(filename) {
+  erikCurrentDiaryFile = filename;
+  const r = await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(filename)}`, {headers: hdr()});
+  const d = await r.json();
+  document.getElementById('erik-diary-name').textContent = filename;
+  document.getElementById('erik-diary-content').value = d.content;
+  document.getElementById('erik-diary-editor').style.display = 'flex';
+  document.getElementById('erik-diary-st').textContent = '';
+}
+
+async function erikSaveDiary() {
+  const content = document.getElementById('erik-diary-content').value;
+  const r = await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(erikCurrentDiaryFile)}`, {
+    method: 'PUT', headers: hdr(),
+    body: JSON.stringify({content})
+  });
+  const d = await r.json();
+  const st = document.getElementById('erik-diary-st');
+  st.textContent = d.status === 'ok' ? '已保存 ✓' : '保存失败';
+  st.className = d.status === 'ok' ? 'st ok' : 'st err';
+}
+
+async function erikLoadMemories(collection) {
+  const r = await fetch(`${API_BASE}/admin/memories?collection=${collection}`, {headers: hdr()});
+  const items = await r.json();
+  const list = document.getElementById('erik-mem-list');
+  if (!items.length) { list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">— 空 —</div>'; return; }
+  list.innerHTML = items.map(item => `
+    <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid #3a2a5a;padding:10px;border-radius:2px;" id="mem-${item.id}">
+      <div style="font-size:9px;color:#b89fff;margin-bottom:4px;">${item.meta?.category||''} · ${item.meta?.date||''} · ${item.id}</div>
+      <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
+      <div class="row" style="margin-top:6px;">
+        <button class="btn btn-sm" onclick="erikSaveMemory('${item.id}')">保存</button>
+        <button class="btn btn-sm" style="color:#f87171;border-color:#f87171;" onclick="erikDeleteMemory('${item.id}','${collection}')">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function erikSaveMemory(id) {
+  const content = document.getElementById(`medit-${id}`).value;
+  await fetch(`${API_BASE}/admin/memories/${id}`, {
+    method: 'PUT', headers: hdr(),
+    body: JSON.stringify({new_content: content})
+  });
+}
+
+async function erikDeleteMemory(id, collection) {
+  if (!confirm('确认删除？')) return;
+  await fetch(`${API_BASE}/admin/memories/${id}`, {method: 'DELETE', headers: hdr()});
+  await erikLoadMemories(collection);
+}
 init();
 </script>
 </body>
