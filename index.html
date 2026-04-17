@@ -400,13 +400,27 @@ textarea.inp{resize:vertical;line-height:1.7;}
       <div class="st" id="erik-diary-st"></div>
     </div>
 
-    <!-- 动态记忆列表 -->
-    <div class="sl" style="margin-top:6px;">DYNAMIC MEMORY · 动态记忆</div>
-    <div class="row" style="margin-bottom:10px;">
-      <button class="btn btn-sm" onclick="erikLoadMemories('dynamic')">加载动态记忆</button>
-      <button class="btn btn-sm" onclick="erikLoadMemories('core')">加载核心记忆</button>
-    </div>
-    <div id="erik-mem-list" class="col" style="gap:8px;"></div>
+    <!-- 手动压缩区 -->
+<div class="sl" style="margin-top:6px;">COMPRESS · 手动压缩</div>
+<div class="row" style="margin-bottom:6px;">
+  <button class="btn btn-sm" onclick="erikTriggerCompress()">生成压缩草稿（DS）</button>
+</div>
+<div class="st" id="erik-compress-st" style="margin-bottom:12px;"></div>
+
+<!-- 核心记忆分栏 -->
+<div class="sl" style="margin-top:6px;">CORE MEMORY · 核心记忆</div>
+<div class="row" style="margin-bottom:10px;">
+  <button class="btn btn-sm" id="tab-mcp" onclick="erikLoadMemories('core','mcp_manual')" style="border-color:#7affb8;color:#7affb8;">Claude存入</button>
+  <button class="btn btn-sm" id="tab-obs" onclick="erikLoadMemories('core','obsidian_sync')">Obsidian同步</button>
+  <button class="btn btn-sm" onclick="erikLoadMemories('core','all')">全部</button>
+</div>
+
+<!-- 动态记忆 -->
+<div class="sl" style="margin-top:2px;">DYNAMIC MEMORY · 动态记忆</div>
+<div class="row" style="margin-bottom:10px;">
+  <button class="btn btn-sm" onclick="erikLoadMemories('dynamic','all')">加载动态记忆</button>
+</div>
+<div id="erik-mem-list" class="col" style="gap:8px;"></div>
 
   </div>
 </div>
@@ -892,24 +906,68 @@ async function erikSaveDiary() {
   st.className = d.status === 'ok' ? 'st ok' : 'st err';
 }
 
-async function erikLoadMemories(collection) {
+async function erikTriggerCompress() {
+  const st = document.getElementById('erik-compress-st');
+  st.textContent = '正在调用 DeepSeek 压缩...';
+  st.className = 'st';
+  try {
+    const r = await fetch(`${API_BASE}/admin/compress-preview`, {method:'POST', headers: hdr()});
+    const d = await r.json();
+    if (d.status === 'empty') {
+      st.textContent = 'buffer为空，没有可压缩的内容。';
+      st.className = 'st';
+    } else if (d.status === 'error') {
+      st.textContent = '压缩失败：' + d.message;
+      st.className = 'st err';
+    } else {
+      st.textContent = `草稿已生成（${d.segments?.length||0} 条），请在上方"待确认草稿"区确认后存入。`;
+      st.className = 'st ok';
+      await erikCheckDraft();
+    }
+  } catch(e) {
+    st.textContent = '请求失败：' + e.message;
+    st.className = 'st err';
+  }
+}
+
+async function erikLoadMemories(collection, sourceFilter = 'all') {
   const r = await fetch(`${API_BASE}/admin/memories?collection=${collection}`, {headers: hdr()});
   const items = await r.json();
   const list = document.getElementById('erik-mem-list');
-  if (!items.length) { list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">— 空 —</div>'; return; }
-  list.innerHTML = items.map(item => `
-    <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid #3a2a5a;padding:10px;border-radius:2px;" id="mem-${item.id}">
-      <div style="font-size:9px;color:#b89fff;margin-bottom:4px;">
-  ${item.meta?.folder ? '📁'+item.meta.folder+' · ' : ''}${item.meta?.category||''} · ${item.meta?.date||''} 
-  <span style="color:${item.meta?.source==='mcp_manual'?'#7affb8':'#b89fff'}">[${item.meta?.source||'unknown'}]</span>
-  · <span style="color:var(--text-muted);font-size:8px;">${item.id}</span>
-</div>
+
+  // 按source过滤
+  const filtered = sourceFilter === 'all' ? items : items.filter(i => {
+    const src = i.meta?.source || '';
+    if (sourceFilter === 'mcp_manual') return src === 'mcp_manual';
+    if (sourceFilter === 'obsidian_sync') return src !== 'mcp_manual' && src !== 'claude_gateway';
+    return true;
+  });
+
+  if (!filtered.length) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">— 空 —</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(item => {
+    const src = item.meta?.source || 'unknown';
+    const srcColor = src === 'mcp_manual' ? '#7affb8' : src === 'claude_gateway' ? '#b89fff' : '#5a7090';
+    const srcLabel = src === 'mcp_manual' ? 'Claude存入' : src === 'claude_gateway' ? 'DS压缩' : 'Obsidian';
+    const folder = item.meta?.folder ? `📁${item.meta.folder} · ` : '';
+    return `
+    <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid ${srcColor};padding:10px;border-radius:2px;" id="mem-${item.id}">
+      <div style="font-size:9px;margin-bottom:4px;">
+        <span style="color:${srcColor};font-weight:bold;">[${srcLabel}]</span>
+        <span style="color:#b89fff;"> ${folder}</span>
+        <span style="color:var(--text-dim);">${item.meta?.category||''} · ${item.meta?.date||''}</span>
+        <span style="color:var(--text-muted);font-size:8px;"> ${item.id}</span>
+      </div>
       <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
       <div class="row" style="margin-top:6px;">
         <button class="btn btn-sm" onclick="erikSaveMemory('${item.id}')">保存</button>
         <button class="btn btn-sm" style="color:#f87171;border-color:#f87171;" onclick="erikDeleteMemory('${item.id}','${collection}')">删除</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 async function erikSaveMemory(id) {
