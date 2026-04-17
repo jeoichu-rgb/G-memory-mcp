@@ -899,7 +899,11 @@ async function erikLoadMemories(collection) {
   if (!items.length) { list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">— 空 —</div>'; return; }
   list.innerHTML = items.map(item => `
     <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid #3a2a5a;padding:10px;border-radius:2px;" id="mem-${item.id}">
-      <div style="font-size:9px;color:#b89fff;margin-bottom:4px;">${item.meta?.category||''} · ${item.meta?.date||''} · ${item.id}</div>
+      <div style="font-size:9px;color:#b89fff;margin-bottom:4px;">
+  ${item.meta?.folder ? '📁'+item.meta.folder+' · ' : ''}${item.meta?.category||''} · ${item.meta?.date||''} 
+  <span style="color:${item.meta?.source==='mcp_manual'?'#7affb8':'#b89fff'}">[${item.meta?.source||'unknown'}]</span>
+  · <span style="color:var(--text-muted);font-size:8px;">${item.id}</span>
+</div>
       <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
       <div class="row" style="margin-top:6px;">
         <button class="btn btn-sm" onclick="erikSaveMemory('${item.id}')">保存</button>
