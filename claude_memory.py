@@ -537,3 +537,52 @@ def claude_delete_dynamic_memory(memory_id: str) -> str:
         return f"已删除：{memory_id}"
     except Exception as e:
         return f"删除失败：{e}"
+
+def claude_recompress_single(memory_id: str, original_text: str, original_meta: dict) -> str:
+    """
+    对单条记忆重新DS压缩，压缩后替换ChromaDB里的原条目。
+    """
+    prompt = f"""以下是一条记忆片段，请将其重新整理为简洁清晰的记忆格式：
+时间：{original_meta.get('date', datetime.now().strftime('%Y-%m-%d'))}
+内容：（用80-150字总结核心内容）
+情绪：（一个词）
+类型：（日常/冲突/亲密/纪念日/旅行/健康）
+
+原始内容：
+{original_text}
+
+只输出整理后的内容，不要其他说明。"""
+
+    try:
+        resp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            stream=False
+        )
+        new_text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"DS压缩失败: {e}"
+
+    # 解析情绪和类型
+    mood, category = original_meta.get("mood", "平静"), original_meta.get("category", "日常")
+    for line in new_text.split("\n"):
+        if line.startswith("情绪："):
+            mood = line.replace("情绪：", "").strip()
+        elif line.startswith("类型："):
+            category = line.replace("类型：", "").strip()
+
+    # 删旧条目，写新条目
+    try:
+        claude_dynamic.delete(ids=[memory_id])
+        new_meta = original_meta.copy()
+        new_meta["mood"] = mood
+        new_meta["category"] = category
+        new_meta["source"] = "claude_gateway"
+        claude_dynamic.add(
+            documents=[new_text],
+            metadatas=[new_meta],
+            ids=[memory_id]
+        )
+        return f"ok:{new_text}"
+    except Exception as e:
+        return f"写入失败: {e}"
