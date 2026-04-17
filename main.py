@@ -359,6 +359,27 @@ async def admin_save_diary(filename: str, payload: DiaryEditPayload):
     ok = claude_write_diary_by_filename(filename, payload.content)
     return {"status": "ok" if ok else "error"}
 
+from claude_memory import claude_recompress_single
+
+class RecompressItem(BaseModel):
+    id: str
+    text: str
+    meta: dict = {}
+
+class RecompressPayload(BaseModel):
+    items: list[RecompressItem]
+
+@app.post("/admin/recompress-selected")
+async def admin_recompress_selected(payload: RecompressPayload):
+    results = []
+    for item in payload.items:
+        result = claude_recompress_single(item.id, item.text, item.meta)
+        if result.startswith("ok:"):
+            results.append({"id": item.id, "status": "ok", "new_text": result[3:]})
+        else:
+            results.append({"id": item.id, "status": "error", "message": result})
+        time.sleep(1)  # 避免DS限流
+    return {"results": results}
 
 if __name__ == "__main__":
     import uvicorn
