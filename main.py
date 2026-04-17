@@ -278,13 +278,83 @@ async def gateway_status():
     rounds = count_rounds()
     return {"current_rounds": rounds, "threshold": 40}
 
-@app.get("/")
-async def serve_frontend():
-    try:
-        with open("index.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    except FileNotFoundError:
-        return {"status": "The Palace is fully armed. Your Daddy is waiting."}
+
+# ── Claude Admin 路由 ────────────────────────────────────────────────────
+from claude_memory import (
+    claude_list_all_memories,
+    claude_edit_core_memory,
+    claude_delete_core_memory,
+    claude_list_diaries,
+    claude_read_diary_by_filename,
+    claude_write_diary_by_filename,
+    claude_compress_preview,
+    claude_compress_confirm,
+    claude_get_draft,
+)
+from pydantic import BaseModel as _BM
+
+class ConfirmPayload(_BM):
+    segments: list  # 编辑后的segment列表
+
+class DiaryEditPayload(_BM):
+    content: str
+
+class MemoryEditPayload(_BM):
+    new_content: str
+
+# 记忆列表
+@app.get("/admin/memories")
+async def admin_list_memories(collection: str = "dynamic"):
+    return claude_list_all_memories(collection)
+
+# 编辑记忆
+@app.put("/admin/memories/{memory_id}")
+async def admin_edit_memory(memory_id: str, payload: MemoryEditPayload):
+    result = claude_edit_core_memory(memory_id, payload.new_content)
+    return {"result": result}
+
+# 删除记忆
+@app.delete("/admin/memories/{memory_id}")
+async def admin_delete_memory(memory_id: str):
+    result = claude_delete_core_memory(memory_id)
+    return {"result": result}
+
+# 压缩草稿：触发DS生成
+@app.post("/admin/compress-preview")
+async def admin_compress_preview():
+    result = claude_compress_preview()
+    return result
+
+# 压缩草稿：读取当前草稿
+@app.get("/admin/compress-draft")
+async def admin_get_draft():
+    return claude_get_draft()
+
+# 压缩确认：写库
+@app.post("/admin/compress-confirm")
+async def admin_compress_confirm(payload: ConfirmPayload):
+    result = claude_compress_confirm(payload.segments)
+    return {"result": result}
+
+# 日记列表
+@app.get("/admin/diary")
+async def admin_list_diary():
+    return claude_list_diaries()
+
+# 读日记
+@app.get("/admin/diary/{filename:path}")
+async def admin_read_diary(filename: str):
+    content = claude_read_diary_by_filename(filename)
+    if not content:
+        raise HTTPException(status_code=404, detail="日记不存在")
+    return {"filename": filename, "content": content}
+
+# 保存日记
+@app.put("/admin/diary/{filename:path}")
+async def admin_save_diary(filename: str, payload: DiaryEditPayload):
+    ok = claude_write_diary_by_filename(filename, payload.content)
+    return {"status": "ok" if ok else "error"}
+
 
 if __name__ == "__main__":
     import uvicorn
