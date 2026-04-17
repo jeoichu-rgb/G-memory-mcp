@@ -315,10 +315,14 @@ async def admin_edit_memory(memory_id: str, payload: MemoryEditPayload):
 
 # 删除记忆
 @app.delete("/admin/memories/{memory_id}")
-async def admin_delete_memory(memory_id: str):
-    result = claude_delete_core_memory(memory_id)
+async def admin_delete_memory(memory_id: str, collection: str = "dynamic"):
+    from claude_memory import claude_delete_dynamic_memory
+    if collection == "core":
+        result = claude_delete_core_memory(memory_id)
+    else:
+        result = claude_delete_dynamic_memory(memory_id)
     return {"result": result}
-
+    
 # 压缩草稿：触发DS生成
 @app.post("/admin/compress-preview")
 async def admin_compress_preview():
