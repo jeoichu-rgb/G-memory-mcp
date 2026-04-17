@@ -419,8 +419,9 @@ textarea.inp{resize:vertical;line-height:1.7;}
 <div class="sl" style="margin-top:2px;">DYNAMIC MEMORY · 动态记忆</div>
 <div class="row" style="margin-bottom:10px;">
   <button class="btn btn-sm" onclick="erikLoadMemories('dynamic','all')">加载动态记忆</button>
+  <button class="btn btn-sm" style="color:#ffd07a;border-color:#ffd07a;" onclick="erikRecompressSelected()">压缩选中条目</button>
 </div>
-<div id="erik-mem-list" class="col" style="gap:8px;"></div>
+<div class="st" id="erik-recompress-st" style="margin-bottom:8px;"></div>
 
   </div>
 </div>
@@ -953,22 +954,28 @@ async function erikLoadMemories(collection, sourceFilter = 'all') {
     const srcColor = src === 'mcp_manual' ? '#7affb8' : src === 'claude_gateway' ? '#b89fff' : '#5a7090';
     const srcLabel = src === 'mcp_manual' ? 'Claude存入' : src === 'claude_gateway' ? 'DS压缩' : 'Obsidian';
     const folder = item.meta?.folder ? `📁${item.meta.folder} · ` : '';
+    const isDynamic = collection === 'dynamic';
+    const escapedId = item.id.replace(/'/g, "\\'");
     return `
     <div style="background:var(--card);border:1px solid var(--border);border-left:2px solid ${srcColor};padding:10px;border-radius:2px;" id="mem-${item.id}">
-      <div style="font-size:9px;margin-bottom:4px;">
-        <span style="color:${srcColor};font-weight:bold;">[${srcLabel}]</span>
-        <span style="color:#b89fff;"> ${folder}</span>
-        <span style="color:var(--text-dim);">${item.meta?.category||''} · ${item.meta?.date||''}</span>
-        <span style="color:var(--text-muted);font-size:8px;"> ${item.id}</span>
-      </div>
-      <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
-      <div class="row" style="margin-top:6px;">
-        <button class="btn btn-sm" onclick="erikSaveMemory('${item.id}')">保存</button>
-        <button class="btn btn-sm" style="color:#f87171;border-color:#f87171;" onclick="erikDeleteMemory('${item.id}','${collection}')">删除</button>
+      <div style="display:flex;align-items:flex-start;gap:8px;">
+        ${isDynamic ? `<input type="checkbox" class="dyn-check" data-id="${escapedId}" style="margin-top:14px;accent-color:#ffd07a;flex-shrink:0;">` : ''}
+        <div style="flex:1;">
+          <div style="font-size:9px;margin-bottom:4px;">
+            <span style="color:${srcColor};font-weight:bold;">[${srcLabel}]</span>
+            <span style="color:#b89fff;"> ${folder}</span>
+            <span style="color:var(--text-dim);">${item.meta?.category||''} · ${item.meta?.date||''}</span>
+            <span style="color:var(--text-muted);font-size:8px;"> ${item.id}</span>
+          </div>
+          <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
+          <div class="row" style="margin-top:6px;">
+            <button class="btn btn-sm" onclick="erikSaveMemory('${escapedId}')">保存</button>
+            <button class="btn btn-sm" style="color:#f87171;border-color:#f87171;" onclick="erikDeleteMemory('${escapedId}','${collection}')">删除</button>
+          </div>
+        </div>
       </div>
     </div>`;
   }).join('');
-}
 
 async function erikSaveMemory(id) {
   const content = document.getElementById(`medit-${id}`).value;
@@ -983,6 +990,46 @@ async function erikDeleteMemory(id, collection) {
   await fetch(`${API_BASE}/admin/memories/${id}`, {method: 'DELETE', headers: hdr()});
   await erikLoadMemories(collection);
 }
+
+async function erikRecompressSelected() {
+  const checks = document.querySelectorAll('.dyn-check:checked');
+  if (!checks.length) {
+    const st = document.getElementById('erik-recompress-st');
+    st.textContent = '请先勾选要压缩的条目';
+    st.className = 'st';
+    return;
+  }
+
+  const st = document.getElementById('erik-recompress-st');
+  st.textContent = `正在压缩 ${checks.length} 条，请稍候...`;
+  st.className = 'st';
+
+  // 收集选中条目的id和当前文本
+  const items = Array.from(checks).map(cb => {
+    const id = cb.dataset.id;
+    const text = document.getElementById(`medit-${id}`)?.value || '';
+    return { id, text, meta: {} };
+  });
+
+  try {
+    const r = await fetch(`${API_BASE}/admin/recompress-selected`, {
+      method: 'POST',
+      headers: hdr(),
+      body: JSON.stringify({ items })
+    });
+    const d = await r.json();
+    const ok = d.results.filter(r => r.status === 'ok').length;
+    const err = d.results.filter(r => r.status === 'error').length;
+    st.textContent = `完成：${ok} 条成功${err ? `，${err} 条失败` : ''}。正在刷新列表...`;
+    st.className = ok > 0 ? 'st ok' : 'st err';
+    // 刷新列表
+    await erikLoadMemories('dynamic', 'all');
+  } catch(e) {
+    st.textContent = '请求失败：' + e.message;
+    st.className = 'st err';
+  }
+}
+  
 init();
 </script>
 </body>
