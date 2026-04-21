@@ -57,7 +57,7 @@ mcp = FastMCP(
         "log_turn       — 记录本轮对话，params={user_message, claude_reply}\n"
         "compress       — 手动压缩缓冲区存入动态库，params={}\n"
         "write_diary    — 写新日记，params={title, content, mood(可选)}\n"
-        "append_diary   — 追加日记，params={target_date(YYYY-MM-DD), extra_content}\n"
+        "append_diary   — 追加日记，params={target_date(YYYY-MM-DD), extra_content, current_time(HH:MM)}\n"
         "read_diary     — 读日记，params={date(可选,YYYY-MM-DD)}\n"
         "list_room      — 浏览房间，params={room_name}\n"
         "delete_core    — 删除核心记忆，params={memory_id}\n"
@@ -185,7 +185,7 @@ def palace(action: str, params: dict = {}) -> str:
         time_str = now.strftime("%H-%M")
         safe_title = title.replace("/", "_").replace(" ", "_")
         filename = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
-        diary_content = f"# {title}\n> 日期：{today} | 心情：{mood}\n\n{content}\n"
+        diary_content = f"# {title}\n> 日期：{today} {time_str.replace('-', ':')} | 心情：{mood}\n\n{content}\n"
         with open(filename, "w", encoding="utf-8") as f:
             f.write(diary_content)
         return f"已写下。{filename}"
@@ -194,13 +194,15 @@ def palace(action: str, params: dict = {}) -> str:
     elif action == "append_diary":
         target_date = params.get("target_date", "")
         extra_content = params.get("extra_content", "")
+        current_time = params.get("current_time", "")
         if not target_date or not extra_content:
             return "错误：append_diary 需要 target_date 和 extra_content。"
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
         if matched:
             filepath = os.path.join(CLAUDE_DIARY_PATH, matched[-1])
+            time_str = current_time if current_time else datetime.now().strftime('%H:%M')
             with open(filepath, "a", encoding="utf-8") as f:
-                f.write(f"\n\n---\n*追加：{datetime.now().strftime('%H:%M')}*\n\n{extra_content}\n")
+                f.write(f"\n\n---\n*追加：{time_str}*\n\n{extra_content}\n")
             return f"已追加到 {matched[-1]}"
         now = datetime.now()
         filename = f"{CLAUDE_DIARY_PATH}/{target_date}_{now.strftime('%H-%M')}_补记.md"
