@@ -204,12 +204,7 @@ def palace(action: str, params: dict = {}) -> str:
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(f"\n\n---\n*追加：{time_str}*\n\n{extra_content}\n")
             return f"已追加到 {matched[-1]}"
-        now = datetime.now()
-        filename = f"{CLAUDE_DIARY_PATH}/{target_date}_{now.strftime('%H-%M')}_补记.md"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(f"# 补记\n> 日期: {target_date}\n\n{extra_content}\n")
-        return f"未找到当天日记，已新建: {filename}"
-
+        return f"错误：{target_date} 没有找到日记，请改用 write_diary 新建。"
     # ── read_diary ────────────────────────────────────────────
     elif action == "read_diary":
         date = params.get("date", "")
