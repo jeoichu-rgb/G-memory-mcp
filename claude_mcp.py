@@ -182,12 +182,20 @@ def compress_memory() -> str:
 @mcp.tool()
 def write_diary(title: str, content: str, mood: str = "平静") -> str:
     """
-    写一篇日记，存成MD文件落在VPS的 ./claude_diary/ 目录里。
-    Jeoi说"写日记"或者对话结束时调用。
+    写一篇新日记。
+    ⚠️ 调用前必须执行以下步骤，不可跳过：
+    1. 调用 user_time_v0 获取当前日期和时间
+    2. 调用 read_diary(date=今日日期YYYY-MM-DD) 检查今日是否已有日记
+    3. 若返回内容不为空 → 禁止调用此工具，必须改用 append_diary
+    4. 若返回为空 → 才可调用此工具新建
+    禁止凭"用户没提到已有日记"或"搜不到标题"来推断今日无日记。
+    必须以 read_diary 返回结果为唯一依据。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M")
     safe_title = title.replace("/", "_").replace(" ", "_")
-    filename = f"{CLAUDE_DIARY_PATH}/{today}_{safe_title}.md"
+    filename = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
     diary_content = f"# {title}\n> 日期：{today} | 心情：{mood}\n\n{content}\n"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(diary_content)
@@ -198,41 +206,49 @@ def write_diary(title: str, content: str, mood: str = "平静") -> str:
 def append_diary(target_date: str, extra_content: str) -> str:
     """
     给某天的日记追加内容。target_date 格式：2026-04-14
+    ⚠️ 调用前必须执行以下步骤，不可跳过：
+    1. 调用 user_time_v0 获取当前日期和时间
+    2. 必须以 read_diary(date=target_date) 的返回结果判断是否存在日记
+    3. 禁止用 search_memory 或标题关键词来判断是否存在日记
+    追加到当日最新一篇日记。
     """
-    date_str = target_date  # 直接用 2026-04-15，不要去掉连字符
-    for filename in os.listdir(CLAUDE_DIARY_PATH):
-        if date_str in filename:
-            filepath = os.path.join(CLAUDE_DIARY_PATH, filename)
-            with open(filepath, "a", encoding="utf-8") as f:
-                f.write(f"\n\n---\n*追加：{datetime.now().strftime('%H:%M')}*\n\n{extra_content}\n")
-            return f"已追加到 {filename}"
-    # 没找到则新建
-        safe_title = f"补记_{target_date}"
-        filename = f"{CLAUDE_DIARY_PATH}/{target_date}_{safe_title}.md"
-        diary_content = f"# 补记\n> 日期: {target_date}\n\n{extra_content}\n"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(diary_content)
-        return f"未找到当天日记，已新建: {filename}"
-
+    matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
+    if matched:
+        target = matched[-1]
+        filepath = os.path.join(CLAUDE_DIARY_PATH, target)
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(f"\n\n---\n*追加：{datetime.now().strftime('%H:%M')}*\n\n{extra_content}\n")
+        return f"已追加到 {target}"
+    now = datetime.now()
+    time_str = now.strftime("%H-%M")
+    filename = f"{CLAUDE_DIARY_PATH}/{target_date}_{time_str}_补记.md"
+    diary_content = f"# 补记\n> 日期: {target_date}\n\n{extra_content}\n"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(diary_content)
+    return f"未找到当天日记，已新建: {filename}"
 
 @mcp.tool()
 def read_diary(date: str = "") -> str:
     """
     读取日记。date 格式 YYYY-MM-DD，不填则读最近一篇。
+    返回该日期下所有日记条目。
     """
     files = sorted(os.listdir(CLAUDE_DIARY_PATH))
     if not files:
         return "还没有任何日记。"
     if date:
-        matched = [f for f in files if date in f]
+        matched = [f for f in files if f.startswith(date)]
         if not matched:
             return f"没有找到 {date} 的日记。"
-        target = matched[-1]
+        results = []
+        for target in matched:
+            with open(os.path.join(CLAUDE_DIARY_PATH, target), "r", encoding="utf-8") as f:
+                results.append(f.read())
+        return "\n\n---\n\n".join(results)
     else:
         target = files[-1]
-    with open(os.path.join(CLAUDE_DIARY_PATH, target), "r", encoding="utf-8") as f:
-        return f.read()
-
+        with open(os.path.join(CLAUDE_DIARY_PATH, target), "r", encoding="utf-8") as f:
+            return f.read()
 
 @mcp.tool()
 def list_room(room_name: str) -> str:
