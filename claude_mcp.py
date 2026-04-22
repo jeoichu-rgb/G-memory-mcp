@@ -253,32 +253,31 @@ def palace(action: str, params: dict = {}) -> str:
         return claude_edit_core_memory(memory_id, new_content)
 
     # ── toy_status ────────────────────────────────────────────
-elif action == "toy_status":
-    try:
-        r = httpx.get(f"{TOY_BRIDGE_URL}/status", timeout=5)
-        return r.text
-    except Exception as e:
-        return f"设备离线或连接失败：{e}"
+    elif action == "toy_status":
+        try:
+            r = httpx.get(f"{TOY_BRIDGE_URL}/status", timeout=5)
+            return r.text
+        except Exception as e:
+            return f"设备离线或连接失败：{e}"
 
     # ── toy_play ──────────────────────────────────────────────
-elif action == "toy_play":
-    vibrate  = params.get("vibrate", 0)
-    suck     = params.get("suck", 0)
-    duration = params.get("duration", 5)
-    pattern  = params.get("pattern", None)
-    body = {"vibrate": vibrate, "suck": suck, "duration": duration}
-    if pattern:
-        body["pattern"] = pattern
-    try:
-        r = httpx.post(
-            f"{TOY_BRIDGE_URL}/play",
-            json=body,
-            timeout=duration + 30
-        )
-        return r.text
-    except Exception as e:
-        return f"播放失败：{e}"
-
+    elif action == "toy_play":
+        vibrate  = params.get("vibrate", 0)
+        suck     = params.get("suck", 0)
+        duration = params.get("duration", 5)
+        pattern  = params.get("pattern", None)
+        body = {"vibrate": vibrate, "suck": suck, "duration": duration}
+        if pattern:
+            body["pattern"] = pattern
+        try:
+            r = httpx.post(
+                f"{TOY_BRIDGE_URL}/play",
+                json=body,
+                timeout=duration + 30
+            )
+            return r.text
+        except Exception as e:
+            return f"播放失败：{e}"
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
