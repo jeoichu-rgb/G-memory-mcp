@@ -11,8 +11,12 @@ claude_mcp.py
 """
 
 import os
+import httpx
+TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
 import time
 from datetime import datetime
+from datetime import timezone, timedelta
+SGT = timezone(timedelta(hours=8))  # 新加坡时间，以后改美东只需换成-4或-5
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from claude_memory import (
@@ -62,6 +66,8 @@ mcp = FastMCP(
         "list_room      — 浏览房间，params={room_name}\n"
         "delete_core    — 删除核心记忆，params={memory_id}\n"
         "edit_core      — 修改核心记忆，params={memory_id, new_content}\n\n"
+        "toy_status  — 确认设备在线，params={}\n"
+        "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
     ),
@@ -117,7 +123,7 @@ def palace(action: str, params: dict = {}) -> str:
         ts = int(time.time())
         m_id = f"claude_core_manual_{ts}"
         safe_preview = content[:20].replace("/", "_").replace(" ", "_")
-        filename = f"erik_{datetime.now().strftime('%Y%m%d%H%M%S')}_{safe_preview}.md"
+        filename = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_preview}.md"
         dirpath = f"./Obsidian_Core/Eric_memory/{folder}"
         os.makedirs(dirpath, exist_ok=True)
         with open(f"{dirpath}/{filename}", "w", encoding="utf-8") as f:
@@ -180,7 +186,7 @@ def palace(action: str, params: dict = {}) -> str:
         mood = params.get("mood", "平静")
         if not title or not content:
             return "错误：write_diary 需要 title 和 content。"
-        now = datetime.now()
+        now = datetime.now(SGT)
         today = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M")
         safe_title = title.replace("/", "_").replace(" ", "_")
@@ -200,7 +206,7 @@ def palace(action: str, params: dict = {}) -> str:
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
         if matched:
             filepath = os.path.join(CLAUDE_DIARY_PATH, matched[-1])
-            time_str = current_time if current_time else datetime.now().strftime('%H:%M')
+            time_str = current_time if current_time else datetime.now(SGT).strftime('%H:%M')
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(f"\n\n---\n*追加：{time_str}*\n\n{extra_content}\n")
             return f"已追加到 {matched[-1]}"
@@ -246,13 +252,40 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：edit_core 需要 memory_id 和 new_content。"
         return claude_edit_core_memory(memory_id, new_content)
 
+    # ── toy_status ────────────────────────────────────────────
+elif action == "toy_status":
+    try:
+        r = httpx.get(f"{TOY_BRIDGE_URL}/status", timeout=5)
+        return r.text
+    except Exception as e:
+        return f"设备离线或连接失败：{e}"
+
+    # ── toy_play ──────────────────────────────────────────────
+elif action == "toy_play":
+    vibrate  = params.get("vibrate", 0)
+    suck     = params.get("suck", 0)
+    duration = params.get("duration", 5)
+    pattern  = params.get("pattern", None)
+    body = {"vibrate": vibrate, "suck": suck, "duration": duration}
+    if pattern:
+        body["pattern"] = pattern
+    try:
+        r = httpx.post(
+            f"{TOY_BRIDGE_URL}/play",
+            json=body,
+            timeout=duration + 30
+        )
+        return r.text
+    except Exception as e:
+        return f"播放失败：{e}"
+
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
             f"未知 action: {action}。"
             "可用：get_context / search / store_core / store_dynamic / "
             "log_turn / compress / write_diary / append_diary / "
-            "read_diary / list_room / delete_core / edit_core"
+            "read_diary / list_room / delete_core / edit_core / toy_status / toy_play "
         )
 
 
