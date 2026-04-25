@@ -12,7 +12,7 @@ claude_mcp.py
 
 import os
 import httpx
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 import time
@@ -84,7 +84,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def palace(action: str, params: dict = {}) -> str:
+def palace(action: str, params: dict = {}) -> str:
     """
     记忆宫殿统一入口。
     action: get_context / search / store_core / store_dynamic /
@@ -289,35 +289,41 @@ async def palace(action: str, params: dict = {}) -> str:
         if not url:
             return "错误：browser_open 需要 url 参数。"
         os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch_persistent_context(
+        import concurrent.futures
+        def _open():
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
                     BROWSER_PROFILE_DIR,
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"]
                 )
-                page = await browser.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await browser.add_cookies([
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                browser.add_cookies([
                     {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
                     {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
                 ])
-                await page.reload(wait_until="domcontentloaded", timeout=30000)
+                page.reload(wait_until="domcontentloaded", timeout=30000)
                 try:
-                    await page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
+                    page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
                 except:
                     pass
-                await page.evaluate("window.scrollBy(0, 600)")
-                await page.wait_for_timeout(2000)
-                text = await page.evaluate("""() => {
+                page.evaluate("window.scrollBy(0, 600)")
+                page.wait_for_timeout(2000)
+                text = page.evaluate("""() => {
                     const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
                     remove.forEach(el => el.remove());
                     return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
                 }""")
-                await browser.close()
+                browser.close()
                 return text or "页面无文字内容。"
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_open)
+                return future.result(timeout=60)
         except Exception as e:
             return f"browser_open 失败：{e}"
+
     # ── browser_js ────────────────────────────────────────────
     elif action == "browser_js":
         js_code = params.get("js_code", "")
@@ -325,19 +331,35 @@ async def palace(action: str, params: dict = {}) -> str:
         if not js_code:
             return "错误：browser_js 需要 js_code 参数。"
         os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch_persistent_context(
+        import concurrent.futures
+        def _js():
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
                     BROWSER_PROFILE_DIR,
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"]
                 )
-                page = await browser.new_page()
+                page = browser.new_page()
                 if url:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                result = await page.evaluate(js_code)
-                await browser.close()
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    browser.add_cookies([
+                        {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                        {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                    ])
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                    try:
+                        page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
+                    except:
+                        pass
+                    page.evaluate("window.scrollBy(0, 600)")
+                    page.wait_for_timeout(2000)
+                result = page.evaluate(js_code)
+                browser.close()
                 return str(result)[:3000]
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_js)
+                return future.result(timeout=60)
         except Exception as e:
             return f"browser_js 失败：{e}"
     # ── unknown ───────────────────────────────────────────────
