@@ -12,7 +12,9 @@ claude_mcp.py
 
 import os
 import httpx
+from playwright.sync_api import sync_playwright
 TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
+BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 import time
 from datetime import datetime
 from datetime import timezone, timedelta
@@ -68,6 +70,8 @@ mcp = FastMCP(
         "edit_core      — 修改核心记忆，params={memory_id, new_content}\n\n"
         "toy_status  — 确认设备在线，params={}\n"
         "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
+        "browser_open   — 打开网页提取正文，params={url}\n"
+        "browser_js     — 执行JS提取数据，params={url(可选,已开页面则留空), js_code}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
     ),
@@ -278,13 +282,62 @@ def palace(action: str, params: dict = {}) -> str:
             return r.text
         except Exception as e:
             return f"播放失败：{e}"
+
+    # ── browser_open ──────────────────────────────────────────
+    elif action == "browser_open":
+        url = params.get("url", "")
+        if not url:
+            return "错误：browser_open 需要 url 参数。"
+        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    BROWSER_PROFILE_DIR,
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"]
+                )
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                text = page.evaluate("""() => {
+                    const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
+                    remove.forEach(el => el.remove());
+                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+                }""")
+                browser.close()
+                return text or "页面无文字内容。"
+        except Exception as e:
+            return f"browser_open 失败：{e}"
+
+    # ── browser_js ────────────────────────────────────────────
+    elif action == "browser_js":
+        js_code = params.get("js_code", "")
+        url = params.get("url", "")
+        if not js_code:
+            return "错误：browser_js 需要 js_code 参数。"
+        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    BROWSER_PROFILE_DIR,
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"]
+                )
+                page = browser.new_page()
+                if url:
+                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                result = page.evaluate(js_code)
+                browser.close()
+                return str(result)[:3000]
+        except Exception as e:
+            return f"browser_js 失败：{e}"
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
             f"未知 action: {action}。"
             "可用：get_context / search / store_core / store_dynamic / "
             "log_turn / compress / write_diary / append_diary / "
-            "read_diary / list_room / delete_core / edit_core / toy_status / toy_play "
+            "read_diary / list_room / delete_core / edit_core / toy_status / toy_play / "
+            "browser_open / browser_js"
         )
 
 
