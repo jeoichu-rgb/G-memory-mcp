@@ -298,6 +298,12 @@ async def palace(action: str, params: dict = {}) -> str:
                 )
                 page = await browser.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await browser.add_cookies([
+                    {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                    {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                ])
+                await page.reload(wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(2000)
                 text = await page.evaluate("""() => {
                     const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
                     remove.forEach(el => el.remove());
