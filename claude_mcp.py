@@ -12,7 +12,7 @@ claude_mcp.py
 
 import os
 import httpx
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 import time
@@ -84,7 +84,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def palace(action: str, params: dict = {}) -> str:
+async def palace(action: str, params: dict = {}) -> str:
     """
     记忆宫殿统一入口。
     action: get_context / search / store_core / store_dynamic /
@@ -290,24 +290,23 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_open 需要 url 参数。"
         os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
+            async with async_playwright() as p:
+                browser = await p.chromium.launch_persistent_context(
                     BROWSER_PROFILE_DIR,
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"]
                 )
-                page = browser.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                text = page.evaluate("""() => {
+                page = await browser.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                text = await page.evaluate("""() => {
                     const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
                     remove.forEach(el => el.remove());
                     return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
                 }""")
-                browser.close()
+                await browser.close()
                 return text or "页面无文字内容。"
         except Exception as e:
             return f"browser_open 失败：{e}"
-
     # ── browser_js ────────────────────────────────────────────
     elif action == "browser_js":
         js_code = params.get("js_code", "")
@@ -316,17 +315,17 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_js 需要 js_code 参数。"
         os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
+            async with async_playwright() as p:
+                browser = await p.chromium.launch_persistent_context(
                     BROWSER_PROFILE_DIR,
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"]
                 )
-                page = browser.new_page()
+                page = await browser.new_page()
                 if url:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                result = page.evaluate(js_code)
-                browser.close()
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                result = await page.evaluate(js_code)
+                await browser.close()
                 return str(result)[:3000]
         except Exception as e:
             return f"browser_js 失败：{e}"
