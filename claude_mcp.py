@@ -302,7 +302,12 @@ async def palace(action: str, params: dict = {}) -> str:
                     {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
                     {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
                 ])
-                await page.reload(wait_until="networkidle", timeout=30000)
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+                try:
+                    await page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
+                except:
+                    pass
+                await page.evaluate("window.scrollBy(0, 600)")
                 await page.wait_for_timeout(2000)
                 text = await page.evaluate("""() => {
                     const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
