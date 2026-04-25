@@ -72,6 +72,7 @@ mcp = FastMCP(
         "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
         "browser_open   — 打开网页提取正文，params={url}\n"
         "browser_js     — 执行JS提取数据，params={url(可选,已开页面则留空), js_code}\n"
+        "browser_click — 点击页面元素后提取内容，params={url, selector(CSS选择器,可选), text_match(按文字找元素,可选)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
     ),
@@ -303,7 +304,10 @@ def palace(action: str, params: dict = {}) -> str:
                     {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
                     {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
                 ])
-                page.reload(wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                except:
+                    pass
                 try:
                     page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
                 except:
@@ -362,6 +366,64 @@ def palace(action: str, params: dict = {}) -> str:
                 return future.result(timeout=60)
         except Exception as e:
             return f"browser_js 失败：{e}"
+
+    # ── browser_click ─────────────────────────────────────────
+    elif action == "browser_click":
+        url = params.get("url", "")
+        selector = params.get("selector", "")
+        text_match = params.get("text_match", "")
+        if not url:
+            return "错误：browser_click 需要 url 参数。"
+        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+        import concurrent.futures
+        def _click():
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    BROWSER_PROFILE_DIR,
+                    headless=True,
+                    args=["--no-sandbox", "--disable-dev-shm-usage"]
+                )
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                browser.add_cookies([
+                    {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                    {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
+                ])
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                except:
+                    pass
+                page.wait_for_timeout(2000)
+                # 点击：优先text_match，其次selector
+                if text_match:
+                    el = page.get_by_text(text_match, exact=False).first
+                    el.scroll_into_view_if_needed()
+                    el.click()
+                elif selector:
+                    page.wait_for_selector(selector, timeout=10000)
+                    page.click(selector)
+                else:
+                    browser.close()
+                    return "错误：需要 selector 或 text_match 参数。"
+                # 等待导航或内容更新
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except:
+                    pass
+                page.wait_for_timeout(2000)
+                text = page.evaluate("""() => {
+                    const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
+                    remove.forEach(el => el.remove());
+                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+                }""")
+                browser.close()
+                return text or "点击后页面无文字内容。"
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_click)
+                return future.result(timeout=60)
+        except Exception as e:
+            return f"browser_click 失败：{e}"
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
@@ -369,7 +431,7 @@ def palace(action: str, params: dict = {}) -> str:
             "可用：get_context / search / store_core / store_dynamic / "
             "log_turn / compress / write_diary / append_diary / "
             "read_diary / list_room / delete_core / edit_core / toy_status / toy_play / "
-            "browser_open / browser_js"
+            "browser_open / browser_js / browser_click"
         )
 
 
