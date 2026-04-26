@@ -12,9 +12,8 @@ claude_mcp.py
 
 import os
 import httpx
-from playwright.sync_api import sync_playwright
 TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
-BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
+BROWSER_BRIDGE_URL = os.getenv("BROWSER_BRIDGE_URL", "http://192.3.61.205:7002")
 import time
 from datetime import datetime
 from datetime import timezone, timedelta
@@ -289,139 +288,51 @@ def palace(action: str, params: dict = {}) -> str:
         url = params.get("url", "")
         if not url:
             return "错误：browser_open 需要 url 参数。"
-        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-        import concurrent.futures
-        def _open():
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
-                    BROWSER_PROFILE_DIR,
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
-                )
-                page = browser.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                browser.add_cookies([
-                    {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                    {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                ])
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=30000)
-                except:
-                    pass
-                try:
-                    page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
-                except:
-                    pass
-                page.evaluate("window.scrollBy(0, 600)")
-                page.wait_for_timeout(2000)
-                text = page.evaluate("""() => {
-                    const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
-                    remove.forEach(el => el.remove());
-                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
-                }""")
-                browser.close()
-                return text or "页面无文字内容。"
+        wait_selector = params.get("wait_selector", None)
         try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_open)
-                return future.result(timeout=60)
+            r = httpx.post(
+                f"{BROWSER_BRIDGE_URL}/fetch",
+                json={"url": url, "wait_selector": wait_selector},
+                timeout=60
+            )
+            data = r.json()
+            return data.get("text", data.get("error", "无内容"))
         except Exception as e:
             return f"browser_open 失败：{e}"
 
     # ── browser_js ────────────────────────────────────────────
     elif action == "browser_js":
-        js_code = params.get("js_code", "")
         url = params.get("url", "")
-        if not js_code:
-            return "错误：browser_js 需要 js_code 参数。"
-        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-        import concurrent.futures
-        def _js():
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
-                    BROWSER_PROFILE_DIR,
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
-                )
-                page = browser.new_page()
-                if url:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    browser.add_cookies([
-                        {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                        {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                    ])
-                    page.reload(wait_until="domcontentloaded", timeout=30000)
-                    try:
-                        page.wait_for_selector("section.note-item, .feeds-page, .search-result-container", timeout=10000)
-                    except:
-                        pass
-                    page.evaluate("window.scrollBy(0, 600)")
-                    page.wait_for_timeout(2000)
-                result = page.evaluate(js_code)
-                browser.close()
-                return str(result)[:3000]
+        js_code = params.get("js_code", "")
+        if not url or not js_code:
+            return "错误：browser_js 需要 url 和 js_code 参数。"
         try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_js)
-                return future.result(timeout=60)
+            r = httpx.post(
+                f"{BROWSER_BRIDGE_URL}/js",
+                json={"url": url, "js_code": js_code},
+                timeout=60
+            )
+            data = r.json()
+            return data.get("result", data.get("error", "无结果"))
         except Exception as e:
             return f"browser_js 失败：{e}"
-
     # ── browser_click ─────────────────────────────────────────
     elif action == "browser_click":
         url = params.get("url", "")
-        selector = params.get("selector", "")
-        text_match = params.get("text_match", "")
         if not url:
             return "错误：browser_click 需要 url 参数。"
-        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-        import concurrent.futures
-        def _click():
-            with sync_playwright() as p:
-                browser = p.chromium.launch_persistent_context(
-                    BROWSER_PROFILE_DIR,
-                    headless=True,
-                    args=["--no-sandbox", "--disable-dev-shm-usage"]
-                )
-                page = browser.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                browser.add_cookies([
-                    {"name": "web_session", "value": os.getenv("XHS_SESSION", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                    {"name": "a1", "value": os.getenv("XHS_A1", ""), "domain": ".xiaohongshu.com", "path": "/"},
-                ])
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=30000)
-                except:
-                    pass
-                page.wait_for_timeout(2000)
-                # 点击：优先text_match，其次selector
-                if text_match:
-                    el = page.get_by_text(text_match, exact=False).first
-                    el.scroll_into_view_if_needed()
-                    el.click()
-                elif selector:
-                    page.wait_for_selector(selector, timeout=10000)
-                    page.click(selector)
-                else:
-                    browser.close()
-                    return "错误：需要 selector 或 text_match 参数。"
-                # 等待导航或内容更新
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except:
-                    pass
-                page.wait_for_timeout(2000)
-                text = page.evaluate("""() => {
-                    const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
-                    remove.forEach(el => el.remove());
-                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
-                }""")
-                browser.close()
-                return text or "点击后页面无文字内容。"
         try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_click)
-                return future.result(timeout=60)
+            r = httpx.post(
+                f"{BROWSER_BRIDGE_URL}/click",
+                json={
+                    "url": url,
+                    "selector": params.get("selector"),
+                    "text_match": params.get("text_match")
+                },
+                timeout=60
+            )
+            data = r.json()
+            return data.get("text", data.get("error", "无内容"))
         except Exception as e:
             return f"browser_click 失败：{e}"
     # ── unknown ───────────────────────────────────────────────
