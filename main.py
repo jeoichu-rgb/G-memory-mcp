@@ -19,13 +19,20 @@ from fastapi.responses import JSONResponse
 os.makedirs("logs", exist_ok=True)
 
 app = FastAPI(title="G's Memory Palace")
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+class ProxySchemeMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            if headers.get(b"x-forwarded-proto") == b"https":
+                scope["scheme"] = "https"
+        await self.app(scope, receive, send)
 
-@app.middleware("http")
-async def fix_proxy_scheme(request: Request, call_next):
-    if request.headers.get("x-forwarded-proto") == "https":
-        request.scope["scheme"] = "https"
-    return await call_next(request)
+app.add_middleware(ProxySchemeMiddleware)
+
 
 # 1. 最先声明你的专属密码
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
