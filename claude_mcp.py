@@ -23,6 +23,12 @@ BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 XHS_DOMAINS = ["xiaohongshu.com", "xhslink.com"]
 
 import time
+import smtplib
+import imaplib
+import email as emaillib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.header import decode_header
 from datetime import datetime
 from datetime import timezone, timedelta
 SGT = timezone(timedelta(hours=8))
@@ -44,6 +50,8 @@ from claude_memory import (
 )
 
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
+EMAIL_163_USER = os.getenv("EMAIL_163_USER", "eriklamb@163.com")   # 你的163邮箱地址
+EMAIL_163_PASS = os.getenv("EMAIL_163_PASS", "NAvesWrYanYmZxJ4")   # 授权码
 
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
@@ -75,6 +83,8 @@ mcp = FastMCP(
         "list_room      — 浏览房间，params={room_name}\n"
         "delete_core    — 删除核心记忆，params={memory_id}\n"
         "edit_core      — 修改核心记忆，params={memory_id, new_content}\n\n"
+        "send_email — 发邮件，params={to, subject, body}\n"
+        "read_email — 读收件箱，params={count(可选,默认5), folder(可选,默认INBOX)}\n"
         "toy_status  — 确认设备在线，params={}\n"
         "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
         "browser_open   — 打开网页提取正文，XHS自动走本地，其他走VPS，params={url}\n"
@@ -462,6 +472,77 @@ def palace(action: str, params: dict = {}) -> str:
                 )
             except Exception as e:
                 return f"browser_click(VPS) 失败：{e}"
+
+    # ── send_email ────────────────────────────────────────────
+    elif action == "send_email":
+        to_addr = params.get("to", "")
+        subject = params.get("subject", "（无主题）")
+        body = params.get("body", "")
+        if not to_addr or not body:
+            return "错误：send_email 需要 to 和 body 参数。"
+        if not EMAIL_163_USER or not EMAIL_163_PASS:
+            return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = EMAIL_163_USER
+            msg["To"] = to_addr
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+            with smtplib.SMTP_SSL("smtp.163.com", 465) as server:
+                server.login(EMAIL_163_USER, EMAIL_163_PASS)
+                server.sendmail(EMAIL_163_USER, to_addr, msg.as_string())
+            return f"邮件已发送至 {to_addr}，主题：{subject}"
+        except Exception as e:
+            return f"发送失败：{e}"
+
+    # ── read_email ────────────────────────────────────────────
+    elif action == "read_email":
+        count = int(params.get("count", 5))
+        folder = params.get("folder", "INBOX")
+        if not EMAIL_163_USER or not EMAIL_163_PASS:
+            return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
+        try:
+            with imaplib.IMAP4_SSL("imap.163.com", 993) as imap:
+                imap.login(EMAIL_163_USER, EMAIL_163_PASS)
+                imap.select(folder)
+                _, data = imap.search(None, "ALL")
+                ids = data[0].split()
+                ids = ids[-count:] if len(ids) >= count else ids
+                results = []
+                for uid in reversed(ids):
+                    _, msg_data = imap.fetch(uid, "(RFC822)")
+                    raw = msg_data[0][1]
+                    msg = emaillib.message_from_bytes(raw)
+                    def _decode(val):
+                        if not val:
+                            return ""
+                        parts = decode_header(val)
+                        out = []
+                        for b, enc in parts:
+                            if isinstance(b, bytes):
+                                out.append(b.decode(enc or "utf-8", errors="replace"))
+                            else:
+                                out.append(b)
+                        return "".join(out)
+                    subj = _decode(msg["Subject"])
+                    frm  = _decode(msg["From"])
+                    date = msg["Date"] or ""
+                    body_text = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                charset = part.get_content_charset() or "utf-8"
+                                body_text = part.get_payload(decode=True).decode(charset, errors="replace")
+                                break
+                    else:
+                        charset = msg.get_content_charset() or "utf-8"
+                        body_text = msg.get_payload(decode=True).decode(charset, errors="replace")
+                    results.append(
+                        f"【发件人】{frm}\n【主题】{subj}\n【时间】{date}\n【正文】\n{body_text[:500]}"
+                    )
+                return "\n\n─────\n\n".join(results) if results else "收件箱为空。"
+        except Exception as e:
+            return f"读取失败：{e}"
 
     # ── unknown ───────────────────────────────────────────────
     else:
