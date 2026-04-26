@@ -12,12 +12,20 @@ claude_mcp.py
 
 import os
 import httpx
+import concurrent.futures
+from playwright.sync_api import sync_playwright
+
 TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
 BROWSER_BRIDGE_URL = os.getenv("BROWSER_BRIDGE_URL", "http://192.3.61.205:7002")
+BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
+
+# XHS 走本地 Windows bridge，其他域名走 VPS playwright
+XHS_DOMAINS = ["xiaohongshu.com", "xhslink.com"]
+
 import time
 from datetime import datetime
 from datetime import timezone, timedelta
-SGT = timezone(timedelta(hours=8))  # 新加坡时间，以后改美东只需换成-4或-5
+SGT = timezone(timedelta(hours=8))
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from claude_memory import (
@@ -69,9 +77,9 @@ mcp = FastMCP(
         "edit_core      — 修改核心记忆，params={memory_id, new_content}\n\n"
         "toy_status  — 确认设备在线，params={}\n"
         "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
-        "browser_open   — 打开网页提取正文，params={url}\n"
-        "browser_js     — 执行JS提取数据，params={url(可选,已开页面则留空), js_code}\n"
-        "browser_click — 点击页面元素后提取内容，params={url, selector(CSS选择器,可选), text_match(按文字找元素,可选)}\n"
+        "browser_open   — 打开网页提取正文，XHS自动走本地，其他走VPS，params={url}\n"
+        "browser_js     — 执行JS提取数据，params={url, js_code}\n"
+        "browser_click  — 点击页面元素后提取内容，params={url, selector(可选), text_match(可选)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
     ),
@@ -81,6 +89,101 @@ mcp = FastMCP(
         allowed_origins=["https://erikssheep.uk", "https://erikssheep.uk:*"],
     )
 )
+
+
+def _is_xhs(url: str) -> bool:
+    return any(d in url for d in XHS_DOMAINS)
+
+
+def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
+    """VPS 上用 headless chromium 抓取普通网页"""
+    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+    def _open():
+        with sync_playwright() as p:
+            browser = p.chromium.launch_persistent_context(
+                BROWSER_PROFILE_DIR,
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if wait_selector:
+                try:
+                    page.wait_for_selector(wait_selector, timeout=10000)
+                except:
+                    pass
+            else:
+                page.wait_for_timeout(2000)
+            page.evaluate("window.scrollBy(0, 600)")
+            page.wait_for_timeout(1000)
+            text = page.evaluate("""() => {
+                const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
+                remove.forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            browser.close()
+            return text or "页面无文字内容。"
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_open).result(timeout=60)
+
+
+def _vps_browser_js(url: str, js_code: str) -> str:
+    """VPS 上执行 JS"""
+    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+    def _js():
+        with sync_playwright() as p:
+            browser = p.chromium.launch_persistent_context(
+                BROWSER_PROFILE_DIR,
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            result = page.evaluate(js_code)
+            browser.close()
+            return str(result)[:3000]
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_js).result(timeout=60)
+
+
+def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -> str:
+    """VPS 上点击元素"""
+    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+    def _click():
+        with sync_playwright() as p:
+            browser = p.chromium.launch_persistent_context(
+                BROWSER_PROFILE_DIR,
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            if text_match:
+                el = page.get_by_text(text_match, exact=False).first
+                el.scroll_into_view_if_needed()
+                el.click()
+            elif selector:
+                page.wait_for_selector(selector, timeout=10000)
+                page.click(selector)
+            else:
+                browser.close()
+                return "错误：需要 selector 或 text_match。"
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except:
+                pass
+            page.wait_for_timeout(2000)
+            text = page.evaluate("""() => {
+                const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
+                remove.forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            browser.close()
+            return text or "点击后页面无文字内容。"
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_click).result(timeout=60)
 
 
 @mcp.tool()
@@ -215,6 +318,7 @@ def palace(action: str, params: dict = {}) -> str:
                 f.write(f"\n\n---\n*追加：{time_str}*\n\n{extra_content}\n")
             return f"已追加到 {matched[-1]}"
         return f"错误：{target_date} 没有找到日记，请改用 write_diary 新建。"
+
     # ── read_diary ────────────────────────────────────────────
     elif action == "read_diary":
         date = params.get("date", "")
@@ -289,16 +393,22 @@ def palace(action: str, params: dict = {}) -> str:
         if not url:
             return "错误：browser_open 需要 url 参数。"
         wait_selector = params.get("wait_selector", None)
-        try:
-            r = httpx.post(
-                f"{BROWSER_BRIDGE_URL}/fetch",
-                json={"url": url, "wait_selector": wait_selector},
-                timeout=60
-            )
-            data = r.json()
-            return data.get("text", data.get("error", "无内容"))
-        except Exception as e:
-            return f"browser_open 失败：{e}"
+        if _is_xhs(url):
+            try:
+                r = httpx.post(
+                    f"{BROWSER_BRIDGE_URL}/fetch",
+                    json={"url": url, "wait_selector": wait_selector},
+                    timeout=90
+                )
+                data = r.json()
+                return data.get("text", data.get("error", "无内容"))
+            except Exception as e:
+                return f"browser_open(本地) 失败：{e}"
+        else:
+            try:
+                return _vps_browser_fetch(url, wait_selector)
+            except Exception as e:
+                return f"browser_open(VPS) 失败：{e}"
 
     # ── browser_js ────────────────────────────────────────────
     elif action == "browser_js":
@@ -306,35 +416,53 @@ def palace(action: str, params: dict = {}) -> str:
         js_code = params.get("js_code", "")
         if not url or not js_code:
             return "错误：browser_js 需要 url 和 js_code 参数。"
-        try:
-            r = httpx.post(
-                f"{BROWSER_BRIDGE_URL}/js",
-                json={"url": url, "js_code": js_code},
-                timeout=60
-            )
-            data = r.json()
-            return data.get("result", data.get("error", "无结果"))
-        except Exception as e:
-            return f"browser_js 失败：{e}"
+        if _is_xhs(url):
+            try:
+                r = httpx.post(
+                    f"{BROWSER_BRIDGE_URL}/js",
+                    json={"url": url, "js_code": js_code},
+                    timeout=90
+                )
+                data = r.json()
+                return data.get("result", data.get("error", "无结果"))
+            except Exception as e:
+                return f"browser_js(本地) 失败：{e}"
+        else:
+            try:
+                return _vps_browser_js(url, js_code)
+            except Exception as e:
+                return f"browser_js(VPS) 失败：{e}"
+
     # ── browser_click ─────────────────────────────────────────
     elif action == "browser_click":
         url = params.get("url", "")
         if not url:
             return "错误：browser_click 需要 url 参数。"
-        try:
-            r = httpx.post(
-                f"{BROWSER_BRIDGE_URL}/click",
-                json={
-                    "url": url,
-                    "selector": params.get("selector"),
-                    "text_match": params.get("text_match")
-                },
-                timeout=60
-            )
-            data = r.json()
-            return data.get("text", data.get("error", "无内容"))
-        except Exception as e:
-            return f"browser_click 失败：{e}"
+        if _is_xhs(url):
+            try:
+                r = httpx.post(
+                    f"{BROWSER_BRIDGE_URL}/click",
+                    json={
+                        "url": url,
+                        "selector": params.get("selector"),
+                        "text_match": params.get("text_match")
+                    },
+                    timeout=90
+                )
+                data = r.json()
+                return data.get("text", data.get("error", "无内容"))
+            except Exception as e:
+                return f"browser_click(本地) 失败：{e}"
+        else:
+            try:
+                return _vps_browser_click(
+                    url,
+                    selector=params.get("selector"),
+                    text_match=params.get("text_match")
+                )
+            except Exception as e:
+                return f"browser_click(VPS) 失败：{e}"
+
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
