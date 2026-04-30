@@ -233,4 +233,64 @@ https://erikssheep.uk/mcp/Jeoi2026/sse
 
 ---
 
+## 更新日志
+
+### 2026-04-17
+
+**后端新增（`claude_memory.py`）：**
+- `claude_compress_preview()` — DS 压缩 buffer 生成草稿，存为待确认 JSON，不直接写库
+- `claude_compress_confirm()` — 确认草稿后 embedding 写入 dynamic 库，清空 buffer
+- `claude_get_draft()` / `claude_get_rolling_context()` 等辅助函数
+- `claude_list_all_memories()` — 列出 core 或 dynamic 全部条目供前端展示
+- `claude_list_diaries()` / `claude_read_diary_by_filename()` / `claude_write_diary_by_filename()` — 日记前端读写
+- `claude_delete_dynamic_memory()` — 删除动态记忆（此前只有 core 的删除）
+- `claude_recompress_single()` — 对单条动态记忆重新 DS 压缩并替换原条目
+
+**后端新增（`main.py`）：**
+- `/admin/memories` GET/PUT/DELETE — 记忆的列出、编辑、删除
+- `/admin/compress-draft` GET — 读草稿
+- `/admin/compress-preview` POST — 触发 DS 生成草稿
+- `/admin/compress-confirm` POST — 确认写库
+- `/admin/diary` GET — 日记列表
+- `/admin/diary/{filename}` GET/PUT — 读写日记
+- `/admin/recompress-selected` POST — 批量重压缩选中条目
+
+**前端新增（`index.html`）：**
+- Dashboard 新增 Erik's Room 入口卡片
+- 完整的 Erik 面板：草稿确认区（可编辑后存入）、日记列表与编辑器、Core 记忆三栏分类（Claude 存入 / Obsidian 同步 / 全部）、动态记忆列表带 checkbox 多选、手动压缩触发、选中条目重压缩
+
+**关键设计决策：**
+- 压缩流程改为两步：DS 出草稿 → Jeoi 确认/编辑 → 再 embedding 写库
+- 新窗口 `get_context()` 自动检测未处理 buffer 并生成草稿
+- Core 记忆按 `source` 字段区分来源：`mcp_manual`（Claude 存）vs Obsidian 同步，前端颜色不同
+- Dynamic 记忆删除走 `claude_delete_dynamic_memory`，不再错误调用 core 的删除函数
+- 持久化卷确认：`/app/logs`、`/app/chroma_db`、`/app/claude_diary` 均已挂载
+
+**修复的 bug：**
+- `main.py` 重复 `@app.get("/")` 路由
+- `API_BASE` 从 Coolify 内部地址改为真实域名 `https://erikssheep.uk`
+- JS 模板字符串嵌套反引号导致语法错误
+- `erikLoadMemories` 函数缺少结尾 `}`
+- `erik-mem-list` div 被误删后补回
+
+---
+
+### 2026-04-26
+
+新建 `browser_bridge.py` 在 Windows 本地运行（端口 8766），用本地 Chrome + persistent profile 访问小红书，登录态永久保存。`frpc.toml` 加了 8766→7002 映射。`claude_mcp.py` 改为智能路由：小红书走本地 Windows bridge，其他网站走 VPS headless Chromium，两条路完全独立。
+
+**关键发现：** 小红书帖子必须从列表页用 `browser_click` 点击进入触发 modal，直接导航 `/explore/<ID>` 不渲染正文。
+
+---
+
+### 2026-04-30
+
+- 记忆检索升级为向量 + keyword 字面匹配双路混合，core 和 dynamic 均覆盖，结果合并去重统一打分
+- 召回加分增强：改用 `log(n+1) × 0.25`，被频繁搜索的记忆在排序中持续上浮
+- Dynamic 记忆衰减与召回次数联动：召回越多 decay rate 越小，高频记忆不易消失
+- `list_room` 确认不计入召回次数，冷启动浏览不污染打分
+- 检索返回内容从截断 300 字改为 1500 字
+
+---
+
 *最后更新：2026-04-30*
