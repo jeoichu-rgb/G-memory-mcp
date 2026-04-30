@@ -291,10 +291,10 @@ def claude_list_room(room_name: str) -> str:
 
     lines = [f"【{room_name}】共 {len(docs)} 条记忆：\n"]
     for i, (doc, meta) in enumerate(zip(docs, metas)):
-        preview = doc[:80].replace("\n", " ")
+        preview = doc
         category = meta.get("category", "未知")
         date = meta.get("date", "未知日期")
-        lines.append(f"[{i+1}] {date} | {category}\n    {preview}…\n")
+        lines.append(f"[{i+1}] {date} | {category}\n{preview}\n")
 
     return "\n".join(lines)
 
