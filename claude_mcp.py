@@ -11,20 +11,20 @@ claude_mcp.py
 """
 
 import os
+import re
 import json
 import httpx
 import concurrent.futures
 from playwright.sync_api import sync_playwright
 
-TOY_BRIDGE_URL     = os.getenv("TOY_BRIDGE_URL",     "http://192.3.61.205:7001")
-BROWSER_BRIDGE_URL = os.getenv("BROWSER_BRIDGE_URL", "http://192.3.61.205:7002")
+TOY_BRIDGE_URL      = os.getenv("TOY_BRIDGE_URL",      "http://192.3.61.205:7001")
+BROWSER_BRIDGE_URL  = os.getenv("BROWSER_BRIDGE_URL",  "http://192.3.61.205:7002")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
-ZHIHU_PROFILE_DIR   = os.getenv("ZHIHU_PROFILE_DIR",  "/app/zhihu_profile")
 ZHIHU_COOKIES_RAW   = os.getenv("ZHIHU_COOKIES", "[]")
 
 # 域名路由判断
-XHS_DOMAINS    = ["xiaohongshu.com", "xhslink.com"]
-ZHIHU_DOMAINS  = ["zhihu.com"]
+XHS_DOMAINS   = ["xiaohongshu.com", "xhslink.com"]
+ZHIHU_DOMAINS = ["zhihu.com"]
 
 import time
 import smtplib
@@ -69,8 +69,9 @@ FOLDER_MAP = {
     "健康": "书桌",
 }
 
+
 # ══════════════════════════════════════════════════════════════════
-#  Stealth 注入脚本（覆盖 headless 暴露的特征）
+#  Stealth 注入脚本
 # ══════════════════════════════════════════════════════════════════
 STEALTH_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -92,21 +93,13 @@ Object.defineProperty(navigator, 'plugins', {
 });
 Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
 Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-window.Notification = window.Notification || {permission: 'default'};
 """
 
+
 # ══════════════════════════════════════════════════════════════════
-#  通用 stealth context 启动器（VPS headless，所有非XHS网站用这个）
+#  通用 stealth context 启动器（VPS headless，非XHS/知乎网站用）
 # ══════════════════════════════════════════════════════════════════
-def _launch_stealth_context(p, profile_dir: str, extra_cookies: list = None):
-    """
-    启动一个抗检测的 persistent context。
-    - 禁用 AutomationControlled 标志
-    - 伪装 UA（去掉 HeadlessChrome 字样）
-    - 注入 STEALTH_SCRIPT 覆盖 navigator.webdriver 等
-    - 可选注入 cookies
-    返回 context 对象，调用方负责 close。
-    """
+def _launch_stealth_context(p, profile_dir: str):
     os.makedirs(profile_dir, exist_ok=True)
     context = p.chromium.launch_persistent_context(
         profile_dir,
@@ -129,44 +122,161 @@ def _launch_stealth_context(p, profile_dir: str, extra_cookies: list = None):
         ignore_https_errors=True,
     )
     context.add_init_script(STEALTH_SCRIPT)
-    if extra_cookies:
-        try:
-            context.add_cookies(extra_cookies)
-        except Exception:
-            pass
     return context
 
 
 # ══════════════════════════════════════════════════════════════════
-#  知乎 Cookie 解析
+#  知乎 API（纯 httpx，完全不走浏览器）
 # ══════════════════════════════════════════════════════════════════
-def _get_zhihu_cookies() -> list:
-    """把 ZHIHU_COOKIES 环境变量里的 JSON 转成 Playwright 格式"""
+def _get_zhihu_creds() -> dict:
+    """从 ZHIHU_COOKIES 环境变量提取 z_c0 / d_c0 / _zap"""
+    creds = {"z_c0": "", "d_c0": "", "_zap": ""}
     try:
         raw = json.loads(ZHIHU_COOKIES_RAW)
-        result = []
         for c in raw:
-            entry = {
-                "name":   c["name"],
-                "value":  c["value"],
-                "domain": c["domain"],
-                "path":   c.get("path", "/"),
-            }
-            if "expirationDate" in c:
-                entry["expires"] = int(c["expirationDate"])
-            entry["secure"]   = bool(c.get("secure", False))
-            entry["httpOnly"] = bool(c.get("httpOnly", False))
-            ss = c.get("sameSite", "")
-            if ss == "no_restriction":
-                entry["sameSite"] = "None"
-            elif ss == "strict":
-                entry["sameSite"] = "Strict"
-            else:
-                entry["sameSite"] = "Lax"
-            result.append(entry)
-        return result
+            name = c.get("name", "")
+            if name in creds:
+                creds[name] = c.get("value", "")
     except Exception:
-        return []
+        pass
+    return creds
+
+
+def _zhihu_headers(creds: dict) -> dict:
+    cookie_str = "; ".join(f"{k}={v}" for k, v in creds.items() if v)
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Cookie": cookie_str,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.zhihu.com/",
+        "x-api-version": "3.0.91",
+        "x-app-za": "OS=Web",
+        "x-requested-with": "fetch",
+    }
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _zhihu_hot() -> str:
+    creds = _get_zhihu_creds()
+    try:
+        r = httpx.get(
+            "https://www.zhihu.com/api/v4/hot_feed?limit=20&desktop=true",
+            headers=_zhihu_headers(creds),
+            timeout=15,
+        )
+        data  = r.json()
+        items = data.get("data", [])
+        lines = []
+        for i, item in enumerate(items[:20], 1):
+            t     = item.get("target", {})
+            title = t.get("title", t.get("title_area", {}).get("text", ""))
+            qid   = t.get("id", "")
+            heat  = item.get("detail_text", "")
+            if title:
+                lines.append(f"{i}. {title}  [热度:{heat}]  [question_id:{qid}]")
+        return "【知乎热榜】\n" + "\n".join(lines) if lines else "热榜数据为空。"
+    except Exception as e:
+        return f"热榜请求失败：{e}"
+
+
+def _zhihu_question(question_id: str) -> str:
+    creds   = _get_zhihu_creds()
+    headers = _zhihu_headers(creds)
+    parts   = []
+
+    # 问题详情
+    try:
+        r = httpx.get(
+            f"https://www.zhihu.com/api/v4/questions/{question_id}?include=data[*].detail",
+            headers=headers, timeout=15,
+        )
+        q      = r.json()
+        title  = q.get("title", "")
+        detail = _strip_html(q.get("detail", ""))
+        follow = q.get("follower_count", 0)
+        view   = q.get("visit_count", 0)
+        parts.append(f"【问题】{title}")
+        if detail:
+            parts.append(f"【描述】{detail[:500]}")
+        parts.append(f"关注 {follow} · 浏览 {view}")
+    except Exception as e:
+        parts.append(f"问题详情请求失败：{e}")
+
+    # 前5条回答
+    try:
+        r = httpx.get(
+            f"https://www.zhihu.com/api/v4/questions/{question_id}/answers"
+            "?include=data[*].author,content&limit=5&offset=0&sort_by=default",
+            headers=headers, timeout=15,
+        )
+        answers = r.json().get("data", [])
+        for i, ans in enumerate(answers, 1):
+            author  = ans.get("author", {}).get("name", "匿名")
+            voteup  = ans.get("voteup_count", 0)
+            content = _strip_html(ans.get("content", ""))[:600]
+            ans_id  = ans.get("id", "")
+            parts.append(f"\n【回答{i}】{author}（赞{voteup}）[answer_id:{ans_id}]\n{content}")
+    except Exception as e:
+        parts.append(f"回答请求失败：{e}")
+
+    return "\n".join(parts)
+
+
+def _zhihu_comments(answer_id: str, pages: int = 3) -> str:
+    creds        = _get_zhihu_creds()
+    headers      = _zhihu_headers(creds)
+    all_comments = []
+    offset       = 0
+
+    for _ in range(pages):
+        try:
+            r = httpx.get(
+                f"https://www.zhihu.com/api/v4/answers/{answer_id}/comments"
+                f"?include=data[*].author,content&limit=20&offset={offset}&order=normal",
+                headers=headers, timeout=15,
+            )
+            data     = r.json()
+            comments = data.get("data", [])
+            if not comments:
+                break
+            for c in comments:
+                author  = c.get("author", {}).get("name", "匿名")
+                content = _strip_html(c.get("content", ""))
+                likes   = c.get("like_count", 0)
+                all_comments.append(f"  {author}（赞{likes}）：{content}")
+            if data.get("paging", {}).get("is_end", True):
+                break
+            offset += 20
+        except Exception as e:
+            all_comments.append(f"[翻页失败：{e}]")
+            break
+
+    if not all_comments:
+        return "暂无评论或请求失败。"
+    return f"【评论 共{len(all_comments)}条】\n" + "\n".join(all_comments)
+
+
+def _zhihu_api_auto(url: str) -> str:
+    """根据 URL 自动路由到对应知乎 API"""
+    qm = re.search(r"/question/(\d+)", url)
+    am = re.search(r"/answer/(\d+)", url)
+    question_id = qm.group(1) if qm else None
+    answer_id   = am.group(1) if am else None
+
+    if answer_id and question_id:
+        return _zhihu_question(question_id) + "\n\n" + _zhihu_comments(answer_id)
+    elif question_id:
+        return _zhihu_question(question_id)
+    else:
+        return _zhihu_hot()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -180,124 +290,9 @@ def _is_zhihu(url: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  知乎专用抓取（stealth + cookie + 三屏滚动 + 按类型提取）
-# ══════════════════════════════════════════════════════════════════
-def _zhihu_fetch(url: str) -> str:
-    cookies = _get_zhihu_cookies()
-
-    def _fetch():
-        with sync_playwright() as p:
-            # 不预先注入cookie，先建立域名上下文再写入
-            context = _launch_stealth_context(p, ZHIHU_PROFILE_DIR)
-            page = context.new_page()
-            # 第一步：先访问根域，建立同源上下文
-            page.goto("https://www.zhihu.com", wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1000)
-            # 第二步：注入cookie（此时域名已匹配，注入才生效）
-            if cookies:
-                try:
-                    context.add_cookies(cookies)
-                except Exception:
-                    pass
-            # 第三步：跳转目标页
-            page.goto(url, wait_until="domcontentloaded", timeout=35000)
-            page.wait_for_timeout(2500)
-
-            # 三屏滚动，等待懒加载内容
-            for _ in range(3):
-                page.evaluate("window.scrollBy(0, window.innerHeight)")
-                page.wait_for_timeout(1800)
-
-            # JS 提取：按页面类型分支
-            text = page.evaluate("""() => {
-                // 去噪
-                document.querySelectorAll(
-                    'script,style,nav,footer,header,aside,' +
-                    '[class*="Ad"],[class*="ad-"],[id*="ad"],' +
-                    '[class*="recommend"],[class*="Recommend"]'
-                ).forEach(el => el.remove());
-
-                const parts = [];
-
-                // 问题标题
-                document.querySelectorAll(
-                    '.QuestionHeader-title, .QuestionPage-header h1'
-                ).forEach(el => {
-                    const t = el.innerText.trim();
-                    if (t) parts.push('【问题】' + t);
-                });
-
-                // 问题描述
-                document.querySelectorAll(
-                    '.QuestionHeader-detail .RichText'
-                ).forEach(el => {
-                    const t = el.innerText.trim();
-                    if (t) parts.push('【问题详情】' + t.slice(0, 600));
-                });
-
-                // 回答正文（最多5条，每条800字）
-                let answerCount = 0;
-                document.querySelectorAll(
-                    '.List-item .RichContent-inner, .AnswerItem .RichContent-inner'
-                ).forEach(el => {
-                    if (answerCount >= 5) return;
-                    const t = el.innerText.trim();
-                    if (t) parts.push('【回答' + (++answerCount) + '】' + t.slice(0, 800));
-                });
-
-                // 单条回答页面
-                if (answerCount === 0) {
-                    document.querySelectorAll('.RichContent-inner').forEach(el => {
-                        if (answerCount >= 1) return;
-                        const t = el.innerText.trim();
-                        if (t) { parts.push('【回答】' + t.slice(0, 2000)); answerCount++; }
-                    });
-                }
-
-                // 评论（最多30条）
-                let cmtCount = 0;
-                document.querySelectorAll(
-                    '.CommentItem-content, .CommentItemV2-content, .Comment-content'
-                ).forEach(el => {
-                    if (cmtCount >= 30) return;
-                    const t = el.innerText.trim();
-                    if (t) { parts.push('评论：' + t); cmtCount++; }
-                });
-
-                // 知乎热榜首页
-                document.querySelectorAll('.HotItem-content').forEach(el => {
-                    const t = el.innerText.trim();
-                    if (t) parts.push('热榜：' + t);
-                });
-
-                // 普通 feed（推荐页）
-                document.querySelectorAll(
-                    '.Feed .ContentItem-title, .Feed .RichContent-inner'
-                ).forEach(el => {
-                    const t = el.innerText.trim();
-                    if (t) parts.push(t.slice(0, 300));
-                });
-
-                // 兜底：页面无结构
-                if (parts.length === 0) {
-                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
-                }
-
-                return parts.join('\\n\\n');
-            }""")
-
-            context.close()
-            return (text or "页面无内容").strip()[:5000]
-
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(_fetch).result(timeout=120)
-
-
-# ══════════════════════════════════════════════════════════════════
-#  通用 VPS browser（stealth版，处理普通网站）
+#  通用 VPS browser（stealth，处理普通网站）
 # ══════════════════════════════════════════════════════════════════
 def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
-    """VPS headless + stealth，抓取普通网页正文"""
     def _open():
         with sync_playwright() as p:
             context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
@@ -318,13 +313,11 @@ def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
             }""")
             context.close()
             return text or "页面无文字内容。"
-
     with concurrent.futures.ThreadPoolExecutor() as pool:
         return pool.submit(_open).result(timeout=60)
 
 
 def _vps_browser_js(url: str, js_code: str) -> str:
-    """VPS headless + stealth，执行自定义 JS"""
     def _js():
         with sync_playwright() as p:
             context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
@@ -334,13 +327,11 @@ def _vps_browser_js(url: str, js_code: str) -> str:
             result = page.evaluate(js_code)
             context.close()
             return str(result)[:3000]
-
     with concurrent.futures.ThreadPoolExecutor() as pool:
         return pool.submit(_js).result(timeout=60)
 
 
 def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -> str:
-    """VPS headless + stealth，点击元素后提取内容"""
     def _click():
         with sync_playwright() as p:
             context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
@@ -368,7 +359,6 @@ def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -
             }""")
             context.close()
             return text or "点击后页面无文字内容。"
-
     with concurrent.futures.ThreadPoolExecutor() as pool:
         return pool.submit(_click).result(timeout=60)
 
@@ -398,9 +388,10 @@ mcp = FastMCP(
         "read_email     — 读收件箱，params={count(可选,默认5), folder(可选,默认INBOX)}\n"
         "toy_status     — 确认设备在线，params={}\n"
         "toy_play       — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
-        "browser_open   — 打开网页提取正文，知乎走stealth+cookie，XHS走本地，其他走VPS stealth，params={url}\n"
-        "browser_js     — 执行JS提取数据，params={url, js_code}\n"
-        "browser_click  — 点击页面元素后提取内容，params={url, selector(可选), text_match(可选)}\n"
+        "browser_open   — 打开网页；知乎走API，XHS走本地bridge，其他走VPS stealth，params={url}\n"
+        "browser_js     — 执行JS提取，params={url, js_code}\n"
+        "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
+        "zhihu          — 知乎精细操作，params={type:hot/question/answers/comments, id(可选question_id或answer_id), offset(可选翻页,默认0)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
     ),
@@ -418,7 +409,9 @@ def palace(action: str, params: dict = {}) -> str:
     记忆宫殿统一入口。
     action: get_context / search / store_core / store_dynamic /
             log_turn / compress / write_diary / append_diary /
-            read_diary / list_room / delete_core / edit_core
+            read_diary / list_room / delete_core / edit_core /
+            send_email / read_email / toy_status / toy_play /
+            browser_open / browser_js / browser_click / zhihu
     params: 对应 action 所需参数的 dict，不需要参数时传 {}
     """
 
@@ -449,29 +442,23 @@ def palace(action: str, params: dict = {}) -> str:
         content = params.get("content", "")
         if not content:
             return "错误：store_core 需要 content 参数。"
-        category = params.get("category", "情感")
-        mood     = params.get("mood", "平静")
-        folder   = params.get("folder", "") or FOLDER_MAP.get(category, "书桌")
-
-        ts          = int(time.time())
-        m_id        = f"claude_core_manual_{ts}"
-        safe_preview = content[:20].replace("/", "_").replace(" ", "_")
-        filename    = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_preview}.md"
-        dirpath     = f"./Obsidian_Core/Eric_memory/{folder}"
+        category  = params.get("category", "情感")
+        mood      = params.get("mood", "平静")
+        folder    = params.get("folder", "") or FOLDER_MAP.get(category, "书桌")
+        ts        = int(time.time())
+        m_id      = f"claude_core_manual_{ts}"
+        safe_prev = content[:20].replace("/", "_").replace(" ", "_")
+        filename  = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_prev}.md"
+        dirpath   = f"./Obsidian_Core/Eric_memory/{folder}"
         os.makedirs(dirpath, exist_ok=True)
         with open(f"{dirpath}/{filename}", "w", encoding="utf-8") as f:
             f.write(content)
-
         claude_add_core_memory(
             content=content,
             metadata={
-                "category":         category,
-                "folder":           folder,
-                "filename":         filename,
-                "mood":             mood,
-                "recall_count":     0,
-                "last_recalled_ts": 0,
-                "source":           "mcp_manual"
+                "category": category, "folder": folder, "filename": filename,
+                "mood": mood, "recall_count": 0, "last_recalled_ts": 0,
+                "source": "mcp_manual"
             },
             memory_id=m_id
         )
@@ -488,11 +475,8 @@ def palace(action: str, params: dict = {}) -> str:
         claude_add_dynamic_memory(
             content=content,
             metadata={
-                "category":         category,
-                "mood":             mood,
-                "recall_count":     0,
-                "last_recalled_ts": 0,
-                "source":           "mcp_manual"
+                "category": category, "mood": mood,
+                "recall_count": 0, "last_recalled_ts": 0, "source": "mcp_manual"
             },
             memory_id=m_id
         )
@@ -519,14 +503,13 @@ def palace(action: str, params: dict = {}) -> str:
         mood    = params.get("mood", "平静")
         if not title or not content:
             return "错误：write_diary 需要 title 和 content。"
-        now       = datetime.now(SGT)
-        today     = now.strftime("%Y-%m-%d")
-        time_str  = now.strftime("%H-%M")
+        now        = datetime.now(SGT)
+        today      = now.strftime("%Y-%m-%d")
+        time_str   = now.strftime("%H-%M")
         safe_title = title.replace("/", "_").replace(" ", "_")
-        filename  = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
-        diary_content = f"# {title}\n> 日期：{today} {time_str.replace('-', ':')} | 心情：{mood}\n\n{content}\n"
+        filename   = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
         with open(filename, "w", encoding="utf-8") as f:
-            f.write(diary_content)
+            f.write(f"# {title}\n> 日期：{today} {time_str.replace('-', ':')} | 心情：{mood}\n\n{content}\n")
         return f"已写下。{filename}"
 
     # ── append_diary ──────────────────────────────────────────
@@ -609,6 +592,53 @@ def palace(action: str, params: dict = {}) -> str:
         except Exception as e:
             return f"播放失败：{e}"
 
+    # ── zhihu（精细操作）─────────────────────────────────────
+    elif action == "zhihu":
+        ztype  = params.get("type", "hot")
+        zid    = str(params.get("id", ""))
+        offset = int(params.get("offset", 0))
+
+        if ztype == "hot":
+            return _zhihu_hot()
+
+        elif ztype == "question":
+            if not zid:
+                return "错误：zhihu question 需要 id 参数（question_id）。"
+            return _zhihu_question(zid)
+
+        elif ztype == "answers":
+            if not zid:
+                return "错误：zhihu answers 需要 id 参数（question_id）。"
+            creds   = _get_zhihu_creds()
+            headers = _zhihu_headers(creds)
+            try:
+                r = httpx.get(
+                    f"https://www.zhihu.com/api/v4/questions/{zid}/answers"
+                    f"?include=data[*].author,content&limit=5&offset={offset}&sort_by=default",
+                    headers=headers, timeout=15,
+                )
+                answers = r.json().get("data", [])
+                if not answers:
+                    return "没有更多回答了。"
+                lines = []
+                for i, ans in enumerate(answers, offset + 1):
+                    author  = ans.get("author", {}).get("name", "匿名")
+                    voteup  = ans.get("voteup_count", 0)
+                    content = _strip_html(ans.get("content", ""))[:600]
+                    ans_id  = ans.get("id", "")
+                    lines.append(f"【回答{i}】{author}（赞{voteup}）[answer_id:{ans_id}]\n{content}")
+                return "\n\n".join(lines)
+            except Exception as e:
+                return f"回答列表请求失败：{e}"
+
+        elif ztype == "comments":
+            if not zid:
+                return "错误：zhihu comments 需要 id 参数（answer_id）。"
+            return _zhihu_comments(zid, pages=3)
+
+        else:
+            return f"未知 zhihu type: {ztype}。可用：hot / question / answers / comments"
+
     # ── browser_open ──────────────────────────────────────────
     elif action == "browser_open":
         url = params.get("url", "")
@@ -617,17 +647,14 @@ def palace(action: str, params: dict = {}) -> str:
         wait_selector = params.get("wait_selector", None)
 
         if _is_zhihu(url):
-            try:
-                return _zhihu_fetch(url)
-            except Exception as e:
-                return f"browser_open(知乎) 失败：{e}"
+            return _zhihu_api_auto(url)
 
         elif _is_xhs(url):
             try:
                 r = httpx.post(
                     f"{BROWSER_BRIDGE_URL}/fetch",
                     json={"url": url, "wait_selector": wait_selector},
-                    timeout=90
+                    timeout=90,
                 )
                 data = r.json()
                 return data.get("text", data.get("error", "无内容"))
@@ -648,17 +675,14 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_js 需要 url 和 js_code 参数。"
 
         if _is_zhihu(url):
-            try:
-                return _zhihu_fetch(url)   # 知乎统一走 fetch，JS提取已内置
-            except Exception as e:
-                return f"browser_js(知乎) 失败：{e}"
+            return _zhihu_api_auto(url)
 
         elif _is_xhs(url):
             try:
                 r = httpx.post(
                     f"{BROWSER_BRIDGE_URL}/js",
                     json={"url": url, "js_code": js_code},
-                    timeout=90
+                    timeout=90,
                 )
                 data = r.json()
                 return data.get("result", data.get("error", "无结果"))
@@ -678,10 +702,7 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_click 需要 url 参数。"
 
         if _is_zhihu(url):
-            try:
-                return _zhihu_fetch(url)   # 知乎内容靠滚动触发，click统一走fetch
-            except Exception as e:
-                return f"browser_click(知乎) 失败：{e}"
+            return _zhihu_api_auto(url)
 
         elif _is_xhs(url):
             try:
@@ -690,9 +711,9 @@ def palace(action: str, params: dict = {}) -> str:
                     json={
                         "url":        url,
                         "selector":   params.get("selector"),
-                        "text_match": params.get("text_match")
+                        "text_match": params.get("text_match"),
                     },
-                    timeout=90
+                    timeout=90,
                 )
                 data = r.json()
                 return data.get("text", data.get("error", "无内容"))
@@ -704,7 +725,7 @@ def palace(action: str, params: dict = {}) -> str:
                 return _vps_browser_click(
                     url,
                     selector=params.get("selector"),
-                    text_match=params.get("text_match")
+                    text_match=params.get("text_match"),
                 )
             except Exception as e:
                 return f"browser_click(VPS) 失败：{e}"
@@ -719,9 +740,9 @@ def palace(action: str, params: dict = {}) -> str:
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
         try:
-            msg          = MIMEMultipart()
-            msg["From"]  = EMAIL_163_USER
-            msg["To"]    = to_addr
+            msg = MIMEMultipart()
+            msg["From"]    = EMAIL_163_USER
+            msg["To"]      = to_addr
             msg["Subject"] = subject
             msg.attach(MIMEText(body, "plain", "utf-8"))
             with smtplib.SMTP_SSL("smtp.163.com", 465) as server:
@@ -753,9 +774,9 @@ def palace(action: str, params: dict = {}) -> str:
                     def _decode(val):
                         if not val:
                             return ""
-                        parts = decode_header(val)
-                        out   = []
-                        for b, enc in parts:
+                        pts  = decode_header(val)
+                        out  = []
+                        for b, enc in pts:
                             if isinstance(b, bytes):
                                 out.append(b.decode(enc or "utf-8", errors="replace"))
                             else:
@@ -790,7 +811,7 @@ def palace(action: str, params: dict = {}) -> str:
             "log_turn / compress / write_diary / append_diary / "
             "read_diary / list_room / delete_core / edit_core / "
             "toy_status / toy_play / browser_open / browser_js / browser_click / "
-            "send_email / read_email"
+            "zhihu / send_email / read_email"
         )
 
 
