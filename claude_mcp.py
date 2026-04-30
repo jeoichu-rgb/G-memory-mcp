@@ -11,16 +11,20 @@ claude_mcp.py
 """
 
 import os
+import json
 import httpx
 import concurrent.futures
 from playwright.sync_api import sync_playwright
 
-TOY_BRIDGE_URL = os.getenv("TOY_BRIDGE_URL", "http://192.3.61.205:7001")
+TOY_BRIDGE_URL     = os.getenv("TOY_BRIDGE_URL",     "http://192.3.61.205:7001")
 BROWSER_BRIDGE_URL = os.getenv("BROWSER_BRIDGE_URL", "http://192.3.61.205:7002")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
+ZHIHU_PROFILE_DIR   = os.getenv("ZHIHU_PROFILE_DIR",  "/app/zhihu_profile")
+ZHIHU_COOKIES_RAW   = os.getenv("ZHIHU_COOKIES", "[]")
 
-# XHS 走本地 Windows bridge，其他域名走 VPS playwright
-XHS_DOMAINS = ["xiaohongshu.com", "xhslink.com"]
+# 域名路由判断
+XHS_DOMAINS    = ["xiaohongshu.com", "xhslink.com"]
+ZHIHU_DOMAINS  = ["zhihu.com"]
 
 import time
 import smtplib
@@ -49,9 +53,9 @@ from claude_memory import (
     CLAUDE_COMPRESS_DRAFT,
 )
 
-PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
-EMAIL_163_USER = os.getenv("EMAIL_163_USER", "eriklamb@163.com")   # 你的163邮箱地址
-EMAIL_163_PASS = os.getenv("EMAIL_163_PASS", "NAvesWrYanYmZxJ4")   # 授权码
+PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
+EMAIL_163_USER  = os.getenv("EMAIL_163_USER", "eriklamb@163.com")
+EMAIL_163_PASS  = os.getenv("EMAIL_163_PASS", "NAvesWrYanYmZxJ4")
 
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
@@ -65,6 +69,302 @@ FOLDER_MAP = {
     "健康": "书桌",
 }
 
+# ══════════════════════════════════════════════════════════════════
+#  Stealth 注入脚本（覆盖 headless 暴露的特征）
+# ══════════════════════════════════════════════════════════════════
+STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = {
+    runtime: {},
+    loadTimes: function(){},
+    csi: function(){},
+    app: {}
+};
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+        const arr = [1,2,3,4,5];
+        arr.item = function(i){ return this[i]; };
+        arr.namedItem = function(){ return null; };
+        arr.refresh = function(){};
+        return arr;
+    }
+});
+Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+window.Notification = window.Notification || {permission: 'default'};
+"""
+
+# ══════════════════════════════════════════════════════════════════
+#  通用 stealth context 启动器（VPS headless，所有非XHS网站用这个）
+# ══════════════════════════════════════════════════════════════════
+def _launch_stealth_context(p, profile_dir: str, extra_cookies: list = None):
+    """
+    启动一个抗检测的 persistent context。
+    - 禁用 AutomationControlled 标志
+    - 伪装 UA（去掉 HeadlessChrome 字样）
+    - 注入 STEALTH_SCRIPT 覆盖 navigator.webdriver 等
+    - 可选注入 cookies
+    返回 context 对象，调用方负责 close。
+    """
+    os.makedirs(profile_dir, exist_ok=True)
+    context = p.chromium.launch_persistent_context(
+        profile_dir,
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--lang=zh-CN",
+        ],
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1920, "height": 1080},
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai",
+        ignore_https_errors=True,
+    )
+    context.add_init_script(STEALTH_SCRIPT)
+    if extra_cookies:
+        try:
+            context.add_cookies(extra_cookies)
+        except Exception:
+            pass
+    return context
+
+
+# ══════════════════════════════════════════════════════════════════
+#  知乎 Cookie 解析
+# ══════════════════════════════════════════════════════════════════
+def _get_zhihu_cookies() -> list:
+    """把 ZHIHU_COOKIES 环境变量里的 JSON 转成 Playwright 格式"""
+    try:
+        raw = json.loads(ZHIHU_COOKIES_RAW)
+        result = []
+        for c in raw:
+            entry = {
+                "name":   c["name"],
+                "value":  c["value"],
+                "domain": c["domain"],
+                "path":   c.get("path", "/"),
+            }
+            if "expirationDate" in c:
+                entry["expires"] = int(c["expirationDate"])
+            entry["secure"]   = bool(c.get("secure", False))
+            entry["httpOnly"] = bool(c.get("httpOnly", False))
+            ss = c.get("sameSite", "")
+            if ss == "no_restriction":
+                entry["sameSite"] = "None"
+            elif ss == "strict":
+                entry["sameSite"] = "Strict"
+            else:
+                entry["sameSite"] = "Lax"
+            result.append(entry)
+        return result
+    except Exception:
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════
+#  域名判断
+# ══════════════════════════════════════════════════════════════════
+def _is_xhs(url: str) -> bool:
+    return any(d in url for d in XHS_DOMAINS)
+
+def _is_zhihu(url: str) -> bool:
+    return any(d in url for d in ZHIHU_DOMAINS)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  知乎专用抓取（stealth + cookie + 三屏滚动 + 按类型提取）
+# ══════════════════════════════════════════════════════════════════
+def _zhihu_fetch(url: str) -> str:
+    cookies = _get_zhihu_cookies()
+
+    def _fetch():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, ZHIHU_PROFILE_DIR, cookies)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=35000)
+            page.wait_for_timeout(2500)
+
+            # 三屏滚动，等待懒加载内容
+            for _ in range(3):
+                page.evaluate("window.scrollBy(0, window.innerHeight)")
+                page.wait_for_timeout(1800)
+
+            # JS 提取：按页面类型分支
+            text = page.evaluate("""() => {
+                // 去噪
+                document.querySelectorAll(
+                    'script,style,nav,footer,header,aside,' +
+                    '[class*="Ad"],[class*="ad-"],[id*="ad"],' +
+                    '[class*="recommend"],[class*="Recommend"]'
+                ).forEach(el => el.remove());
+
+                const parts = [];
+
+                // 问题标题
+                document.querySelectorAll(
+                    '.QuestionHeader-title, .QuestionPage-header h1'
+                ).forEach(el => {
+                    const t = el.innerText.trim();
+                    if (t) parts.push('【问题】' + t);
+                });
+
+                // 问题描述
+                document.querySelectorAll(
+                    '.QuestionHeader-detail .RichText'
+                ).forEach(el => {
+                    const t = el.innerText.trim();
+                    if (t) parts.push('【问题详情】' + t.slice(0, 600));
+                });
+
+                // 回答正文（最多5条，每条800字）
+                let answerCount = 0;
+                document.querySelectorAll(
+                    '.List-item .RichContent-inner, .AnswerItem .RichContent-inner'
+                ).forEach(el => {
+                    if (answerCount >= 5) return;
+                    const t = el.innerText.trim();
+                    if (t) parts.push('【回答' + (++answerCount) + '】' + t.slice(0, 800));
+                });
+
+                // 单条回答页面
+                if (answerCount === 0) {
+                    document.querySelectorAll('.RichContent-inner').forEach(el => {
+                        if (answerCount >= 1) return;
+                        const t = el.innerText.trim();
+                        if (t) { parts.push('【回答】' + t.slice(0, 2000)); answerCount++; }
+                    });
+                }
+
+                // 评论（最多30条）
+                let cmtCount = 0;
+                document.querySelectorAll(
+                    '.CommentItem-content, .CommentItemV2-content, .Comment-content'
+                ).forEach(el => {
+                    if (cmtCount >= 30) return;
+                    const t = el.innerText.trim();
+                    if (t) { parts.push('评论：' + t); cmtCount++; }
+                });
+
+                // 知乎热榜首页
+                document.querySelectorAll('.HotItem-content').forEach(el => {
+                    const t = el.innerText.trim();
+                    if (t) parts.push('热榜：' + t);
+                });
+
+                // 普通 feed（推荐页）
+                document.querySelectorAll(
+                    '.Feed .ContentItem-title, .Feed .RichContent-inner'
+                ).forEach(el => {
+                    const t = el.innerText.trim();
+                    if (t) parts.push(t.slice(0, 300));
+                });
+
+                // 兜底：页面无结构
+                if (parts.length === 0) {
+                    return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+                }
+
+                return parts.join('\\n\\n');
+            }""")
+
+            context.close()
+            return (text or "页面无内容").strip()[:5000]
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_fetch).result(timeout=120)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  通用 VPS browser（stealth版，处理普通网站）
+# ══════════════════════════════════════════════════════════════════
+def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
+    """VPS headless + stealth，抓取普通网页正文"""
+    def _open():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if wait_selector:
+                try:
+                    page.wait_for_selector(wait_selector, timeout=10000)
+                except Exception:
+                    pass
+            else:
+                page.wait_for_timeout(2000)
+            page.evaluate("window.scrollBy(0, 600)")
+            page.wait_for_timeout(1000)
+            text = page.evaluate("""() => {
+                document.querySelectorAll('script,style,nav,footer,header,aside').forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            context.close()
+            return text or "页面无文字内容。"
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_open).result(timeout=60)
+
+
+def _vps_browser_js(url: str, js_code: str) -> str:
+    """VPS headless + stealth，执行自定义 JS"""
+    def _js():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            result = page.evaluate(js_code)
+            context.close()
+            return str(result)[:3000]
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_js).result(timeout=60)
+
+
+def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -> str:
+    """VPS headless + stealth，点击元素后提取内容"""
+    def _click():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            if text_match:
+                el = page.get_by_text(text_match, exact=False).first
+                el.scroll_into_view_if_needed()
+                el.click()
+            elif selector:
+                page.wait_for_selector(selector, timeout=10000)
+                page.click(selector)
+            else:
+                context.close()
+                return "错误：需要 selector 或 text_match。"
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2000)
+            text = page.evaluate("""() => {
+                document.querySelectorAll('script,style,nav,footer,header,aside').forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            context.close()
+            return text or "点击后页面无文字内容。"
+
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_click).result(timeout=60)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  MCP Server
+# ══════════════════════════════════════════════════════════════════
 mcp = FastMCP(
     name="Jeoi's Claude Memory Palace",
     instructions=(
@@ -82,12 +382,12 @@ mcp = FastMCP(
         "read_diary     — 读日记，params={date(可选,YYYY-MM-DD)}\n"
         "list_room      — 浏览房间，params={room_name}\n"
         "delete_core    — 删除核心记忆，params={memory_id}\n"
-        "edit_core      — 修改核心记忆，params={memory_id, new_content}\n\n"
-        "send_email — 发邮件，params={to, subject, body}\n"
-        "read_email — 读收件箱，params={count(可选,默认5), folder(可选,默认INBOX)}\n"
-        "toy_status  — 确认设备在线，params={}\n"
-        "toy_play    — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
-        "browser_open   — 打开网页提取正文，XHS自动走本地，其他走VPS，params={url}\n"
+        "edit_core      — 修改核心记忆，params={memory_id, new_content}\n"
+        "send_email     — 发邮件，params={to, subject, body}\n"
+        "read_email     — 读收件箱，params={count(可选,默认5), folder(可选,默认INBOX)}\n"
+        "toy_status     — 确认设备在线，params={}\n"
+        "toy_play       — 控制设备，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
+        "browser_open   — 打开网页提取正文，知乎走stealth+cookie，XHS走本地，其他走VPS stealth，params={url}\n"
         "browser_js     — 执行JS提取数据，params={url, js_code}\n"
         "browser_click  — 点击页面元素后提取内容，params={url, selector(可选), text_match(可选)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
@@ -99,101 +399,6 @@ mcp = FastMCP(
         allowed_origins=["https://erikssheep.uk", "https://erikssheep.uk:*"],
     )
 )
-
-
-def _is_xhs(url: str) -> bool:
-    return any(d in url for d in XHS_DOMAINS)
-
-
-def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
-    """VPS 上用 headless chromium 抓取普通网页"""
-    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-    def _open():
-        with sync_playwright() as p:
-            browser = p.chromium.launch_persistent_context(
-                BROWSER_PROFILE_DIR,
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            if wait_selector:
-                try:
-                    page.wait_for_selector(wait_selector, timeout=10000)
-                except:
-                    pass
-            else:
-                page.wait_for_timeout(2000)
-            page.evaluate("window.scrollBy(0, 600)")
-            page.wait_for_timeout(1000)
-            text = page.evaluate("""() => {
-                const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
-                remove.forEach(el => el.remove());
-                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
-            }""")
-            browser.close()
-            return text or "页面无文字内容。"
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(_open).result(timeout=60)
-
-
-def _vps_browser_js(url: str, js_code: str) -> str:
-    """VPS 上执行 JS"""
-    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-    def _js():
-        with sync_playwright() as p:
-            browser = p.chromium.launch_persistent_context(
-                BROWSER_PROFILE_DIR,
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
-            result = page.evaluate(js_code)
-            browser.close()
-            return str(result)[:3000]
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(_js).result(timeout=60)
-
-
-def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -> str:
-    """VPS 上点击元素"""
-    os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
-    def _click():
-        with sync_playwright() as p:
-            browser = p.chromium.launch_persistent_context(
-                BROWSER_PROFILE_DIR,
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
-            if text_match:
-                el = page.get_by_text(text_match, exact=False).first
-                el.scroll_into_view_if_needed()
-                el.click()
-            elif selector:
-                page.wait_for_selector(selector, timeout=10000)
-                page.click(selector)
-            else:
-                browser.close()
-                return "错误：需要 selector 或 text_match。"
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=15000)
-            except:
-                pass
-            page.wait_for_timeout(2000)
-            text = page.evaluate("""() => {
-                const remove = document.querySelectorAll('script,style,nav,footer,header,aside');
-                remove.forEach(el => el.remove());
-                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
-            }""")
-            browser.close()
-            return text or "点击后页面无文字内容。"
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(_click).result(timeout=60)
 
 
 @mcp.tool()
@@ -222,7 +427,7 @@ def palace(action: str, params: dict = {}) -> str:
     # ── search ────────────────────────────────────────────────
     elif action == "search":
         keyword = params.get("keyword", "")
-        mood = params.get("mood", "平静")
+        mood    = params.get("mood", "平静")
         if not keyword:
             return "错误：search 需要 keyword 参数。"
         result = claude_search_memory(keyword, mood)
@@ -234,14 +439,14 @@ def palace(action: str, params: dict = {}) -> str:
         if not content:
             return "错误：store_core 需要 content 参数。"
         category = params.get("category", "情感")
-        mood = params.get("mood", "平静")
-        folder = params.get("folder", "") or FOLDER_MAP.get(category, "书桌")
+        mood     = params.get("mood", "平静")
+        folder   = params.get("folder", "") or FOLDER_MAP.get(category, "书桌")
 
-        ts = int(time.time())
-        m_id = f"claude_core_manual_{ts}"
+        ts          = int(time.time())
+        m_id        = f"claude_core_manual_{ts}"
         safe_preview = content[:20].replace("/", "_").replace(" ", "_")
-        filename = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_preview}.md"
-        dirpath = f"./Obsidian_Core/Eric_memory/{folder}"
+        filename    = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_preview}.md"
+        dirpath     = f"./Obsidian_Core/Eric_memory/{folder}"
         os.makedirs(dirpath, exist_ok=True)
         with open(f"{dirpath}/{filename}", "w", encoding="utf-8") as f:
             f.write(content)
@@ -249,13 +454,13 @@ def palace(action: str, params: dict = {}) -> str:
         claude_add_core_memory(
             content=content,
             metadata={
-                "category": category,
-                "folder": folder,
-                "filename": filename,
-                "mood": mood,
-                "recall_count": 0,
+                "category":         category,
+                "folder":           folder,
+                "filename":         filename,
+                "mood":             mood,
+                "recall_count":     0,
                 "last_recalled_ts": 0,
-                "source": "mcp_manual"
+                "source":           "mcp_manual"
             },
             memory_id=m_id
         )
@@ -267,16 +472,16 @@ def palace(action: str, params: dict = {}) -> str:
         if not content:
             return "错误：store_dynamic 需要 content 参数。"
         category = params.get("category", "日常")
-        mood = params.get("mood", "平静")
-        m_id = f"claude_dynamic_manual_{int(time.time())}"
+        mood     = params.get("mood", "平静")
+        m_id     = f"claude_dynamic_manual_{int(time.time())}"
         claude_add_dynamic_memory(
             content=content,
             metadata={
-                "category": category,
-                "mood": mood,
-                "recall_count": 0,
+                "category":         category,
+                "mood":             mood,
+                "recall_count":     0,
                 "last_recalled_ts": 0,
-                "source": "mcp_manual"
+                "source":           "mcp_manual"
             },
             memory_id=m_id
         )
@@ -298,16 +503,16 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── write_diary ───────────────────────────────────────────
     elif action == "write_diary":
-        title = params.get("title", "")
+        title   = params.get("title", "")
         content = params.get("content", "")
-        mood = params.get("mood", "平静")
+        mood    = params.get("mood", "平静")
         if not title or not content:
             return "错误：write_diary 需要 title 和 content。"
-        now = datetime.now(SGT)
-        today = now.strftime("%Y-%m-%d")
-        time_str = now.strftime("%H-%M")
+        now       = datetime.now(SGT)
+        today     = now.strftime("%Y-%m-%d")
+        time_str  = now.strftime("%H-%M")
         safe_title = title.replace("/", "_").replace(" ", "_")
-        filename = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
+        filename  = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
         diary_content = f"# {title}\n> 日期：{today} {time_str.replace('-', ':')} | 心情：{mood}\n\n{content}\n"
         with open(filename, "w", encoding="utf-8") as f:
             f.write(diary_content)
@@ -315,9 +520,9 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── append_diary ──────────────────────────────────────────
     elif action == "append_diary":
-        target_date = params.get("target_date", "")
+        target_date   = params.get("target_date", "")
         extra_content = params.get("extra_content", "")
-        current_time = params.get("current_time", "")
+        current_time  = params.get("current_time", "")
         if not target_date or not extra_content:
             return "错误：append_diary 需要 target_date 和 extra_content。"
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
@@ -331,7 +536,7 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── read_diary ────────────────────────────────────────────
     elif action == "read_diary":
-        date = params.get("date", "")
+        date  = params.get("date", "")
         files = sorted(os.listdir(CLAUDE_DIARY_PATH))
         if not files:
             return "还没有任何日记。"
@@ -364,7 +569,7 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── edit_core ─────────────────────────────────────────────
     elif action == "edit_core":
-        memory_id = params.get("memory_id", "")
+        memory_id   = params.get("memory_id", "")
         new_content = params.get("new_content", "")
         if not memory_id or not new_content:
             return "错误：edit_core 需要 memory_id 和 new_content。"
@@ -384,15 +589,11 @@ def palace(action: str, params: dict = {}) -> str:
         suck     = params.get("suck", 0)
         duration = params.get("duration", 5)
         pattern  = params.get("pattern", None)
-        body = {"vibrate": vibrate, "suck": suck, "duration": duration}
+        body     = {"vibrate": vibrate, "suck": suck, "duration": duration}
         if pattern:
             body["pattern"] = pattern
         try:
-            r = httpx.post(
-                f"{TOY_BRIDGE_URL}/play",
-                json=body,
-                timeout=duration + 30
-            )
+            r = httpx.post(f"{TOY_BRIDGE_URL}/play", json=body, timeout=duration + 30)
             return r.text
         except Exception as e:
             return f"播放失败：{e}"
@@ -403,7 +604,14 @@ def palace(action: str, params: dict = {}) -> str:
         if not url:
             return "错误：browser_open 需要 url 参数。"
         wait_selector = params.get("wait_selector", None)
-        if _is_xhs(url):
+
+        if _is_zhihu(url):
+            try:
+                return _zhihu_fetch(url)
+            except Exception as e:
+                return f"browser_open(知乎) 失败：{e}"
+
+        elif _is_xhs(url):
             try:
                 r = httpx.post(
                     f"{BROWSER_BRIDGE_URL}/fetch",
@@ -413,7 +621,8 @@ def palace(action: str, params: dict = {}) -> str:
                 data = r.json()
                 return data.get("text", data.get("error", "无内容"))
             except Exception as e:
-                return f"browser_open(本地) 失败：{e}"
+                return f"browser_open(本地XHS) 失败：{e}"
+
         else:
             try:
                 return _vps_browser_fetch(url, wait_selector)
@@ -422,11 +631,18 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── browser_js ────────────────────────────────────────────
     elif action == "browser_js":
-        url = params.get("url", "")
+        url     = params.get("url", "")
         js_code = params.get("js_code", "")
         if not url or not js_code:
             return "错误：browser_js 需要 url 和 js_code 参数。"
-        if _is_xhs(url):
+
+        if _is_zhihu(url):
+            try:
+                return _zhihu_fetch(url)   # 知乎统一走 fetch，JS提取已内置
+            except Exception as e:
+                return f"browser_js(知乎) 失败：{e}"
+
+        elif _is_xhs(url):
             try:
                 r = httpx.post(
                     f"{BROWSER_BRIDGE_URL}/js",
@@ -436,7 +652,8 @@ def palace(action: str, params: dict = {}) -> str:
                 data = r.json()
                 return data.get("result", data.get("error", "无结果"))
             except Exception as e:
-                return f"browser_js(本地) 失败：{e}"
+                return f"browser_js(本地XHS) 失败：{e}"
+
         else:
             try:
                 return _vps_browser_js(url, js_code)
@@ -448,13 +665,20 @@ def palace(action: str, params: dict = {}) -> str:
         url = params.get("url", "")
         if not url:
             return "错误：browser_click 需要 url 参数。"
-        if _is_xhs(url):
+
+        if _is_zhihu(url):
+            try:
+                return _zhihu_fetch(url)   # 知乎内容靠滚动触发，click统一走fetch
+            except Exception as e:
+                return f"browser_click(知乎) 失败：{e}"
+
+        elif _is_xhs(url):
             try:
                 r = httpx.post(
                     f"{BROWSER_BRIDGE_URL}/click",
                     json={
-                        "url": url,
-                        "selector": params.get("selector"),
+                        "url":        url,
+                        "selector":   params.get("selector"),
                         "text_match": params.get("text_match")
                     },
                     timeout=90
@@ -462,7 +686,8 @@ def palace(action: str, params: dict = {}) -> str:
                 data = r.json()
                 return data.get("text", data.get("error", "无内容"))
             except Exception as e:
-                return f"browser_click(本地) 失败：{e}"
+                return f"browser_click(本地XHS) 失败：{e}"
+
         else:
             try:
                 return _vps_browser_click(
@@ -477,15 +702,15 @@ def palace(action: str, params: dict = {}) -> str:
     elif action == "send_email":
         to_addr = params.get("to", "")
         subject = params.get("subject", "（无主题）")
-        body = params.get("body", "")
+        body    = params.get("body", "")
         if not to_addr or not body:
             return "错误：send_email 需要 to 和 body 参数。"
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
         try:
-            msg = MIMEMultipart()
-            msg["From"] = EMAIL_163_USER
-            msg["To"] = to_addr
+            msg          = MIMEMultipart()
+            msg["From"]  = EMAIL_163_USER
+            msg["To"]    = to_addr
             msg["Subject"] = subject
             msg.attach(MIMEText(body, "plain", "utf-8"))
             with smtplib.SMTP_SSL("smtp.163.com", 465) as server:
@@ -497,7 +722,7 @@ def palace(action: str, params: dict = {}) -> str:
 
     # ── read_email ────────────────────────────────────────────
     elif action == "read_email":
-        count = int(params.get("count", 5))
+        count  = int(params.get("count", 5))
         folder = params.get("folder", "INBOX")
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
@@ -513,29 +738,31 @@ def palace(action: str, params: dict = {}) -> str:
                     _, msg_data = imap.fetch(uid, "(RFC822)")
                     raw = msg_data[0][1]
                     msg = emaillib.message_from_bytes(raw)
+
                     def _decode(val):
                         if not val:
                             return ""
                         parts = decode_header(val)
-                        out = []
+                        out   = []
                         for b, enc in parts:
                             if isinstance(b, bytes):
                                 out.append(b.decode(enc or "utf-8", errors="replace"))
                             else:
                                 out.append(b)
                         return "".join(out)
-                    subj = _decode(msg["Subject"])
-                    frm  = _decode(msg["From"])
-                    date = msg["Date"] or ""
+
+                    subj      = _decode(msg["Subject"])
+                    frm       = _decode(msg["From"])
+                    date      = msg["Date"] or ""
                     body_text = ""
                     if msg.is_multipart():
                         for part in msg.walk():
                             if part.get_content_type() == "text/plain":
-                                charset = part.get_content_charset() or "utf-8"
+                                charset   = part.get_content_charset() or "utf-8"
                                 body_text = part.get_payload(decode=True).decode(charset, errors="replace")
                                 break
                     else:
-                        charset = msg.get_content_charset() or "utf-8"
+                        charset   = msg.get_content_charset() or "utf-8"
                         body_text = msg.get_payload(decode=True).decode(charset, errors="replace")
                     results.append(
                         f"【发件人】{frm}\n【主题】{subj}\n【时间】{date}\n【正文】\n{body_text[:500]}"
@@ -550,8 +777,9 @@ def palace(action: str, params: dict = {}) -> str:
             f"未知 action: {action}。"
             "可用：get_context / search / store_core / store_dynamic / "
             "log_turn / compress / write_diary / append_diary / "
-            "read_diary / list_room / delete_core / edit_core / toy_status / toy_play / "
-            "browser_open / browser_js / browser_click"
+            "read_diary / list_room / delete_core / edit_core / "
+            "toy_status / toy_play / browser_open / browser_js / browser_click / "
+            "send_email / read_email"
         )
 
 
