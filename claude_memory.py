@@ -183,7 +183,7 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         report += (
             f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
             f"| 吻合度: {item['score']:.2f}\n"
-            f"内容: {item['content'][:300]}...\n\n"
+            f"内容: {item['content'][:1500]}\n\n"
         )
     return report
 
