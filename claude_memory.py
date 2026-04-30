@@ -94,65 +94,78 @@ def claude_update_metadata(memory_id: str, new_metadata: dict):
 def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | None:
     """
     同时检索 claude_core_palace + claude_dynamic_palace
-    返回格式化报告，低于阈值返回 None
+    向量检索 + keyword直接匹配，结果合并去重后打分排序
     """
-    raw = {"documents": [[]], "metadatas": [[]], "distances": [[]], "ids": [[]]}
+    seen_ids = set()
+    docs, metas, dists, ids = [], [], [], []
 
-    try:
-        cr = claude_core.query(query_texts=[keyword], n_results=3)
-        if cr["documents"][0]:
-            raw["documents"][0]  += cr["documents"][0]
-            raw["metadatas"][0]  += cr["metadatas"][0]
-            raw["distances"][0]  += cr["distances"][0]
-            raw["ids"][0]        += cr["ids"][0]
-    except:
-        pass
+    # ── 向量检索 ──────────────────────────────────────────────────
+    for col, n in [(claude_core, 3), (claude_dynamic, 7)]:
+        try:
+            r = col.query(query_texts=[keyword], n_results=n)
+            for doc, meta, dist, mid in zip(
+                r["documents"][0], r["metadatas"][0],
+                r["distances"][0], r["ids"][0]
+            ):
+                if mid not in seen_ids:
+                    seen_ids.add(mid)
+                    docs.append(doc)
+                    metas.append(meta)
+                    dists.append(dist)
+                    ids.append(mid)
+        except:
+            pass
 
-    try:
-        dr = claude_dynamic.query(query_texts=[keyword], n_results=7)
-        if dr["documents"][0]:
-            raw["documents"][0]  += dr["documents"][0]
-            raw["metadatas"][0]  += dr["metadatas"][0]
-            raw["distances"][0]  += dr["distances"][0]
-            raw["ids"][0]        += dr["ids"][0]
-    except:
-        pass
+    # ── keyword 字面匹配（补充向量找不到的精确结果）──────────────
+    for col in [claude_core, claude_dynamic]:
+        try:
+            r = col.get(where_document={"$contains": keyword})
+            for doc, meta, mid in zip(r["documents"], r["metadatas"], r["ids"]):
+                if mid not in seen_ids:
+                    seen_ids.add(mid)
+                    docs.append(doc)
+                    metas.append(meta)
+                    dists.append(0.3)   # keyword命中，固定给0.3距离（base分=0.7）
+                    ids.append(mid)
+        except:
+            pass
 
-    if not raw["documents"][0]:
+    if not docs:
         return None
 
+    # ── 打分（逻辑与原版一致）────────────────────────────────────
     scored = []
     cur_group = _mood_group(current_mood)
 
-    for doc, meta, dist, mid in zip(
-        raw["documents"][0], raw["metadatas"][0],
-        raw["distances"][0], raw["ids"][0]
-    ):
-        base  = max(0, 1.0 - dist)
+    for doc, meta, dist, mid in zip(docs, metas, dists, ids):
+        base = max(0, 1.0 - dist)
         is_permanent = meta.get("is_permanent", False)
 
-        # 类型权重
         cat_w = 1.0
         for k, w in CATEGORY_WEIGHTS.items():
             if k in meta.get("category", ""):
                 cat_w = w
                 break
 
-        # 心情加分
         mem_mood = meta.get("mood", "")
         mood_bonus = 0.3 if mem_mood == current_mood else (
                      0.1 if _mood_group(mem_mood) == cur_group else 0)
 
-        # 被想起次数
-        recall_bonus = min(0.2, meta.get("recall_count", 0) * 0.02)
-
-        decay = 1.0 if is_permanent else _time_decay(meta.get("last_recalled_ts", 0))
+        recall_bonus = min(0.5, math.log1p(meta.get("recall_count", 0)) * 0.25)
+        # 改成
+        if is_permanent:
+           decay = 1.0
+        else:
+            recall_count = meta.get("recall_count", 0)
+            days = (time.time() - meta.get("last_recalled_ts", 0)) / 86400 if meta.get("last_recalled_ts", 0) else 0
+            decay_rate = max(0.01, 0.1 / (1 + recall_count * 0.3))
+            decay = math.exp(-decay_rate * days)
         final = (base + recall_bonus + mood_bonus) * cat_w * decay
 
         scored.append({"content": doc, "score": final, "meta": meta, "id": mid})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    top = [r for r in scored[:3] if r["score"] > 0.15]
+    top = [r for r in scored[:5] if r["score"] > 0.15]
 
     if not top:
         return None
@@ -166,11 +179,13 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
 
     report = "【Claude记忆检索报告】\n"
     for i, item in enumerate(top):
-        report += (f"[{i+1}] 来源: {item['meta'].get('category','未知')} "
-                   f"| 吻合度: {item['score']:.2f}\n"
-                   f"内容: {item['content'][:300]}...\n\n")
+        source_tag = "核心" if item["meta"].get("is_permanent") else "动态"
+        report += (
+            f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
+            f"| 吻合度: {item['score']:.2f}\n"
+            f"内容: {item['content'][:300]}...\n\n"
+        )
     return report
-
 
 def claude_get_rolling_context() -> str:
     """冷启动：最近两次Claude的滚动总结"""
