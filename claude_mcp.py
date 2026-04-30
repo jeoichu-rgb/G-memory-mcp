@@ -391,6 +391,7 @@ mcp = FastMCP(
         "toy_play       — 控制Curvy，params={vibrate(0-100), suck(0-100), duration(秒), pattern(可选数组)}\n"
         "bunny_status   — 确认Bunny在线，params={}\n"
         "bunny_play     — 控制Bunny，params={clit(0-100), internal(0-100), pump(0-100), duration(秒), pattern(可选数组)}\n"
+        "bunny_deflate  — 立即放气，params={}\n"
         "browser_open   — 打开网页；知乎走API，XHS走本地bridge，其他走VPS stealth，params={url}\n"
         "browser_js     — 执行JS提取，params={url, js_code}\n"
         "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
@@ -619,6 +620,14 @@ def palace(action: str, params: dict = {}) -> str:
         except Exception as e:
             return f"Bunny播放失败：{e}"
 
+    # ── bunny_deflate ────────────────────────────────────────
+    elif action == "bunny_deflate":
+        try:
+            r = httpx.post(f"{BUNNY_BRIDGE_URL}/deflate", timeout=5)
+            return r.text
+        except Exception as e:
+            return f"放气失败：{e}"
+
     # ── zhihu（精细操作）─────────────────────────────────────
     elif action == "zhihu":
         ztype  = params.get("type", "hot")
@@ -838,6 +847,7 @@ def palace(action: str, params: dict = {}) -> str:
             "log_turn / compress / write_diary / append_diary / "
             "read_diary / list_room / delete_core / edit_core / "
             "toy_status / toy_play / browser_open / browser_js / browser_click / "
+            "bunny_status / bunny_play / bunny_deflate / "
             "zhihu / send_email / read_email"
         )
 
