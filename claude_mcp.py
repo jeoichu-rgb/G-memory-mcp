@@ -187,8 +187,19 @@ def _zhihu_fetch(url: str) -> str:
 
     def _fetch():
         with sync_playwright() as p:
-            context = _launch_stealth_context(p, ZHIHU_PROFILE_DIR, cookies)
+            # 不预先注入cookie，先建立域名上下文再写入
+            context = _launch_stealth_context(p, ZHIHU_PROFILE_DIR)
             page = context.new_page()
+            # 第一步：先访问根域，建立同源上下文
+            page.goto("https://www.zhihu.com", wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
+            # 第二步：注入cookie（此时域名已匹配，注入才生效）
+            if cookies:
+                try:
+                    context.add_cookies(cookies)
+                except Exception:
+                    pass
+            # 第三步：跳转目标页
             page.goto(url, wait_until="domcontentloaded", timeout=35000)
             page.wait_for_timeout(2500)
 
