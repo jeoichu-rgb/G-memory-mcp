@@ -54,7 +54,14 @@ def sync_claude_vault():
     total_updated = 0
 
     # 删除：在ChromaDB里有，但md文件已经不存在了
-    orphan_ids = existing_ids - set(expected_ids.keys())
+    # 只删 obsidian_sync 来源的孤儿，mcp_manual 等手动存入的绝对不动
+    existing_metadatas = dict(zip(existing["ids"], existing["metadatas"] or [{}] * len(existing["ids"])))
+    orphan_ids = set()
+    for eid in existing_ids:
+        if eid not in expected_ids:
+            meta = existing_metadatas.get(eid, {})
+            if meta.get("source") == "obsidian_sync":
+                orphan_ids.add(eid)
     if orphan_ids:
         col.delete(ids=list(orphan_ids))
         total_deleted = len(orphan_ids)
