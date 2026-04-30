@@ -28,7 +28,8 @@ Obsidian (本地写作) → GitHub 私有仓库
      (向量记忆库)        (日记 MD 文件)   (对话缓冲)
 
 Windows 本地（frpc 隧道接入 VPS）
-  ├── toy_bridge.py     :7001  → TOY_BRIDGE_URL
+  ├── toy_bridge.py     :7001  → TOY_BRIDGE_URL（Satisfyer Curvy 2+）
+  ├── bunny_bridge.py   :7003  → BUNNY_BRIDGE_URL（Air Pump Bunny 5+）
   └── browser_bridge.py :7002  → BROWSER_BRIDGE_URL（XHS 登录态）
 ```
 
@@ -46,7 +47,8 @@ Windows 本地（frpc 隧道接入 VPS）
 | `memory_core.py` | Gemini embedding 函数（gemini-embedding-001，3072维） |
 | `sync_claude_memory.py` | Obsidian MD 文件批量入库脚本，含对账逻辑 |
 | `inspect_memory.py` | 手动检查/删除记忆条目的交互式工具 |
-| `toy_bridge.py` | Windows 本地 FastAPI，控制 BLE 设备（端口 8765，frpc 映射到 VPS:7001） |
+| `toy_bridge.py` | Windows 本地 FastAPI，控制 Satisfyer Curvy 2+（端口 8765，frpc 映射到 VPS:7001） |
+| `bunny_bridge.py` | Windows 本地 FastAPI，控制 Air Pump Bunny 5+（端口 8767，frpc 映射到 VPS:7003） |
 | `browser_bridge.py` | Windows 本地 Chrome bridge，持久登录态访问小红书（端口 8766，frpc 映射到 VPS:7002） |
 
 ---
@@ -121,16 +123,34 @@ Claude.ai 通过 SSE 端点调用统一入口 `palace(action, params)`：
 | `send_email` | 发邮件 | `to`, `subject`, `body` |
 | `read_email` | 读收件箱 | `count`（默认5）, `folder`（默认INBOX） |
 
-### 设备控制（需 Windows toy_bridge 在线）
+### 设备控制（需 Windows bridge 进程在线）
 
-两台设备共用同一个 bridge 端点，由 `toy_bridge.py` 内部路由。
+两台设备各有独立 bridge，各自独立端口和 frpc 映射。
+
+#### Satisfyer Curvy 2+（`toy_bridge.py` → VPS:7001）
 
 | action | 说明 | 主要参数 |
 |--------|------|---------|
 | `toy_status` | 确认设备连接状态 | 无 |
-| `toy_play` | 控制 Satisfyer Curvy 2+ 或 Pump Rabbit | `vibrate`(0-100), `suck`(0-100), `duration`(秒), `pattern`(可选数组) |
+| `toy_play` | 震动+吸吮控制 | `vibrate`(0-100), `suck`(0-100), `duration`(秒), `pattern`(可选数组) |
 
 停止逻辑内置于 `toy_play`（duration 到期自动停），无需单独 stop 指令。
+
+#### Air Pump Bunny 5+（`bunny_bridge.py` → VPS:7003）
+
+MAC：`4C:E1:74:45:94:FD`
+
+| action | 说明 | 主要参数 |
+|--------|------|---------|
+| `bunny_status` | 确认设备连接状态 | 无 |
+| `bunny_play` | 三通道独立控制 | `clit`(0-100), `internal`(0-100), `pump`(0-100), `duration`(秒), `pattern`(可选数组) |
+| `bunny_deflate` | 单独放气，不停震动（待部署到 claude_mcp.py） | 无 |
+
+协议说明：
+- motorValue 字节顺序：`[0,0,0,internal, 0,0,0,clit]`——前4字节入体，后4字节clit，大端序
+- pump 写一次非零值 = 充气并保持；写 0 = 主动放气；play 结束不自动动气泵
+- keepalive 每5秒发送，防设备10秒超时断连
+- `/stop` 归零震动并主动放气；`/deflate` 单独放气不停震动
 
 ### 浏览器
 
@@ -192,7 +212,8 @@ docker exec -it <容器ID> python3 inspect_memory.py
 | `PALACE_SECRET` | MCP 端点访问密码 |
 | `GITHUB_WEBHOOK_SECRET` | Webhook 签名验证 |
 | `GITHUB_TOKEN` | GitHub API 拉取文件（Personal Access Token，repo 权限） |
-| `TOY_BRIDGE_URL` | Windows toy_bridge 地址（frpc 映射后的 VPS 内网地址） |
+| `TOY_BRIDGE_URL` | Windows toy_bridge 地址，对应 Curvy 2+（frpc 映射后的 VPS 内网地址） |
+| `BUNNY_BRIDGE_URL` | Windows bunny_bridge 地址，对应 Bunny 5+（frpc 映射后的 VPS 内网地址） |
 | `BROWSER_BRIDGE_URL` | Windows browser_bridge 地址（frpc 映射后的 VPS 内网地址） |
 | `EMAIL_163_USER` | 163 邮箱地址 |
 | `EMAIL_163_PASS` | 163 邮箱授权码（非登录密码） |
