@@ -685,6 +685,9 @@ function erikTab(name) {
   const idx = tabs.indexOf(name);
   document.querySelectorAll('.erik-tab')[idx].classList.add('on');
   document.getElementById('ep-' + name).classList.add('on');
+  if (name === 'dynamic') erikLoadDynamic();
+  if (name === 'core') erikLoadCore('all');
+  if (name === 'diary') erikLoadDiaries();
   if (name === 'chronicle') loadChronicle('');
 }
 
@@ -981,9 +984,10 @@ async function erikLoadDynamic() {
   const st = document.getElementById('e-dyn-st'); st.textContent = '加载中…'; st.className = 'st';
   try {
     const r = await fetch(`${API_BASE}/admin/memories?collection=dynamic&offset=${dynPage * PAGE_MEM}&limit=${PAGE_MEM}`, { headers: hdr() });
-    const d = await r.json();
-    dynTotal = d.total || 0;
-    renderMemList(d.items || [], 'e-dyn-list', 'dynamic');
+    const raw = await r.json();
+    const items = Array.isArray(raw) ? raw : (raw.items || []);
+    dynTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
+    renderMemList(items, 'e-dyn-list', 'dynamic');
     st.className = 'st ok'; st.textContent = `共 ${dynTotal} 条`;
     updatePager('e-dyn', dynPage, dynTotal, PAGE_MEM);
   } catch (e) { st.className = 'st err'; st.textContent = '加载失败：' + e.message; }
@@ -1002,8 +1006,9 @@ async function erikLoadCore(filter) {
   if (activeEl) { activeEl.style.borderColor = 'var(--violet)'; activeEl.style.color = 'var(--violet)'; }
 
   const r = await fetch(`${API_BASE}/admin/memories?collection=core&offset=${corePage * PAGE_MEM}&limit=${PAGE_MEM}`, { headers: hdr() });
-  const d = await r.json();
-  let items = d.items || [];
+  const raw = await r.json();
+  let items = Array.isArray(raw) ? raw : (raw.items || []);
+  coreTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
   if (filter !== 'all') {
     items = items.filter(i => {
       const src = i.meta?.source || '';
@@ -1012,7 +1017,6 @@ async function erikLoadCore(filter) {
       return true;
     });
   }
-  coreTotal = d.total || 0;
   renderMemList(items, 'e-core-list', 'core');
   updatePager('e-core', corePage, coreTotal, PAGE_MEM);
 }
@@ -1091,10 +1095,10 @@ async function erikRecompressSelected() {
 // DIARY (Erik panel)
 async function erikLoadDiaries() {
   const r = await fetch(`${API_BASE}/admin/diary?offset=${diaryPage * PAGE_DIARY}&limit=${PAGE_DIARY}`, { headers: hdr() });
-  const d = await r.json();
-  diaryTotal = d.total || 0;
+  const raw = await r.json();
+  const files = Array.isArray(raw) ? raw : (raw.items || []);
+  diaryTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
   const list = document.getElementById('e-diary-list');
-  const files = d.items || [];
   if (!files.length) { list.innerHTML = '<div style="font-size:11px;color:var(--muted);">— 暂无日记 —</div>'; return; }
   list.innerHTML = files.map(f => `
     <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);padding:9px 12px;border-radius:var(--r-sm);">
