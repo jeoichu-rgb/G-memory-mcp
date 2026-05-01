@@ -52,6 +52,7 @@ from claude_memory import (
     claude_compress_preview,
     claude_get_draft,
     CLAUDE_COMPRESS_DRAFT,
+    claude_search_chronicle,
 )
 
 PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
@@ -397,7 +398,8 @@ mcp = FastMCP(
         "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
         "zhihu          — 知乎精细操作，params={type:hot/question/answers/comments, id(可选question_id或answer_id), offset(可选翻页,默认0)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
-        "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋"
+        "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋\n"
+        "search_chronicle — 检索周历/月历总结。当Jeoi提到'上周''上个月''最近一段时间''我有没有一直'等时间跨度词时主动调用，不要等Jeoi提醒。params={keyword}\n"
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -480,7 +482,8 @@ def palace(action: str, params: dict = {}) -> str:
             content=content,
             metadata={
                 "category": category, "mood": mood,
-                "recall_count": 0, "last_recalled_ts": 0, "source": "mcp_manual"
+                "recall_count": 0, "last_recalled_ts": 0, "source": "mcp_manual",
+                "date": datetime.now(SGT).strftime('%Y-%m-%d')
             },
             memory_id=m_id
         )
@@ -557,6 +560,13 @@ def palace(action: str, params: dict = {}) -> str:
         if not room_name:
             return "错误：list_room 需要 room_name 参数。"
         return claude_list_room(room_name)
+
+    # ── search_chronicle ──────────────────────────────────────
+    elif action == "search_chronicle":
+        keyword = params.get("keyword", "")
+        if not keyword:
+            return "错误：search_chronicle 需要 keyword 参数。"
+        return claude_search_chronicle(keyword)
 
     # ── delete_core ───────────────────────────────────────────
     elif action == "delete_core":
