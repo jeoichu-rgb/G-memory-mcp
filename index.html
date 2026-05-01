@@ -685,9 +685,6 @@ function erikTab(name) {
   const idx = tabs.indexOf(name);
   document.querySelectorAll('.erik-tab')[idx].classList.add('on');
   document.getElementById('ep-' + name).classList.add('on');
-  if (name === 'dynamic') erikLoadDynamic();
-  if (name === 'core') erikLoadCore('all');
-  if (name === 'diary') erikLoadDiaries();
   if (name === 'chronicle') loadChronicle('');
 }
 
@@ -984,10 +981,9 @@ async function erikLoadDynamic() {
   const st = document.getElementById('e-dyn-st'); st.textContent = '加载中…'; st.className = 'st';
   try {
     const r = await fetch(`${API_BASE}/admin/memories?collection=dynamic&offset=${dynPage * PAGE_MEM}&limit=${PAGE_MEM}`, { headers: hdr() });
-    const raw = await r.json();
-    const items = Array.isArray(raw) ? raw : (raw.items || []);
-    dynTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
-    renderMemList(items, 'e-dyn-list', 'dynamic');
+    const d = await r.json();
+    dynTotal = d.total || 0;
+    renderMemList(d.items || [], 'e-dyn-list', 'dynamic');
     st.className = 'st ok'; st.textContent = `共 ${dynTotal} 条`;
     updatePager('e-dyn', dynPage, dynTotal, PAGE_MEM);
   } catch (e) { st.className = 'st err'; st.textContent = '加载失败：' + e.message; }
@@ -997,30 +993,27 @@ function erikDynPage(dir) { dynPage = Math.max(0, Math.min(dynPage + dir, Math.c
 // CORE MEMORY
 async function erikLoadCore(filter) {
   coreFilter = filter;
-  ['ctab-all','ctab-mcp','ctab-obs'].forEach(id => {
-    const el = document.getElementById(id);
+  // update tab style
+  ['all','mcp_manual','obsidian_sync'].forEach(f => {
+    const el = document.getElementById(`ctab-${f === 'all' ? 'all' : f === 'mcp_manual' ? 'mcp' : 'obs'}`);
     if (el) { el.style.borderColor = ''; el.style.color = ''; }
   });
-  const activeId = filter === 'all' ? 'ctab-all' : filter === 'mcp_manual' ? 'ctab-mcp' : 'ctab-obs';
-  const activeEl = document.getElementById(activeId);
+  const activeEl = document.getElementById(filter === 'all' ? 'ctab-all' : filter === 'mcp_manual' ? 'ctab-mcp' : 'ctab-obs');
   if (activeEl) { activeEl.style.borderColor = 'var(--violet)'; activeEl.style.color = 'var(--violet)'; }
 
-  const r = await fetch(`${API_BASE}/admin/memories?collection=core`, { headers: hdr() });
-  const raw = await r.json();
-  let items = Array.isArray(raw) ? raw : (raw.items || raw);
-
+  const r = await fetch(`${API_BASE}/admin/memories?collection=core&offset=${corePage * PAGE_MEM}&limit=${PAGE_MEM}`, { headers: hdr() });
+  const d = await r.json();
+  let items = d.items || [];
   if (filter !== 'all') {
     items = items.filter(i => {
       const src = i.meta?.source || '';
-      if (filter === 'mcp_manual') return src === 'mcp_manual' || i.id.startsWith('claude_core_manual_');
+      if (filter === 'mcp_manual') return src === 'mcp_manual';
       if (filter === 'obsidian_sync') return src !== 'mcp_manual' && src !== 'claude_gateway';
       return true;
     });
   }
-
-  coreTotal = items.length;
-  const start = corePage * PAGE_MEM;
-  renderMemList(items.slice(start, start + PAGE_MEM), 'e-core-list', 'core');
+  coreTotal = d.total || 0;
+  renderMemList(items, 'e-core-list', 'core');
   updatePager('e-core', corePage, coreTotal, PAGE_MEM);
 }
 function erikCorePage(dir) { corePage = Math.max(0, Math.min(corePage + dir, Math.ceil(coreTotal / PAGE_MEM) - 1)); erikLoadCore(coreFilter); }
@@ -1098,10 +1091,10 @@ async function erikRecompressSelected() {
 // DIARY (Erik panel)
 async function erikLoadDiaries() {
   const r = await fetch(`${API_BASE}/admin/diary?offset=${diaryPage * PAGE_DIARY}&limit=${PAGE_DIARY}`, { headers: hdr() });
-  const raw = await r.json();
-  const files = Array.isArray(raw) ? raw : (raw.items || []);
-  diaryTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
+  const d = await r.json();
+  diaryTotal = d.total || 0;
   const list = document.getElementById('e-diary-list');
+  const files = d.items || [];
   if (!files.length) { list.innerHTML = '<div style="font-size:11px;color:var(--muted);">— 暂无日记 —</div>'; return; }
   list.innerHTML = files.map(f => `
     <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);padding:9px 12px;border-radius:var(--r-sm);">
