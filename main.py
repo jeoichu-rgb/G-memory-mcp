@@ -297,6 +297,10 @@ from claude_memory import (
     claude_compress_preview,
     claude_compress_confirm,
     claude_get_draft,
+    claude_list_all_chronicles,
+    claude_edit_chronicle,
+    claude_delete_chronicle,
+    claude_add_chronicle,
 )
 from pydantic import BaseModel as _BM
 
@@ -311,8 +315,9 @@ class MemoryEditPayload(_BM):
 
 # 记忆列表
 @app.get("/admin/memories")
-async def admin_list_memories(collection: str = "dynamic"):
-    return claude_list_all_memories(collection)
+async def admin_list_memories(collection: str = "dynamic", offset: int = 0, limit: int = 10):
+    items = claude_list_all_memories(collection)
+    return {"total": len(items), "items": items[offset:offset+limit]}
 
 # 编辑记忆
 @app.put("/admin/memories/{memory_id}")
@@ -349,8 +354,41 @@ async def admin_compress_confirm(payload: ConfirmPayload):
 
 # 日记列表
 @app.get("/admin/diary")
-async def admin_list_diary():
-    return claude_list_diaries()
+async def admin_list_diary(offset: int = 0, limit: int = 5):
+    files = claude_list_diaries()
+    return {"total": len(files), "items": files[offset:offset+limit]}
+
+# 周历/月历
+class ChronicleItem(BaseModel):
+    content: str
+    type: str = "周历"
+    date: str = ""
+
+@app.get("/admin/chronicle")
+async def admin_list_chronicle(type: str = ""):
+    return claude_list_all_chronicles(type)
+
+@app.post("/admin/chronicle")
+async def admin_add_chronicle(payload: ChronicleItem):
+    from datetime import datetime
+    date = payload.date or datetime.now().strftime('%Y-%m-%d')
+    m_id = f"chronicle_{payload.type}_{date}_{int(__import__('time').time())}"
+    claude_add_chronicle(
+        content=payload.content,
+        metadata={"type": payload.type, "date": date},
+        memory_id=m_id
+    )
+    return {"status": "ok", "id": m_id}
+
+@app.put("/admin/chronicle/{memory_id:path}")
+async def admin_edit_chronicle(memory_id: str, payload: MemoryEditPayload):
+    result = claude_edit_chronicle(memory_id, payload.new_content)
+    return {"result": result}
+
+@app.delete("/admin/chronicle/{memory_id:path}")
+async def admin_delete_chronicle(memory_id: str):
+    result = claude_delete_chronicle(memory_id)
+    return {"result": result}
 
 # 读日记
 @app.get("/admin/diary/{filename:path}")
