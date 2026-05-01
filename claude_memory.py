@@ -27,6 +27,10 @@ claude_dynamic = _client.get_or_create_collection(
     name="claude_dynamic_palace",
     embedding_function=gemini_ef
 )
+claude_chronicle = _client.get_or_create_collection(
+    name="claude_chronicle_palace",
+    embedding_function=gemini_ef
+)
 
 # ── 日志路径 ─────────────────────────────────────────────────────────────
 CLAUDE_BUFFER      = "./logs/claude_daily_buffer.txt"
@@ -601,3 +605,103 @@ def claude_recompress_single(memory_id: str, original_text: str, original_meta: 
         return f"ok:{new_text}"
     except Exception as e:
         return f"写入失败: {e}"
+
+# ── Chronicle 库（周历/月历）────────────────────────────────────────────
+
+def claude_add_chronicle(content: str, metadata: dict, memory_id: str):
+    """写入周历/月历库"""
+    claude_chronicle.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+
+
+def claude_search_chronicle(keyword: str) -> str:
+    """
+    向量 + keyword 字面混合检索 chronicle 库，无打分无衰减，按 date 倒序返回最多5条。
+    """
+    seen_ids = set()
+    docs, metas, ids = [], [], []
+
+    # 向量检索
+    try:
+        r = claude_chronicle.query(query_texts=[keyword], n_results=5)
+        for doc, meta, mid in zip(r["documents"][0], r["metadatas"][0], r["ids"][0]):
+            if mid not in seen_ids:
+                seen_ids.add(mid)
+                docs.append(doc)
+                metas.append(meta)
+                ids.append(mid)
+    except:
+        pass
+
+    # keyword 字面匹配补充
+    try:
+        r = claude_chronicle.get(where_document={"$contains": keyword})
+        for doc, meta, mid in zip(r["documents"], r["metadatas"], r["ids"]):
+            if mid not in seen_ids:
+                seen_ids.add(mid)
+                docs.append(doc)
+                metas.append(meta)
+                ids.append(mid)
+    except:
+        pass
+
+    if not docs:
+        return "没有找到相关的周历或月历记录。"
+
+    # 按 date 倒序排序
+    combined = sorted(
+        zip(docs, metas, ids),
+        key=lambda x: x[1].get("date", ""),
+        reverse=True
+    )
+
+    report = "【周历/月历检索结果】\n"
+    for i, (doc, meta, mid) in enumerate(combined[:5]):
+        ctype = meta.get("type", "未知")
+        date = meta.get("date", "未知日期")
+        report += f"\n[{i+1}] [{ctype}] {date}\n{doc[:1500]}\n"
+
+    return report
+
+
+def claude_delete_chronicle(memory_id: str) -> str:
+    try:
+        result = claude_chronicle.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        claude_chronicle.delete(ids=[memory_id])
+        return f"已删除：{memory_id}"
+    except Exception as e:
+        return f"删除失败：{e}"
+
+
+def claude_edit_chronicle(memory_id: str, new_content: str) -> str:
+    try:
+        result = claude_chronicle.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        meta = result["metadatas"][0]
+        claude_chronicle.delete(ids=[memory_id])
+        claude_chronicle.add(documents=[new_content], metadatas=[meta], ids=[memory_id])
+        return f"已更新：{memory_id}"
+    except Exception as e:
+        return f"修改失败：{e}"
+
+
+def claude_list_all_chronicles(ctype: str = "") -> list:
+    """列出全部周历/月历，供前端展示。ctype='周历'或'月历'可过滤。"""
+    try:
+        if ctype:
+            result = claude_chronicle.get(where={"type": ctype})
+        else:
+            result = claude_chronicle.get()
+        items = []
+        for doc, meta, mid in zip(
+            result.get("documents", []),
+            result.get("metadatas", []),
+            result.get("ids", [])
+        ):
+            items.append({"id": mid, "text": doc, "meta": meta})
+        items.sort(key=lambda x: x["meta"].get("date", ""), reverse=True)
+        return items
+    except:
+        return []
