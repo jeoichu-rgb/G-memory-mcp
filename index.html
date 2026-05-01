@@ -1012,7 +1012,7 @@ async function erikLoadCore(filter) {
   if (filter !== 'all') {
     items = items.filter(i => {
       const src = i.meta?.source || '';
-      if (filter === 'mcp_manual') return src === 'mcp_manual';
+      if (filter === 'mcp_manual') return src === 'mcp_manual' || i.id.startsWith('claude_core_manual_');
       if (filter === 'obsidian_sync') return src !== 'mcp_manual' && src !== 'claude_gateway';
       return true;
     });
