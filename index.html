@@ -997,18 +997,18 @@ function erikDynPage(dir) { dynPage = Math.max(0, Math.min(dynPage + dir, Math.c
 // CORE MEMORY
 async function erikLoadCore(filter) {
   coreFilter = filter;
-  // update tab style
-  ['all','mcp_manual','obsidian_sync'].forEach(f => {
-    const el = document.getElementById(`ctab-${f === 'all' ? 'all' : f === 'mcp_manual' ? 'mcp' : 'obs'}`);
+  ['ctab-all','ctab-mcp','ctab-obs'].forEach(id => {
+    const el = document.getElementById(id);
     if (el) { el.style.borderColor = ''; el.style.color = ''; }
   });
-  const activeEl = document.getElementById(filter === 'all' ? 'ctab-all' : filter === 'mcp_manual' ? 'ctab-mcp' : 'ctab-obs');
+  const activeId = filter === 'all' ? 'ctab-all' : filter === 'mcp_manual' ? 'ctab-mcp' : 'ctab-obs';
+  const activeEl = document.getElementById(activeId);
   if (activeEl) { activeEl.style.borderColor = 'var(--violet)'; activeEl.style.color = 'var(--violet)'; }
 
-  const r = await fetch(`${API_BASE}/admin/memories?collection=core&offset=${corePage * PAGE_MEM}&limit=${PAGE_MEM}`, { headers: hdr() });
+  const r = await fetch(`${API_BASE}/admin/memories?collection=core`, { headers: hdr() });
   const raw = await r.json();
-  let items = Array.isArray(raw) ? raw : (raw.items || []);
-  coreTotal = Array.isArray(raw) ? raw.length : (raw.total || 0);
+  let items = Array.isArray(raw) ? raw : (raw.items || raw);
+
   if (filter !== 'all') {
     items = items.filter(i => {
       const src = i.meta?.source || '';
@@ -1017,7 +1017,10 @@ async function erikLoadCore(filter) {
       return true;
     });
   }
-  renderMemList(items, 'e-core-list', 'core');
+
+  coreTotal = items.length;
+  const start = corePage * PAGE_MEM;
+  renderMemList(items.slice(start, start + PAGE_MEM), 'e-core-list', 'core');
   updatePager('e-core', corePage, coreTotal, PAGE_MEM);
 }
 function erikCorePage(dir) { corePage = Math.max(0, Math.min(corePage + dir, Math.ceil(coreTotal / PAGE_MEM) - 1)); erikLoadCore(coreFilter); }
