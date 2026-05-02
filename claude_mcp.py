@@ -809,7 +809,7 @@ def palace(action: str, params: dict = {}) -> str:
                 imap.login(EMAIL_163_USER, EMAIL_163_PASS)
                 status, sel_data = imap.select(folder)
                 if status != "OK":
-                    return f"无法选中邮箱文件夹 "{folder}"，服务器返回：{sel_data}。请确认文件夹名正确（163 IMAP 通常用 INBOX）。"
+                    return f'无法选中邮箱文件夹 "{folder}"，服务器返回：{sel_data}。请确认文件夹名正确（163 IMAP 通常用 INBOX）。'
                 _, data = imap.search(None, "ALL")
                 ids = data[0].split()
                 ids = ids[-count:] if len(ids) >= count else ids
