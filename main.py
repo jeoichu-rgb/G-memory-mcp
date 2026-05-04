@@ -84,7 +84,6 @@ class CheckSecretMiddleware:
         await self.app(scope, receive, send)
 
 app.add_middleware(CheckSecretMiddleware)
-    return await call_next(request)
 
 # 留一个给前端敲门用的门厅
 from fastapi.responses import HTMLResponse
