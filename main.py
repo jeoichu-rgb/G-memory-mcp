@@ -41,29 +41,49 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 mcp_path = f"/mcp/{PALACE_SECRET}"
 app.mount(mcp_path, mcp_app)
 
-# 3. 最后才是门卫中间件
-@app.middleware("http")
-async def check_secret(request: Request, call_next):
-    path = request.url.path
+# 3. 最后才是门卫中间件（原生 ASGI，兼容 SSE 流式响应）
+class CheckSecretMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
 
-    # 放行：根路径、OPTIONS 预检、协议发现路径
-    if path == "/" or request.method == "OPTIONS" or path.startswith("/.well-known/") or path == "/webhook/github" or path.startswith(mcp_path):
-        return await call_next(request)
-    
-    # 物理门牌号匹配：如果路径里直接包含了正确的密码，予以放行
-    if path.startswith(f"{mcp_path}/"):
-        return await call_next(request)
-    
-    # 针对其他试图访问普通 API（如 /chat）的请求，依然严格查验 Header
-    secret = request.headers.get("x-secret")
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        secret = auth_header.split(" ")[1]
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
 
-    if secret != PALACE_SECRET:
-        print(f"Intercepted unauthorized request to: {path}")
-        return JSONResponse(status_code=401, content={"detail": f"Unauthorized: 密码错误，禁止访问 {path}"})
-    
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+
+        # 放行：根路径、OPTIONS、webhook、MCP 路径
+        if (
+            path == "/"
+            or method == "OPTIONS"
+            or path.startswith("/.well-known/")
+            or path == "/webhook/github"
+            or path.startswith(mcp_path)
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        # 其余路径查验 Header
+        headers = dict(scope.get("headers", []))
+        secret = headers.get(b"x-secret", b"").decode()
+        auth = headers.get(b"authorization", b"").decode()
+        if auth.startswith("Bearer "):
+            secret = auth.split(" ", 1)[1]
+
+        if secret != PALACE_SECRET:
+            print(f"Intercepted unauthorized request to: {path}")
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": f"Unauthorized: 密码错误，禁止访问 {path}"}
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+app.add_middleware(CheckSecretMiddleware)
     return await call_next(request)
 
 # 留一个给前端敲门用的门厅
