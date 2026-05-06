@@ -10,18 +10,28 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         self.url = "https://api.voyageai.com/v1/embeddings"
 
     def __call__(self, input: Documents) -> Embeddings:
+        import time
         embeddings = []
         with httpx.Client(timeout=30.0) as client:
             for text in input:
-                time.sleep(1)
-                response = client.post(
-                    self.url,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={"input": [text], "model": "voyage-3-large"}
-                )
-                response.raise_for_status()
-                data = response.json()
-                embeddings.append(data["data"][0]["embedding"])
+                for attempt in range(5):
+                    try:
+                        response = client.post(
+                            self.url,
+                            headers={"Authorization": f"Bearer {self.api_key}"},
+                            json={"input": [text], "model": "voyage-3-large"}
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        embeddings.append(data["data"][0]["embedding"])
+                        break
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 429 and attempt < 4:
+                            wait = 30 * (attempt + 1)
+                            print(f"限速，等待{wait}秒后重试...", flush=True)
+                            time.sleep(wait)
+                        else:
+                            raise
         return embeddings
 
 api_key = os.getenv("VOYAGE_API_KEY")
