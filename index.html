@@ -1041,7 +1041,7 @@ function renderMemList(items, containerId, collection) {
           </div>
           <textarea class="inp" id="medit-${item.id}" style="min-height:60px;font-size:11px;line-height:1.6;">${item.text}</textarea>
           <div class="row" style="margin-top:6px;">
-            <button class="btn btn-xs btn-v" onclick="erikSaveMemory('${eid}')">保存</button>
+            <button class="btn btn-xs btn-v" onclick="erikSaveMemory('${eid}','${collection}')">保存</button>
             <button class="btn btn-xs" style="color:var(--red);border-color:var(--red);" onclick="erikDeleteMemory('${eid}','${collection}')">删除</button>
           </div>
         </div>
@@ -1063,9 +1063,10 @@ function updatePager(prefix, page, total, perPage) {
   next.disabled = page >= pages - 1;
 }
 
-async function erikSaveMemory(id) {
+async function erikSaveMemory(id, collection = 'dynamic') {
   const content = document.getElementById(`medit-${id}`).value;
-  await fetch(`${API_BASE}/admin/memories/${id}`, { method: 'PUT', headers: hdr(), body: JSON.stringify({ new_content: content }) });
+  const r = await fetch(`${API_BASE}/admin/memories/${id}?collection=${collection}`, { method: 'PUT', headers: hdr(), body: JSON.stringify({ new_content: content }) });
+  if (r.ok) alert('已保存');
 }
 async function erikDeleteMemory(id, collection) {
   if (!confirm('确认删除？')) return;
