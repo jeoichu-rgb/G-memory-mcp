@@ -99,7 +99,7 @@ def synthesize_week():
     if diary_text:
         combined += f"【本周日记】\n{diary_text}"
 
-    prompt = f"""以下是过去7天Jeoi和Erik之间发生的事情，包括动态记忆片段和日记记录。
+    prompt = f"""以下是 {_ws.strftime('%Y-%m-%d')} 至 {_td.strftime('%Y-%m-%d')} 这一周Jeoi和Erik之间发生的事情，包括动态记忆片段和日记记录。
 
 请生成一份周画像总结，包含以下部分：
 1. 本周主要话题和事件（3-5条）
