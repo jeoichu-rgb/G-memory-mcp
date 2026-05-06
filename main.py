@@ -449,6 +449,30 @@ async def admin_recompress_selected(payload: RecompressPayload):
         time.sleep(1)  # 避免DS限流
     return {"results": results}
 
+@app.post("/admin/synthesis")
+async def admin_synthesis(payload: dict):
+    import subprocess, asyncio
+    stype = payload.get("type", "week")
+    args = ["python3", "weekly_synthesis.py"]
+    if stype == "month":
+        args.append("--month")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        output = stdout.decode() + stderr.decode()
+        if proc.returncode == 0:
+            return {"status": "ok", "output": output}
+        else:
+            return {"status": "error", "output": output}
+    except asyncio.TimeoutError:
+        return {"status": "error", "output": "超时（>120s）"}
+    except Exception as e:
+        return {"status": "error", "output": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
