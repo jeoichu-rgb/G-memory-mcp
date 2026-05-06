@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 
 # ── ChromaDB：Claude专属的两个房间 ──────────────────────────────────────
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("VOYAGE_API_KEY")
 gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
 
 _client = chromadb.PersistentClient(path="./chroma_db")
