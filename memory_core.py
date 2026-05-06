@@ -3,7 +3,7 @@ import httpx
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-class VoyageEmbeddingFunction(EmbeddingFunction):
+class GeminiEmbeddingFunction(EmbeddingFunction):
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.url = "https://api.voyageai.com/v1/embeddings"
@@ -23,7 +23,7 @@ class VoyageEmbeddingFunction(EmbeddingFunction):
         return embeddings
 
 api_key = os.getenv("VOYAGE_API_KEY")
-gemini_ef = VoyageEmbeddingFunction(api_key=api_key)
+gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
 
 client = chromadb.PersistentClient(path="./chroma_db")
 
