@@ -126,11 +126,13 @@ def synthesize_week():
         print(f"DeepSeek 调用失败: {e}")
         return
 
-    week_start = (datetime.now(SGT) - timedelta(days=7)).strftime('%Y-%m-%d')
-    today      = datetime.now(SGT).strftime('%Y-%m-%d')
-    m_id       = f"chronicle_周历_{today}_{int(time.time())}"
+    _ws  = datetime.now(SGT) - timedelta(days=7)
+    _td  = datetime.now(SGT)
+    today = _td.strftime('%Y-%m-%d')
+    label = f"{str(_td.year)[2:]}.{_ws.month}.{_ws.day}-{_td.month}.{_td.day}"
+    m_id  = f"chronicle_周历_{today}_{int(time.time())}"
 
-    final_content = f"# 周画像 {week_start} ~ {today}\n\n{result}"
+    final_content = f"# 周画像 {label}\n\n{result}"
 
     claude_add_chronicle(
         content=final_content,
@@ -176,12 +178,13 @@ def synthesize_month():
         print(f"DeepSeek 调用失败: {e}")
         return
 
-    today  = datetime.now(SGT).strftime('%Y-%m-%d')
-    month  = datetime.now(SGT).strftime('%Y-%m')
-    m_id   = f"chronicle_月历_{month}_{int(time.time())}"
+    _td   = datetime.now(SGT)
+    today = _td.strftime('%Y-%m-%d')
+    label = f"{str(_td.year)[2:]}年{_td.month}月"
+    m_id  = f"chronicle_月历_{today}_{int(time.time())}"
 
-    final_content = f"# 月画像 {month}\n\n{result}"
-
+    final_content = f"# 月画像 {label}\n\n{result}"
+    
     claude_add_chronicle(
         content=final_content,
         metadata={"type": "月历", "date": today},
