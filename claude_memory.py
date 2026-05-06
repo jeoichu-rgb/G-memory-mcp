@@ -6,6 +6,8 @@ from openai import OpenAI
 from memory_core import GeminiEmbeddingFunction
 import chromadb
 import logging
+import jieba
+jieba.setLogLevel(20)  # 静默日志
 
 logging.basicConfig(
     filename="./logs/claude_memory.log",
@@ -120,19 +122,24 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         except:
             pass
 
-    # ── keyword 字面匹配（补充向量找不到的精确结果）──────────────
+    # ── keyword 字面匹配（jieba分词后多token并联）────────────────
+    tokens = list(jieba.cut_for_search(keyword))
+    tokens = list({t.strip() for t in tokens if len(t.strip()) > 1})
+    if not tokens:
+        tokens = [keyword]
     for col in [claude_core, claude_dynamic]:
-        try:
-            r = col.get(where_document={"$contains": keyword})
-            for doc, meta, mid in zip(r["documents"], r["metadatas"], r["ids"]):
-                if mid not in seen_ids:
-                    seen_ids.add(mid)
-                    docs.append(doc)
-                    metas.append(meta)
-                    dists.append(0.3)   # keyword命中，固定给0.3距离（base分=0.7）
-                    ids.append(mid)
-        except:
-            pass
+        for token in tokens:
+            try:
+                r = col.get(where_document={"$contains": token})
+                for doc, meta, mid in zip(r["documents"], r["metadatas"], r["ids"]):
+                    if mid not in seen_ids:
+                        seen_ids.add(mid)
+                        docs.append(doc)
+                        metas.append(meta)
+                        dists.append(0.3)
+                        ids.append(mid)
+            except:
+                pass
 
     if not docs:
         return None
@@ -353,6 +360,19 @@ def claude_edit_core_memory(memory_id: str, new_content: str) -> str:
             if os.path.exists(filepath):
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(new_content)
+        return f"已更新：{memory_id}"
+    except Exception as e:
+        return f"修改失败：{e}"
+
+def claude_edit_dynamic_memory(memory_id: str, new_content: str) -> str:
+    """修改动态库里的一条记忆内容（delete + add 重新 embedding）"""
+    try:
+        result = claude_dynamic.get(ids=[memory_id])
+        if not result["ids"]:
+            return f"找不到 ID：{memory_id}"
+        meta = result["metadatas"][0]
+        claude_dynamic.delete(ids=[memory_id])
+        claude_dynamic.add(documents=[new_content], metadatas=[meta], ids=[memory_id])
         return f"已更新：{memory_id}"
     except Exception as e:
         return f"修改失败：{e}"
@@ -705,3 +725,41 @@ def claude_list_all_chronicles(ctype: str = "") -> list:
         return items
     except:
         return []
+
+
+def claude_search_diary(keyword: str) -> list:
+    """
+    日记关键词检索，jieba分词后多token匹配。
+    返回 [{"filename": ..., "snippet": ...}, ...]，按文件名倒序。
+    """
+    diary_path = "./claude_diary"
+    if not os.path.exists(diary_path):
+        return []
+
+    tokens = list(jieba.cut_for_search(keyword))
+    tokens = list({t.strip() for t in tokens if len(t.strip()) > 1})
+    if not tokens:
+        tokens = [keyword]
+
+    results = []
+    for fn in sorted(os.listdir(diary_path), reverse=True):
+        if not fn.endswith(".md"):
+            continue
+        filepath = os.path.join(diary_path, fn)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except:
+            continue
+        if any(t in content for t in tokens):
+            # 找第一个命中位置，截取上下文作为snippet
+            snippet = ""
+            for t in tokens:
+                idx = content.find(t)
+                if idx != -1:
+                    start = max(0, idx - 60)
+                    end = min(len(content), idx + 120)
+                    snippet = "…" + content[start:end].replace("\n", " ") + "…"
+                    break
+            results.append({"filename": fn, "snippet": snippet})
+    return results
