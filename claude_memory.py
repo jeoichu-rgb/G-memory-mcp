@@ -196,6 +196,15 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
             f"| 吻合度: {item['score']:.2f}\n"
             f"内容: {item['content'][:1500]}\n\n"
         )
+
+    # ── 日记检索 ─────────────────────────────────────────────
+    diary_hits = claude_search_diary(keyword)
+    if diary_hits:
+        report += "【日记检索结果】\n"
+        for fn, content in diary_hits[:3]:
+            date_part = fn[:10]
+            report += f"[日记 {date_part}]\n{content[:1500]}\n\n"
+            
     return report
 
 def claude_get_rolling_context() -> str:
@@ -727,14 +736,14 @@ def claude_list_all_chronicles(ctype: str = "") -> list:
         return []
 
 
-def claude_search_diary(keyword: str) -> list:
+def claude_search_diary(keyword: str) -> str:
     """
     日记关键词检索，jieba分词后多token匹配。
-    返回 [{"filename": ..., "snippet": ...}, ...]，按文件名倒序。
+    返回格式化字符串，供 claude_search_memory 拼接。
     """
     diary_path = "./claude_diary"
     if not os.path.exists(diary_path):
-        return []
+        return ""
 
     tokens = list(jieba.cut_for_search(keyword))
     tokens = list({t.strip() for t in tokens if len(t.strip()) > 1})
@@ -752,14 +761,6 @@ def claude_search_diary(keyword: str) -> list:
         except:
             continue
         if any(t in content for t in tokens):
-            # 找第一个命中位置，截取上下文作为snippet
-            snippet = ""
-            for t in tokens:
-                idx = content.find(t)
-                if idx != -1:
-                    start = max(0, idx - 60)
-                    end = min(len(content), idx + 120)
-                    snippet = "…" + content[start:end].replace("\n", " ") + "…"
-                    break
-            results.append({"filename": fn, "snippet": snippet})
+            results.append((fn, content))
+
     return results
