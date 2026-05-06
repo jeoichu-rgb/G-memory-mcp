@@ -1,5 +1,6 @@
 import os
 import httpx
+import time
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
@@ -12,6 +13,7 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
         embeddings = []
         with httpx.Client(timeout=30.0) as client:
             for text in input:
+                time.sleep(1)
                 response = client.post(
                     self.url,
                     headers={"Authorization": f"Bearer {self.api_key}"},
