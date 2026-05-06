@@ -417,6 +417,11 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <button class="btn btn-xs" id="chrtab-month" onclick="loadChronicle('月历')">月历</button>
         <button class="btn btn-xs btn-v" onclick="openChronNew()" style="margin-left:auto;">+ 新建</button>
       </div>
+      <div class="row" style="margin-top:6px;gap:8px;align-items:center;">
+        <button class="btn btn-xs" onclick="runSynthesis('week')" style="border-color:var(--warm);color:var(--warm);">生成周画像</button>
+        <button class="btn btn-xs" onclick="runSynthesis('month')" style="border-color:var(--violet);color:var(--violet);">生成月画像</button>
+        <span id="synthesis-st" style="font-size:10px;color:var(--muted);"></span>
+      </div>
       <div id="e-chron-list" class="col" style="gap:8px;"></div>
     </div>
   </div>
@@ -1127,6 +1132,26 @@ async function erikSaveDiary() {
 // CHRONICLE
 let chronEditId = '';
 let chronEditMode = 'new'; // 'new' | 'edit'
+
+async function runSynthesis(type) {
+  const st = document.getElementById('synthesis-st');
+  st.textContent = type === 'week' ? '正在生成周画像…（约30-60秒）' : '正在生成月画像…';
+  try {
+    const r = await fetch(`${API_BASE}/admin/synthesis`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({ type })
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      st.textContent = '✓ 生成成功';
+      loadChronicle('');
+    } else {
+      st.textContent = '✗ 失败：' + (d.output || '').slice(0, 60);
+    }
+  } catch(e) {
+    st.textContent = '✗ 请求失败';
+  }
+}
 
 async function loadChronicle(type) {
   // update tab style
