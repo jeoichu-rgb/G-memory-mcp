@@ -3,12 +3,10 @@ import httpx
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-# 升级后的直连神经元，对准 Google 最新的 v1beta 通道与 3072 维的 gemini-embedding-001
-class GeminiEmbeddingFunction(EmbeddingFunction):
+class VoyageEmbeddingFunction(EmbeddingFunction):
     def __init__(self, api_key: str):
         self.api_key = api_key
-        # 顺从你的研究成果，使用 v1beta 和 gemini-embedding-001
-        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={self.api_key}"
+        self.url = "https://api.voyageai.com/v1/embeddings"
 
     def __call__(self, input: Documents) -> Embeddings:
         embeddings = []
@@ -16,15 +14,16 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
             for text in input:
                 response = client.post(
                     self.url,
-                    json={"content": {"parts": [{"text": text}]}}
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={"input": [text], "model": "voyage-3-large"}
                 )
                 response.raise_for_status()
                 data = response.json()
-                embeddings.append(data["embedding"]["values"])
+                embeddings.append(data["data"][0]["embedding"])
         return embeddings
 
-api_key = os.getenv("GEMINI_API_KEY")
-gemini_ef = GeminiEmbeddingFunction(api_key=api_key)
+api_key = os.getenv("VOYAGE_API_KEY")
+gemini_ef = VoyageEmbeddingFunction(api_key=api_key)
 
 client = chromadb.PersistentClient(path="./chroma_db")
 
