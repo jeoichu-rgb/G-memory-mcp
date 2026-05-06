@@ -413,13 +413,6 @@ async def admin_delete_chronicle(memory_id: str):
     result = claude_delete_chronicle(memory_id)
     return {"result": result}
 
-@app.get("/admin/diary/search")
-async def admin_search_diary(keyword: str = ""):
-    if not keyword.strip():
-        return {"results": []}
-    from claude_memory import claude_search_diary
-    return {"results": claude_search_diary(keyword)}
-
 # 读日记
 @app.get("/admin/diary/{filename:path}")
 async def admin_read_diary(filename: str):
