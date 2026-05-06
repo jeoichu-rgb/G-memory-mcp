@@ -340,10 +340,14 @@ async def admin_list_memories(collection: str = "dynamic", offset: int = 0, limi
 
 # 编辑记忆
 @app.put("/admin/memories/{memory_id}")
-async def admin_edit_memory(memory_id: str, payload: MemoryEditPayload):
-    result = claude_edit_core_memory(memory_id, payload.new_content)
+async def admin_edit_memory(memory_id: str, payload: MemoryEditPayload, collection: str = "dynamic"):
+    if collection == "core":
+        result = claude_edit_core_memory(memory_id, payload.new_content)
+    else:
+        from claude_memory import claude_edit_dynamic_memory
+        result = claude_edit_dynamic_memory(memory_id, payload.new_content)
     return {"result": result}
-
+    
 # 删除记忆
 @app.delete("/admin/memories/{memory_id}")
 async def admin_delete_memory(memory_id: str, collection: str = "dynamic"):
@@ -408,6 +412,13 @@ async def admin_edit_chronicle(memory_id: str, payload: MemoryEditPayload):
 async def admin_delete_chronicle(memory_id: str):
     result = claude_delete_chronicle(memory_id)
     return {"result": result}
+
+@app.get("/admin/diary/search")
+async def admin_search_diary(keyword: str = ""):
+    if not keyword.strip():
+        return {"results": []}
+    from claude_memory import claude_search_diary
+    return {"results": claude_search_diary(keyword)}
 
 # 读日记
 @app.get("/admin/diary/{filename:path}")
