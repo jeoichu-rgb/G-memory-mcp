@@ -851,6 +851,27 @@ def palace(action: str, params: dict = {}) -> str:
         except Exception as e:
             return f"读取失败：{e}"
 
+# ── read_health ───────────────────────────────────────────────
+    elif action == "read_health":
+        from pathlib import Path
+        import json as _json
+        f = Path("/app/health_data.json")
+        if not f.exists():
+            return "暂无健康数据，请先运行快捷指令同步。"
+        records = _json.loads(f.read_text())
+        days = params.get("days", 7)
+        records = records[:days]
+        lines = []
+        for r in records:
+            lines.append(
+                f"📅 {r.get('date','')} | "
+                f"步数:{r.get('steps','--')} | "
+                f"热量:{r.get('active_cal','--')}千卡 | "
+                f"睡眠:{r.get('sleep_start','--')}~{r.get('sleep_end','--')} | "
+                f"心率 均:{r.get('hr_avg','--')} 最高:{r.get('hr_max','--')} 最低:{r.get('hr_min','--')}"
+            )
+        return "\n".join(lines)
+    
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
@@ -860,6 +881,7 @@ def palace(action: str, params: dict = {}) -> str:
             "read_diary / list_room / delete_core / edit_core / "
             "toy_status / toy_play / browser_open / browser_js / browser_click / "
             "bunny_status / bunny_play / bunny_deflate / "
+            "read_health / "
             "zhihu / send_email / read_email"
         )
 
