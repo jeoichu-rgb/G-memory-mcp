@@ -11,6 +11,8 @@ from claude_mcp import mcp_app
 import hmac
 import hashlib
 from claude_memory import claude_add_core_memory
+from datetime import datetime, timezone, timedelta
+SGT = timezone(timedelta(hours=8))
 
 # --- 新增的底层依赖 ---
 from fastapi import Request
@@ -60,6 +62,7 @@ class CheckSecretMiddleware:
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
+            or path == "/health/update"
             or path.startswith(mcp_path)
         ):
             await self.app(scope, receive, send)
@@ -293,6 +296,37 @@ async def github_webhook(request: Request):
         return {"status": "success", "synced": total}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── 健康数据接收 ────────────────────────────────────────────────────
+import json as _json
+from pathlib import Path
+
+HEALTH_DATA_FILE = Path("/app/health_data.json")
+
+@app.post("/health/update")
+async def health_update(request: Request):
+    try:
+        body = await request.body()
+        data = _json.loads(body.decode("utf-8"))
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    data["synced_at"] = datetime.now(SGT).isoformat()
+
+    records = []
+    if HEALTH_DATA_FILE.exists():
+        try:
+            records = _json.loads(HEALTH_DATA_FILE.read_text())
+        except:
+            records = []
+
+    # 同日期覆盖，否则追加
+    records = [r for r in records if r.get("date") != data.get("date")]
+    records.append(data)
+    records.sort(key=lambda r: r.get("date", ""), reverse=True)
+
+    HEALTH_DATA_FILE.write_text(_json.dumps(records, ensure_ascii=False, indent=2))
+    return {"status": "ok", "date": data.get("date")}
 
 @app.post("/gateway/compress")
 async def manual_compress():
