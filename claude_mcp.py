@@ -22,6 +22,7 @@ BROWSER_BRIDGE_URL  = os.getenv("BROWSER_BRIDGE_URL",  "http://192.3.61.205:7002
 BUNNY_BRIDGE_URL    = os.getenv("BUNNY_BRIDGE_URL",    "http://192.3.61.205:7003")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 ZHIHU_COOKIES_RAW   = os.getenv("ZHIHU_COOKIES", "[]")
+ZHIHU_Z_C0          = os.getenv("ZHIHU_Z_C0", "")
 
 # 域名路由判断
 XHS_DOMAINS   = ["xiaohongshu.com", "xhslink.com"]
@@ -134,36 +135,21 @@ def _zhihu_context(p):
     """启动注入了知乎 cookie 的 stealth context"""
     context = _launch_stealth_context(p, BROWSER_PROFILE_DIR + "_zhihu")
     try:
-        raw = ZHIHU_COOKIES_RAW
-        try:
-            raw = json.loads(f'"{raw}"')
-        except Exception:
-            pass
-        raw_cookies = json.loads(raw)
-        clean = []
-        samesite_map = {
-            "strict": "Strict", "lax": "Lax", "none": "None",
-            "no_restriction": "None", "unspecified": "Lax",
-        }
-        for c in raw_cookies:
-            entry = {
-                "name":   c["name"],
-                "value":  c["value"],
-                "domain": c.get("domain", ".zhihu.com"),
-                "path":   c.get("path", "/"),
-            }
-            if "secure" in c:
-                entry["secure"] = bool(c["secure"])
-            if "httpOnly" in c:
-                entry["httpOnly"] = bool(c["httpOnly"])
-            ss = str(c.get("sameSite", "")).lower()
-            if ss in samesite_map:
-                entry["sameSite"] = samesite_map[ss]
-            clean.append(entry)
-        context.add_cookies(clean)
-        print(f"ZHIHU_COOKIES injected: {len(clean)} cookies", flush=True)
+        if ZHIHU_Z_C0:
+            context.add_cookies([{
+                "name": "z_c0",
+                "value": ZHIHU_Z_C0,
+                "domain": ".zhihu.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "None",
+            }])
+            print("ZHIHU z_c0 injected", flush=True)
+        else:
+            print("ZHIHU_Z_C0 not set", flush=True)
     except Exception as ex:
-        print(f"ZHIHU_COOKIES inject error: {ex}", flush=True)
+        print(f"ZHIHU inject error: {ex}", flush=True)
     return context
 
 
