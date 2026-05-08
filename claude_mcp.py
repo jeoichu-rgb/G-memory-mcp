@@ -151,6 +151,7 @@ def _zhihu_browser(url: str, extract_js: str, wait_ms: int = 3000) -> str:
             page.wait_for_timeout(wait_ms)
             page.evaluate("window.scrollBy(0, 800)")
             page.wait_for_timeout(1000)
+            print("ZHIHU_DEBUG:", page.evaluate("() => document.body.innerText.slice(0,300)"), flush=True)
             result = page.evaluate(extract_js)
             context.close()
             return str(result)[:4000]
