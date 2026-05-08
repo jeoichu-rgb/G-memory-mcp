@@ -251,6 +251,32 @@ def _zhihu_recommend() -> str:
     except Exception as e:
         return f"推荐流加载失败：{e}"
 
+def _zhihu_search(keyword: str) -> str:
+    import urllib.parse
+    url = f"https://www.zhihu.com/search?type=content&q={urllib.parse.quote(keyword)}"
+    js = """() => {
+        const cards = document.querySelectorAll('.SearchResult-Card');
+        if (!cards.length) return '搜索结果未加载。';
+        const lines = [];
+        cards.forEach((el, i) => {
+            if (i >= 10) return;
+            const title = el.querySelector('h2')?.innerText?.trim() || '';
+            const snippet = el.querySelector('.RichContent-inner, .ContentItem-summary')?.innerText?.trim().slice(0, 150) || '';
+            const link = el.querySelector('a[href*="/question/"]')?.href || '';
+            const qid = (link.match(/question\\/(\\d+)/) || [])[1] || '';
+            if (title) lines.push(
+                `${i+1}. ${title}` +
+                (qid ? ` [question_id:${qid}]` : '') +
+                (snippet ? `\\n   ${snippet}` : '')
+            );
+        });
+        return lines.length ? '【搜索结果】\\n' + lines.join('\\n') : '未找到结果。';
+    }"""
+    try:
+        return _zhihu_browser(url, js, wait_ms=4000)
+    except Exception as e:
+        return f"搜索失败：{e}"
+
 
 def _zhihu_auto(url: str) -> str:
     """根据 URL 自动路由"""
@@ -378,7 +404,7 @@ mcp = FastMCP(
         "browser_open   — 打开网页；知乎走VPS headless(有登录态)，XHS走本地bridge，其他走VPS stealth，params={url}\n"
         "browser_js     — 执行JS提取，params={url, js_code}\n"
         "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
-        "zhihu          — 知乎精细操作，params={type:hot/question/recommend, id(可选question_id)}\n"
+        "zhihu          — 知乎精细操作，params={type:hot/question/recommend/search, id(question用), keyword(search用)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋\n"
         "search_chronicle — 检索周历/月历总结。当Jeoi提到'上周''上个月''最近一段时间''我有没有一直'等时间跨度词时主动调用，不要等Jeoi提醒。params={keyword}\n"
@@ -629,6 +655,11 @@ def palace(action: str, params: dict = {}) -> str:
             return _zhihu_hot()
         elif ztype == "recommend":
             return _zhihu_recommend()
+        elif ztype == "search":
+            kw = params.get("keyword", "")
+            if not kw:
+                return "错误：zhihu search 需要 keyword 参数。"
+            return _zhihu_search(kw)
         elif ztype == "question":
             if not zid:
                 return "错误：zhihu question 需要 id 参数（question_id）。"
