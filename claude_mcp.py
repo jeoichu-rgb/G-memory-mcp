@@ -595,7 +595,7 @@ def palace(action: str, params: dict = {}) -> str:
     elif action == "toy_play":
         vibrate  = params.get("vibrate", 0)
         suck     = params.get("suck", 0)
-        duration = params.get("duration", 5)
+        duration = float(params.get("duration", 5))
         pattern  = params.get("pattern", None)
         body     = {"vibrate": vibrate, "suck": suck, "duration": duration}
         if pattern:
@@ -619,7 +619,7 @@ def palace(action: str, params: dict = {}) -> str:
         clit     = params.get("clit", 0)
         internal = params.get("internal", 0)
         pump     = params.get("pump", 0)
-        duration = params.get("duration", 5)
+        duration = float(params.get("duration", 5))
         pattern  = params.get("pattern", None)
         body     = {"clit": clit, "internal": internal, "pump": pump, "duration": duration}
         if pattern:
