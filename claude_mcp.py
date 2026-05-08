@@ -135,7 +135,7 @@ def _zhihu_context(p):
     context = _launch_stealth_context(p, BROWSER_PROFILE_DIR + "_zhihu")
     try:
         print(f"ZHIHU_RAW first 50 chars: {repr(ZHIHU_COOKIES_RAW[:50])}", flush=True)
-        raw_cookies = json.loads(ZHIHU_COOKIES_RAW)
+        raw_cookies = json.loads(ZHIHU_COOKIES_RAW.replace('\\"', '"'))
         clean = []
         samesite_map = {
             "strict": "Strict", "lax": "Lax", "none": "None",
