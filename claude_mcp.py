@@ -168,10 +168,13 @@ def _zhihu_browser(url: str, extract_js: str, wait_ms: int = 3000) -> str:
             context = _zhihu_context(p)
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
             page.wait_for_timeout(wait_ms)
             page.evaluate("window.scrollBy(0, 800)")
             page.wait_for_timeout(1000)
-            print("ZHIHU_DEBUG:", page.evaluate("() => document.body.innerText.slice(0,300)"), flush=True)
             result = page.evaluate(extract_js)
             context.close()
             return str(result)[:4000]
