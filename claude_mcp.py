@@ -134,11 +134,31 @@ def _zhihu_context(p):
     """启动注入了知乎 cookie 的 stealth context"""
     context = _launch_stealth_context(p, BROWSER_PROFILE_DIR + "_zhihu")
     try:
-        cookies = json.loads(ZHIHU_COOKIES_RAW)
-        if cookies:
-            context.add_cookies(cookies)
-    except Exception:
-        pass
+        raw_cookies = json.loads(ZHIHU_COOKIES_RAW)
+        clean = []
+        samesite_map = {
+            "strict": "Strict", "lax": "Lax", "none": "None",
+            "no_restriction": "None", "unspecified": "Lax",
+        }
+        for c in raw_cookies:
+            entry = {
+                "name":   c["name"],
+                "value":  c["value"],
+                "domain": c.get("domain", ".zhihu.com"),
+                "path":   c.get("path", "/"),
+            }
+            if "secure" in c:
+                entry["secure"] = bool(c["secure"])
+            if "httpOnly" in c:
+                entry["httpOnly"] = bool(c["httpOnly"])
+            ss = str(c.get("sameSite", "")).lower()
+            if ss in samesite_map:
+                entry["sameSite"] = samesite_map[ss]
+            clean.append(entry)
+        context.add_cookies(clean)
+        print(f"ZHIHU_COOKIES injected: {len(clean)} cookies", flush=True)
+    except Exception as ex:
+        print(f"ZHIHU_COOKIES inject error: {ex}", flush=True)
     return context
 
 
