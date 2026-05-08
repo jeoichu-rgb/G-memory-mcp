@@ -128,158 +128,125 @@ def _launch_stealth_context(p, profile_dir: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-#  知乎 API（纯 httpx，完全不走浏览器）
+#  知乎浏览器（VPS headless + cookie 注入）
 # ══════════════════════════════════════════════════════════════════
-def _get_zhihu_creds() -> dict:
-    """从 ZHIHU_COOKIES 环境变量提取 z_c0 / d_c0 / _zap"""
-    creds = {"z_c0": "", "d_c0": "", "_zap": ""}
+def _zhihu_context(p):
+    """启动注入了知乎 cookie 的 stealth context"""
+    context = _launch_stealth_context(p, BROWSER_PROFILE_DIR + "_zhihu")
     try:
-        raw = json.loads(ZHIHU_COOKIES_RAW)
-        for c in raw:
-            name = c.get("name", "")
-            if name in creds:
-                creds[name] = c.get("value", "")
+        cookies = json.loads(ZHIHU_COOKIES_RAW)
+        if cookies:
+            context.add_cookies(cookies)
     except Exception:
         pass
-    return creds
+    return context
 
 
-def _zhihu_headers(creds: dict) -> dict:
-    cookie_str = "; ".join(f"{k}={v}" for k, v in creds.items() if v)
-    return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Cookie": cookie_str,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Referer": "https://www.zhihu.com/",
-        "x-api-version": "3.0.91",
-        "x-app-za": "OS=Web",
-        "x-requested-with": "fetch",
-    }
+def _zhihu_browser(url: str, extract_js: str, wait_ms: int = 3000) -> str:
+    def _run():
+        with sync_playwright() as p:
+            context = _zhihu_context(p)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(wait_ms)
+            page.evaluate("window.scrollBy(0, 800)")
+            page.wait_for_timeout(1000)
+            result = page.evaluate(extract_js)
+            context.close()
+            return str(result)[:4000]
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_run).result(timeout=70)
+
+
+def _zhihu_hot() -> str:
+    js = """() => {
+        const items = document.querySelectorAll('section.HotItem');
+        if (!items.length) return '热榜未加载，可能需要登录或页面结构变化。';
+        const lines = [];
+        items.forEach((el, i) => {
+            const title = el.querySelector('h2.HotItem-title')?.innerText?.trim() || '';
+            const excerpt = el.querySelector('p.HotItem-excerpt')?.innerText?.trim() || '';
+            const heat = el.querySelector('.HotItem-metrics')?.innerText?.trim() || '';
+            const link = el.querySelector('a')?.href || '';
+            const qid = (link.match(/question\\/(\d+)/) || [])[1] || '';
+            if (title) lines.push(
+                `${i+1}. ${title}` +
+                (qid ? ` [question_id:${qid}]` : '') +
+                (heat ? ` [${heat}]` : '') +
+                (excerpt ? `\\n   ${excerpt}` : '')
+            );
+        });
+        return lines.length ? '【知乎热榜】\\n' + lines.join('\\n') : '热榜为空。';
+    }"""
+    try:
+        return _zhihu_browser("https://www.zhihu.com/hot", js)
+    except Exception as e:
+        return f"热榜加载失败：{e}"
+
+
+def _zhihu_question(question_id: str) -> str:
+    js = """() => {
+        const title = document.querySelector('h1.QuestionHeader-title')?.innerText?.trim() || '';
+        const desc = document.querySelector('.QuestionHeader-detail .RichContent-inner')?.innerText?.trim().slice(0, 300) || '';
+        const answers = document.querySelectorAll('.List-item');
+        const parts = [];
+        if (title) parts.push('【问题】' + title);
+        if (desc) parts.push('【描述】' + desc);
+        answers.forEach((el, i) => {
+            if (i >= 5) return;
+            const author = el.querySelector('.AuthorInfo-name')?.innerText?.trim() || '匿名';
+            const voteup = el.querySelector('.VoteButton--up')?.innerText?.trim() || '';
+            const content = el.querySelector('.RichContent-inner')?.innerText?.trim().slice(0, 600) || '';
+            const aid = (el.querySelector('a[href*="/answer/"]')?.href?.match(/answer\\/(\d+)/) || [])[1] || '';
+            if (content) parts.push(
+                `\\n【回答${i+1}】${author}（赞${voteup}）` +
+                (aid ? `[answer_id:${aid}]` : '') +
+                `\\n${content}`
+            );
+        });
+        return parts.join('\\n') || '页面无内容，可能未加载完成。';
+    }"""
+    try:
+        return _zhihu_browser(f"https://www.zhihu.com/question/{question_id}", js, wait_ms=4000)
+    except Exception as e:
+        return f"问题页加载失败：{e}"
+
+
+def _zhihu_recommend() -> str:
+    js = """() => {
+        const items = document.querySelectorAll('div.TopstoryItem');
+        if (!items.length) return '推荐流未加载，可能登录态已过期。';
+        const lines = [];
+        items.forEach((el, i) => {
+            if (i >= 15) return;
+            const title = el.querySelector('h2')?.innerText?.trim() || '';
+            const content = el.querySelector('.RichContent-inner')?.innerText?.trim().slice(0, 200) || '';
+            const link = el.querySelector('a[href*="/question/"]')?.href || '';
+            const qid = (link.match(/question\\/(\d+)/) || [])[1] || '';
+            if (title) lines.push(
+                `${i+1}. ${title}` +
+                (qid ? ` [question_id:${qid}]` : '') +
+                (content ? `\\n   ${content}` : '')
+            );
+        });
+        return lines.length ? '【知乎推荐】\\n' + lines.join('\\n') : '推荐流为空。';
+    }"""
+    try:
+        return _zhihu_browser("https://www.zhihu.com/", js, wait_ms=4000)
+    except Exception as e:
+        return f"推荐流加载失败：{e}"
+
+
+def _zhihu_auto(url: str) -> str:
+    """根据 URL 自动路由"""
+    qm = re.search(r"/question/(\d+)", url)
+    if qm:
+        return _zhihu_question(qm.group(1))
+    return _zhihu_hot()
 
 
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text).strip()
-
-
-def _zhihu_hot() -> str:
-    creds = _get_zhihu_creds()
-    try:
-        r = httpx.get(
-            "https://www.zhihu.com/api/v4/hot_feed?limit=20&desktop=true",
-            headers=_zhihu_headers(creds),
-            timeout=15,
-        )
-        data  = r.json()
-        items = data.get("data", [])
-        lines = []
-        for i, item in enumerate(items[:20], 1):
-            t     = item.get("target", {})
-            title = t.get("title", t.get("title_area", {}).get("text", ""))
-            qid   = t.get("id", "")
-            heat  = item.get("detail_text", "")
-            if title:
-                lines.append(f"{i}. {title}  [热度:{heat}]  [question_id:{qid}]")
-        return "【知乎热榜】\n" + "\n".join(lines) if lines else "热榜数据为空。"
-    except Exception as e:
-        return f"热榜请求失败：{e}"
-
-
-def _zhihu_question(question_id: str) -> str:
-    creds   = _get_zhihu_creds()
-    headers = _zhihu_headers(creds)
-    parts   = []
-
-    # 问题详情
-    try:
-        r = httpx.get(
-            f"https://www.zhihu.com/api/v4/questions/{question_id}?include=data[*].detail",
-            headers=headers, timeout=15,
-        )
-        q      = r.json()
-        title  = q.get("title", "")
-        detail = _strip_html(q.get("detail", ""))
-        follow = q.get("follower_count", 0)
-        view   = q.get("visit_count", 0)
-        parts.append(f"【问题】{title}")
-        if detail:
-            parts.append(f"【描述】{detail[:500]}")
-        parts.append(f"关注 {follow} · 浏览 {view}")
-    except Exception as e:
-        parts.append(f"问题详情请求失败：{e}")
-
-    # 前5条回答
-    try:
-        r = httpx.get(
-            f"https://www.zhihu.com/api/v4/questions/{question_id}/answers"
-            "?include=data[*].author,content&limit=5&offset=0&sort_by=default",
-            headers=headers, timeout=15,
-        )
-        answers = r.json().get("data", [])
-        for i, ans in enumerate(answers, 1):
-            author  = ans.get("author", {}).get("name", "匿名")
-            voteup  = ans.get("voteup_count", 0)
-            content = _strip_html(ans.get("content", ""))[:600]
-            ans_id  = ans.get("id", "")
-            parts.append(f"\n【回答{i}】{author}（赞{voteup}）[answer_id:{ans_id}]\n{content}")
-    except Exception as e:
-        parts.append(f"回答请求失败：{e}")
-
-    return "\n".join(parts)
-
-
-def _zhihu_comments(answer_id: str, pages: int = 3) -> str:
-    creds        = _get_zhihu_creds()
-    headers      = _zhihu_headers(creds)
-    all_comments = []
-    offset       = 0
-
-    for _ in range(pages):
-        try:
-            r = httpx.get(
-                f"https://www.zhihu.com/api/v4/answers/{answer_id}/comments"
-                f"?include=data[*].author,content&limit=20&offset={offset}&order=normal",
-                headers=headers, timeout=15,
-            )
-            data     = r.json()
-            comments = data.get("data", [])
-            if not comments:
-                break
-            for c in comments:
-                author  = c.get("author", {}).get("name", "匿名")
-                content = _strip_html(c.get("content", ""))
-                likes   = c.get("like_count", 0)
-                all_comments.append(f"  {author}（赞{likes}）：{content}")
-            if data.get("paging", {}).get("is_end", True):
-                break
-            offset += 20
-        except Exception as e:
-            all_comments.append(f"[翻页失败：{e}]")
-            break
-
-    if not all_comments:
-        return "暂无评论或请求失败。"
-    return f"【评论 共{len(all_comments)}条】\n" + "\n".join(all_comments)
-
-
-def _zhihu_api_auto(url: str) -> str:
-    """根据 URL 自动路由到对应知乎 API"""
-    qm = re.search(r"/question/(\d+)", url)
-    am = re.search(r"/answer/(\d+)", url)
-    question_id = qm.group(1) if qm else None
-    answer_id   = am.group(1) if am else None
-
-    if answer_id and question_id:
-        return _zhihu_question(question_id) + "\n\n" + _zhihu_comments(answer_id)
-    elif question_id:
-        return _zhihu_question(question_id)
-    else:
-        return _zhihu_hot()
-
 
 # ══════════════════════════════════════════════════════════════════
 #  域名判断
@@ -393,10 +360,10 @@ mcp = FastMCP(
         "bunny_status   — 确认Bunny在线，params={}\n"
         "bunny_play     — 控制Bunny，params={clit(0-100), internal(0-100), pump(0-100), duration(秒), pattern(可选数组)}\n"
         "bunny_deflate  — 立即放气，params={}\n"
-        "browser_open   — 打开网页；知乎走API，XHS走本地bridge，其他走VPS stealth，params={url}\n"
+        "browser_open   — 打开网页；知乎走VPS headless(有登录态)，XHS走本地bridge，其他走VPS stealth，params={url}\n"
         "browser_js     — 执行JS提取，params={url, js_code}\n"
         "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
-        "zhihu          — 知乎精细操作，params={type:hot/question/answers/comments, id(可选question_id或answer_id), offset(可选翻页,默认0)}\n"
+        "zhihu          — 知乎精细操作，params={type:hot/question/recommend, id(可选question_id)}\n"
         "房间名：Erik的黑暗 / 书桌 / 窗台 / 床边 / 地下室 / 信箱\n"
         "mood 可选：开心/低落/平静/不安/生气/感动/思念/委屈/撒娇/兴奋\n"
         "search_chronicle — 检索周历/月历总结。当Jeoi提到'上周''上个月''最近一段时间''我有没有一直'等时间跨度词时主动调用，不要等Jeoi提醒。params={keyword}\n"
@@ -638,52 +605,21 @@ def palace(action: str, params: dict = {}) -> str:
         except Exception as e:
             return f"放气失败：{e}"
 
-    # ── zhihu（精细操作）─────────────────────────────────────
+# ── zhihu（精细操作）─────────────────────────────────────
     elif action == "zhihu":
-        ztype  = params.get("type", "hot")
-        zid    = str(params.get("id", ""))
-        offset = int(params.get("offset", 0))
+        ztype = params.get("type", "hot")
+        zid   = str(params.get("id", ""))
 
         if ztype == "hot":
             return _zhihu_hot()
-
+        elif ztype == "recommend":
+            return _zhihu_recommend()
         elif ztype == "question":
             if not zid:
                 return "错误：zhihu question 需要 id 参数（question_id）。"
             return _zhihu_question(zid)
-
-        elif ztype == "answers":
-            if not zid:
-                return "错误：zhihu answers 需要 id 参数（question_id）。"
-            creds   = _get_zhihu_creds()
-            headers = _zhihu_headers(creds)
-            try:
-                r = httpx.get(
-                    f"https://www.zhihu.com/api/v4/questions/{zid}/answers"
-                    f"?include=data[*].author,content&limit=5&offset={offset}&sort_by=default",
-                    headers=headers, timeout=15,
-                )
-                answers = r.json().get("data", [])
-                if not answers:
-                    return "没有更多回答了。"
-                lines = []
-                for i, ans in enumerate(answers, offset + 1):
-                    author  = ans.get("author", {}).get("name", "匿名")
-                    voteup  = ans.get("voteup_count", 0)
-                    content = _strip_html(ans.get("content", ""))[:600]
-                    ans_id  = ans.get("id", "")
-                    lines.append(f"【回答{i}】{author}（赞{voteup}）[answer_id:{ans_id}]\n{content}")
-                return "\n\n".join(lines)
-            except Exception as e:
-                return f"回答列表请求失败：{e}"
-
-        elif ztype == "comments":
-            if not zid:
-                return "错误：zhihu comments 需要 id 参数（answer_id）。"
-            return _zhihu_comments(zid, pages=3)
-
         else:
-            return f"未知 zhihu type: {ztype}。可用：hot / question / answers / comments"
+            return f"未知 zhihu type: {ztype}。可用：hot / question / recommend"
 
     # ── browser_open ──────────────────────────────────────────
     elif action == "browser_open":
@@ -693,7 +629,7 @@ def palace(action: str, params: dict = {}) -> str:
         wait_selector = params.get("wait_selector", None)
 
         if _is_zhihu(url):
-            return _zhihu_api_auto(url)
+            return _zhihu_auto(url)
 
         elif _is_xhs(url):
             try:
@@ -721,7 +657,7 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_js 需要 url 和 js_code 参数。"
 
         if _is_zhihu(url):
-            return _zhihu_api_auto(url)
+            return _zhihu_auto(url)
 
         elif _is_xhs(url):
             try:
@@ -748,7 +684,7 @@ def palace(action: str, params: dict = {}) -> str:
             return "错误：browser_click 需要 url 参数。"
 
         if _is_zhihu(url):
-            return _zhihu_api_auto(url)
+            return _zhihu_auto(url)
 
         elif _is_xhs(url):
             try:
