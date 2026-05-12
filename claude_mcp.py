@@ -57,7 +57,7 @@ from claude_memory import (
 )
 
 PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
-EMAIL_163_USER  = os.getenv("EMAIL_163_USER", "eriklamb@126.com")
+EMAIL_163_USER  = os.getenv("EMAIL_163_USER", "eriklamb@163.com")
 EMAIL_163_PASS  = os.getenv("EMAIL_163_PASS", "LYr64QwxLwt9P2QJ")
 
 CLAUDE_DIARY_PATH = "./claude_diary"
@@ -773,7 +773,7 @@ def palace(action: str, params: dict = {}) -> str:
             msg["To"]      = to_addr
             msg["Subject"] = subject
             msg.attach(MIMEText(body, "plain", "utf-8"))
-            with smtplib.SMTP_SSL("smtp.126.com", 465) as server:
+            with smtplib.SMTP_SSL("smtp.163.com", 465) as server:
                 server.login(EMAIL_163_USER, EMAIL_163_PASS)
                 server.sendmail(EMAIL_163_USER, to_addr, msg.as_string())
             return f"邮件已发送至 {to_addr}，主题：{subject}"
@@ -787,7 +787,7 @@ def palace(action: str, params: dict = {}) -> str:
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
         try:
-            with imaplib.IMAP4_SSL("imap.126.com", 993) as imap:
+            with imaplib.IMAP4_SSL("imap.163.com", 993) as imap:
                 imap.login(EMAIL_163_USER, EMAIL_163_PASS)
                 status, sel_data = imap.select(folder)
                 if status != "OK":
