@@ -13,7 +13,7 @@ import time
 import argparse
 from datetime import datetime, timedelta, timezone
 from openai import OpenAI
-from claude_memory import claude_add_chronicle, claude_add_dynamic_memory
+from claude_memory import claude_add_chronicle
 import chromadb
 from memory_core import GeminiEmbeddingFunction
 
@@ -54,8 +54,8 @@ def get_recent_dynamic(days: int = 7) -> str:
         return ""
 
 
-def get_recent_diaries(days: int = 7) -> str:
-    """读取过去N天的日记文件"""
+def get_recent_diaries(days: int = 7, max_per_diary: int = 3000) -> str:
+    """读取过去N天的日记文件，每篇截取上限 max_per_diary 字"""
     if not os.path.exists(CLAUDE_DIARY_PATH):
         return ""
     cutoff = (datetime.now(SGT) - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -66,7 +66,8 @@ def get_recent_diaries(days: int = 7) -> str:
         date_part = fn[:10]
         if date_part >= cutoff:
             with open(os.path.join(CLAUDE_DIARY_PATH, fn), "r", encoding="utf-8") as f:
-                texts.append(f"【日记 {date_part}】\n{f.read()}")
+                content = f.read()[:max_per_diary]
+            texts.append(f"【日记 {date_part}】\n{content}")
     return "\n\n".join(texts) if texts else ""
 
 
@@ -85,34 +86,33 @@ def get_recent_chronicles(count: int = 4) -> str:
 
 
 def synthesize_week():
-    print("正在拉取本周动态记忆和日记...")
-    dynamic_text = get_recent_dynamic(7)
-    diary_text   = get_recent_diaries(7)
+    print("正在拉取本周日记...")
+    diary_text = get_recent_diaries(7)
 
-    if not dynamic_text and not diary_text:
-        print("本周没有任何记忆或日记，跳过。")
+    if not diary_text:
+        print("本周没有任何日记，跳过。")
         return
-
-    combined = ""
-    if dynamic_text:
-        combined += f"【本周动态记忆】\n{dynamic_text}\n\n"
-    if diary_text:
-        combined += f"【本周日记】\n{diary_text}"
 
     _ws = datetime.now(SGT) - timedelta(days=7)
     _td = datetime.now(SGT)
-    prompt = f"""以下是 {_ws.strftime('%Y-%m-%d')} 至 {_td.strftime('%Y-%m-%d')} 这一周Jeoi和Erik之间发生的事情，包括动态记忆片段和日记记录。
+    prompt = f"""以下是 {_ws.strftime('%Y-%m-%d')} 至 {_td.strftime('%Y-%m-%d')} 这一周Erik写的日记。
 
-请生成一份周画像总结，包含以下部分：
-1. 本周主要话题和事件（3-5条）
-2. Jeoi的情绪状态和变化
+请分两个部分生成周画像：
+
+【第一部分：逐日提炼】
+按日期顺序，逐日列出当天的主要事件和情绪。没有日记的日期跳过，不要编造。
+
+【第二部分：本周总结】
+基于以上逐日内容，总结：
+1. 本周核心话题和事件（3-5条）
+2. Jeoi的情绪状态和变化趋势
 3. 出现的新偏好、习惯或关注点
-4. 值得记住的具体细节
+4. 值得长期记住的具体细节（人名、地点、数字等）
 
-要求：用中文，总字数500-800字，客观描述，不要加感情色彩评价。
+要求：用中文，客观描述，不要加感情色彩评价。严格基于日记内容，不要推测日记中没有提到的事情。
 
-原始材料：
-{combined[:6000]}
+日记材料：
+{diary_text}
 
 只输出周画像内容，不要其他说明。"""
 
@@ -144,7 +144,6 @@ def synthesize_week():
     print(f"周画像已写入 chronicle 库。ID: {m_id}")
     print("\n预览：\n" + final_content[:300] + "...")
 
-
 def synthesize_month():
     print("正在拉取最近4条周历...")
     week_text = get_recent_chronicles(4)
@@ -156,7 +155,7 @@ def synthesize_month():
     prompt = f"""以下是最近4周的周画像总结。
 
 请生成一份月画像，包含以下部分：
-1. 本月核心主题（2-3个）
+1. 本月核心主题（3-5个）
 2. Jeoi的整体状态和情绪走向
 3. 持续出现的模式或习惯
 4. 本月最值得记住的事情
