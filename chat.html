@@ -678,11 +678,16 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>
     </div>
     <div class="mcp-add-section">
+      <div id="mcpStatus" style="display:none;font-size:11px;padding:6px 0;"></div>
       <div class="settings-label">添加 MCP 服务器</div>
       <div style="display:flex;gap:6px;">
         <input class="mcp-input" id="mcpAddName" placeholder="名称 (如 palace)">
         <input class="mcp-input" id="mcpAddUrl" placeholder="SSE URL" style="flex:2;">
-        <button class="mcp-add-btn" onclick="addMcpServer()">+</button>
+        <button class="mcp-add-btn" id="mcpAddBtn" onclick="addMcpServer()">+</button>
+      </div>
+      <div style="font-size:10px;color:var(--text-secondary);margin-top:6px;line-height:1.6;">
+        添加后，下一条消息的 CLI 进程会自动连接此 MCP 服务器。<br>
+        工具名格式：mcp__&lt;名称&gt;__&lt;工具名&gt;
       </div>
     </div>
   </div>
@@ -826,8 +831,15 @@ function handleWSMessage(data) {
       break;
 
     case 'mcp:toggled':
-      // Refresh the list
       wsSend('mcp:list', {});
+      break;
+
+    case 'mcp:error':
+      showMcpStatus(data.message || 'Unknown error', true);
+      break;
+
+    case 'mcp:test_result':
+      showMcpTestResult(data);
       break;
 
     default:
@@ -1480,21 +1492,26 @@ function renderMcpServers(servers) {
     return;
   }
 
-  list.innerHTML = servers.map(s => `
-    <div class="mcp-server" data-name="${escapeHtml(s.name)}">
+  list.innerHTML = servers.map(s => {
+    const safeName = escapeHtml(s.name);
+    return `
+    <div class="mcp-server" data-name="${safeName}">
       <div class="mcp-server-header">
-        <div>
-          <div class="mcp-server-name">${escapeHtml(s.name)}</div>
+        <div style="flex:1;min-width:0;">
+          <div class="mcp-server-name">${safeName}</div>
           <div class="mcp-server-url">${escapeHtml(s.url || s.command || '')}</div>
+          <div class="mcp-test-status" id="mcp-test-${safeName}" style="font-size:10px;margin-top:3px;min-height:14px;"></div>
         </div>
         <div class="mcp-server-actions">
+          <button style="background:none;border:1px solid var(--border);color:var(--text-secondary);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);"
+            onclick="testMcp('${safeName}')" title="测试连接">测试</button>
           <button class="mcp-toggle ${s.enabled ? 'on' : ''}"
-            onclick="toggleMcp('${escapeHtml(s.name)}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
-          <button class="mcp-remove" onclick="removeMcp('${escapeHtml(s.name)}')" title="移除">✕</button>
+            onclick="toggleMcp('${safeName}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
+          <button class="mcp-remove" onclick="removeMcp('${safeName}')" title="移除">✕</button>
         </div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 }
 
 function toggleMcp(name, enabled) {
@@ -1506,17 +1523,53 @@ function removeMcp(name) {
   wsSend('mcp:remove', { name });
 }
 
+function testMcp(name) {
+  const el = document.getElementById('mcp-test-' + name);
+  if (el) { el.textContent = '测试中...'; el.style.color = 'var(--text-secondary)'; }
+  wsSend('mcp:test', { name });
+}
+
+function showMcpTestResult(data) {
+  const el = document.getElementById('mcp-test-' + escapeHtml(data.name || ''));
+  if (!el) return;
+  if (data.ok) {
+    el.textContent = '✓ ' + (data.message || '连接成功');
+    el.style.color = 'var(--context-green)';
+  } else {
+    el.textContent = '✗ ' + (data.message || '连接失败');
+    el.style.color = 'var(--context-red)';
+  }
+}
+
+function showMcpStatus(msg, isError) {
+  const el = document.getElementById('mcpStatus');
+  el.style.display = 'block';
+  el.textContent = (isError ? '✗ ' : '✓ ') + msg;
+  el.style.color = isError ? 'var(--context-red)' : 'var(--context-green)';
+  setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
 function addMcpServer() {
   const nameInput = document.getElementById('mcpAddName');
   const urlInput = document.getElementById('mcpAddUrl');
   const name = nameInput.value.trim();
   const url = urlInput.value.trim();
 
-  if (!name || !url) return;
+  if (!name || !url) {
+    showMcpStatus('请填写名称和 URL', true);
+    return;
+  }
+
+  const btn = document.getElementById('mcpAddBtn');
+  btn.disabled = true;
+  btn.textContent = '…';
+  showMcpStatus('添加中...', false);
 
   wsSend('mcp:add', { name, url });
   nameInput.value = '';
   urlInput.value = '';
+
+  setTimeout(() => { btn.disabled = false; btn.textContent = '+'; }, 1500);
 }
 
 /* ══════════════════════════════════════

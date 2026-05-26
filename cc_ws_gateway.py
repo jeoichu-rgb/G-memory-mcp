@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+import httpx
 
 logging.basicConfig(
     level=logging.INFO,
@@ -286,23 +287,19 @@ async def websocket_endpoint(ws: WebSocket):
                 pass
 
             elif event == "mcp:list":
-                settings = read_claude_settings()
-                servers = settings.get("mcpServers", {})
-                permissions = settings.get("permissions", {}).get("allow", [])
-                result = []
-                for sname, cfg in servers.items():
-                    result.append({
-                        "name": sname,
-                        "url": cfg.get("url", ""),
-                        "command": cfg.get("command", ""),
-                        "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
-                    })
-                await ws.send_json({"event": "mcp:list", "servers": result})
+                try:
+                    await ws.send_json({"event": "mcp:list", "servers": _mcp_server_list()})
+                except Exception as e:
+                    log.exception(f"mcp:list error: {e}")
+                    await ws.send_json({"event": "mcp:error", "message": str(e)})
 
             elif event == "mcp:toggle":
-                mcp_name = data.get("name", "")
-                mcp_enabled = data.get("enabled", True)
-                if mcp_name:
+                try:
+                    mcp_name = data.get("name", "")
+                    mcp_enabled = data.get("enabled", True)
+                    if not mcp_name:
+                        await ws.send_json({"event": "mcp:error", "message": "name required"})
+                        continue
                     settings = read_claude_settings()
                     perms = settings.setdefault("permissions", {}).setdefault("allow", [])
                     pattern = f"mcp__{mcp_name}"
@@ -313,13 +310,18 @@ async def websocket_endpoint(ws: WebSocket):
                         perms[:] = [p for p in perms if not p.startswith(pattern)]
                     write_claude_settings(settings)
                     log.info(f"MCP {'enabled' if mcp_enabled else 'disabled'}: {mcp_name}")
-                    # Send updated list back
                     await ws.send_json({"event": "mcp:toggled", "name": mcp_name, "enabled": mcp_enabled})
+                except Exception as e:
+                    log.exception(f"mcp:toggle error: {e}")
+                    await ws.send_json({"event": "mcp:error", "message": str(e)})
 
             elif event == "mcp:add":
-                mcp_name = data.get("name", "")
-                mcp_url = data.get("url", "")
-                if mcp_name and mcp_url:
+                try:
+                    mcp_name = data.get("name", "")
+                    mcp_url = data.get("url", "")
+                    if not mcp_name or not mcp_url:
+                        await ws.send_json({"event": "mcp:error", "message": "name and url required"})
+                        continue
                     settings = read_claude_settings()
                     settings.setdefault("mcpServers", {})[mcp_name] = {"url": mcp_url}
                     perms = settings.setdefault("permissions", {}).setdefault("allow", [])
@@ -328,37 +330,31 @@ async def websocket_endpoint(ws: WebSocket):
                         perms.append(pattern)
                     write_claude_settings(settings)
                     log.info(f"MCP added: {mcp_name} → {mcp_url}")
-                    # Send updated list
-                    servers = settings.get("mcpServers", {})
-                    permissions = settings.get("permissions", {}).get("allow", [])
-                    result = []
-                    for sname, cfg in servers.items():
-                        result.append({
-                            "name": sname,
-                            "url": cfg.get("url", ""),
-                            "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
-                        })
-                    await ws.send_json({"event": "mcp:list", "servers": result})
+                    await ws.send_json({"event": "mcp:list", "servers": _mcp_server_list()})
+                except Exception as e:
+                    log.exception(f"mcp:add error: {e}")
+                    await ws.send_json({"event": "mcp:error", "message": str(e)})
 
             elif event == "mcp:remove":
-                mcp_name = data.get("name", "")
-                if mcp_name:
+                try:
+                    mcp_name = data.get("name", "")
+                    if not mcp_name:
+                        await ws.send_json({"event": "mcp:error", "message": "name required"})
+                        continue
                     settings = read_claude_settings()
                     settings.get("mcpServers", {}).pop(mcp_name, None)
                     perms = settings.get("permissions", {}).get("allow", [])
                     perms[:] = [p for p in perms if not p.startswith(f"mcp__{mcp_name}")]
                     write_claude_settings(settings)
                     log.info(f"MCP removed: {mcp_name}")
-                    servers = settings.get("mcpServers", {})
-                    permissions = settings.get("permissions", {}).get("allow", [])
-                    result = []
-                    for sname, cfg in servers.items():
-                        result.append({
-                            "name": sname,
-                            "url": cfg.get("url", ""),
-                            "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
-                        })
-                    await ws.send_json({"event": "mcp:list", "servers": result})
+                    await ws.send_json({"event": "mcp:list", "servers": _mcp_server_list()})
+                except Exception as e:
+                    log.exception(f"mcp:remove error: {e}")
+                    await ws.send_json({"event": "mcp:error", "message": str(e)})
+
+            elif event == "mcp:test":
+                mcp_name = data.get("name", "")
+                await _mcp_test_connection(mcp_name, ws)
 
             else:
                 log.info(f"Unhandled event: {event}")
@@ -606,6 +602,47 @@ def write_claude_settings(data: dict):
     CLAUDE_SETTINGS_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _mcp_server_list() -> list:
+    settings = read_claude_settings()
+    servers = settings.get("mcpServers", {})
+    permissions = settings.get("permissions", {}).get("allow", [])
+    result = []
+    for sname, cfg in servers.items():
+        result.append({
+            "name": sname,
+            "url": cfg.get("url", ""),
+            "command": cfg.get("command", ""),
+            "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
+        })
+    return result
+
+
+async def _mcp_test_connection(name: str, ws: WebSocket):
+    """Test if an MCP server is reachable via its SSE URL."""
+    settings = read_claude_settings()
+    cfg = settings.get("mcpServers", {}).get(name)
+    if not cfg:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "server not found"})
+        return
+    url = cfg.get("url", "")
+    if not url:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "no url configured"})
+        return
+    try:
+        async with httpx.AsyncClient(timeout=8, verify=False) as client:
+            resp = await client.get(url)
+            status = resp.status_code
+            ok = status in (200, 301, 302, 307, 308)
+            await ws.send_json({
+                "event": "mcp:test_result", "name": name, "ok": ok,
+                "message": f"HTTP {status}" if ok else f"HTTP {status} — server returned error",
+            })
+    except httpx.TimeoutException:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "timeout (8s)"})
+    except Exception as e:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": str(e)})
 
 
 @app.get("/api/mcp")
