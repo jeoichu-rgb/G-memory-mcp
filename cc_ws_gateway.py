@@ -285,6 +285,81 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "chat:respond":
                 pass
 
+            elif event == "mcp:list":
+                settings = read_claude_settings()
+                servers = settings.get("mcpServers", {})
+                permissions = settings.get("permissions", {}).get("allow", [])
+                result = []
+                for sname, cfg in servers.items():
+                    result.append({
+                        "name": sname,
+                        "url": cfg.get("url", ""),
+                        "command": cfg.get("command", ""),
+                        "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
+                    })
+                await ws.send_json({"event": "mcp:list", "servers": result})
+
+            elif event == "mcp:toggle":
+                mcp_name = data.get("name", "")
+                mcp_enabled = data.get("enabled", True)
+                if mcp_name:
+                    settings = read_claude_settings()
+                    perms = settings.setdefault("permissions", {}).setdefault("allow", [])
+                    pattern = f"mcp__{mcp_name}"
+                    if mcp_enabled:
+                        if pattern not in perms:
+                            perms.append(pattern)
+                    else:
+                        perms[:] = [p for p in perms if not p.startswith(pattern)]
+                    write_claude_settings(settings)
+                    log.info(f"MCP {'enabled' if mcp_enabled else 'disabled'}: {mcp_name}")
+                    # Send updated list back
+                    await ws.send_json({"event": "mcp:toggled", "name": mcp_name, "enabled": mcp_enabled})
+
+            elif event == "mcp:add":
+                mcp_name = data.get("name", "")
+                mcp_url = data.get("url", "")
+                if mcp_name and mcp_url:
+                    settings = read_claude_settings()
+                    settings.setdefault("mcpServers", {})[mcp_name] = {"url": mcp_url}
+                    perms = settings.setdefault("permissions", {}).setdefault("allow", [])
+                    pattern = f"mcp__{mcp_name}"
+                    if pattern not in perms:
+                        perms.append(pattern)
+                    write_claude_settings(settings)
+                    log.info(f"MCP added: {mcp_name} → {mcp_url}")
+                    # Send updated list
+                    servers = settings.get("mcpServers", {})
+                    permissions = settings.get("permissions", {}).get("allow", [])
+                    result = []
+                    for sname, cfg in servers.items():
+                        result.append({
+                            "name": sname,
+                            "url": cfg.get("url", ""),
+                            "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
+                        })
+                    await ws.send_json({"event": "mcp:list", "servers": result})
+
+            elif event == "mcp:remove":
+                mcp_name = data.get("name", "")
+                if mcp_name:
+                    settings = read_claude_settings()
+                    settings.get("mcpServers", {}).pop(mcp_name, None)
+                    perms = settings.get("permissions", {}).get("allow", [])
+                    perms[:] = [p for p in perms if not p.startswith(f"mcp__{mcp_name}")]
+                    write_claude_settings(settings)
+                    log.info(f"MCP removed: {mcp_name}")
+                    servers = settings.get("mcpServers", {})
+                    permissions = settings.get("permissions", {}).get("allow", [])
+                    result = []
+                    for sname, cfg in servers.items():
+                        result.append({
+                            "name": sname,
+                            "url": cfg.get("url", ""),
+                            "enabled": any(p.startswith(f"mcp__{sname}") for p in permissions),
+                        })
+                    await ws.send_json({"event": "mcp:list", "servers": result})
+
             else:
                 log.info(f"Unhandled event: {event}")
 

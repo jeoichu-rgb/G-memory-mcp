@@ -821,6 +821,15 @@ function handleWSMessage(data) {
       showError(data.message || 'Unknown error');
       break;
 
+    case 'mcp:list':
+      renderMcpServers(data.servers || []);
+      break;
+
+    case 'mcp:toggled':
+      // Refresh the list
+      wsSend('mcp:list', {});
+      break;
+
     default:
       console.log('[ws] unhandled:', event, data);
   }
@@ -1447,17 +1456,13 @@ function handleBgUpload(e) {
 /* ══════════════════════════════════════
    MCP PANEL
 ══════════════════════════════════════ */
-const MCP_API = window.location.origin.replace('chat.', '') + '/api/mcp';
-// If we're on chat.erikssheep.uk, API is at chat.erikssheep.uk/api/mcp (same origin via Caddy proxy)
-const MCP_BASE = '/api/mcp';
-
 function toggleMcpPanel() {
   const overlay = document.getElementById('mcpOverlay');
   if (overlay.classList.contains('open')) {
     closeMcpPanel();
   } else {
     overlay.classList.add('open');
-    loadMcpServers();
+    wsSend('mcp:list', {});
   }
 }
 
@@ -1465,70 +1470,43 @@ function closeMcpPanel() {
   document.getElementById('mcpOverlay').classList.remove('open');
 }
 
-async function loadMcpServers() {
+function renderMcpServers(servers) {
   const list = document.getElementById('mcpServerList');
-  try {
-    const resp = await fetch(MCP_BASE);
-    const data = await resp.json();
-    const servers = data.servers || [];
 
-    if (servers.length === 0) {
-      list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">
-        暂无 MCP 服务器<br>在下方添加一个
-      </div>`;
-      return;
-    }
+  if (servers.length === 0) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">
+      暂无 MCP 服务器<br>在下方添加一个
+    </div>`;
+    return;
+  }
 
-    list.innerHTML = servers.map(s => `
-      <div class="mcp-server" data-name="${escapeHtml(s.name)}">
-        <div class="mcp-server-header">
-          <div>
-            <div class="mcp-server-name">${escapeHtml(s.name)}</div>
-            <div class="mcp-server-url">${escapeHtml(s.url || s.command || '')}</div>
-          </div>
-          <div class="mcp-server-actions">
-            <button class="mcp-toggle ${s.enabled ? 'on' : ''}"
-              onclick="toggleMcp('${escapeHtml(s.name)}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
-            <button class="mcp-remove" onclick="removeMcp('${escapeHtml(s.name)}')" title="移除">✕</button>
-          </div>
+  list.innerHTML = servers.map(s => `
+    <div class="mcp-server" data-name="${escapeHtml(s.name)}">
+      <div class="mcp-server-header">
+        <div>
+          <div class="mcp-server-name">${escapeHtml(s.name)}</div>
+          <div class="mcp-server-url">${escapeHtml(s.url || s.command || '')}</div>
+        </div>
+        <div class="mcp-server-actions">
+          <button class="mcp-toggle ${s.enabled ? 'on' : ''}"
+            onclick="toggleMcp('${escapeHtml(s.name)}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
+          <button class="mcp-remove" onclick="removeMcp('${escapeHtml(s.name)}')" title="移除">✕</button>
         </div>
       </div>
-    `).join('');
-  } catch(e) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--context-red);font-size:12px;">
-      加载失败: ${escapeHtml(e.message)}
-    </div>`;
-  }
+    </div>
+  `).join('');
 }
 
-async function toggleMcp(name, enabled) {
-  try {
-    await fetch(MCP_BASE + '/toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, enabled }),
-    });
-    loadMcpServers();
-  } catch(e) {
-    console.error('Toggle MCP failed:', e);
-  }
+function toggleMcp(name, enabled) {
+  wsSend('mcp:toggle', { name, enabled });
 }
 
-async function removeMcp(name) {
+function removeMcp(name) {
   if (!confirm(`移除 MCP 服务器 "${name}"？`)) return;
-  try {
-    await fetch(MCP_BASE + '/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    loadMcpServers();
-  } catch(e) {
-    console.error('Remove MCP failed:', e);
-  }
+  wsSend('mcp:remove', { name });
 }
 
-async function addMcpServer() {
+function addMcpServer() {
   const nameInput = document.getElementById('mcpAddName');
   const urlInput = document.getElementById('mcpAddUrl');
   const name = nameInput.value.trim();
@@ -1536,18 +1514,9 @@ async function addMcpServer() {
 
   if (!name || !url) return;
 
-  try {
-    await fetch(MCP_BASE + '/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, url }),
-    });
-    nameInput.value = '';
-    urlInput.value = '';
-    loadMcpServers();
-  } catch(e) {
-    console.error('Add MCP failed:', e);
-  }
+  wsSend('mcp:add', { name, url });
+  nameInput.value = '';
+  urlInput.value = '';
 }
 
 /* ══════════════════════════════════════
