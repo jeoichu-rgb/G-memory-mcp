@@ -508,6 +508,125 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         log.info(f"Unknown CLI event type: {etype}")
 
 
+# ══════════════════════════════════════════════
+#  MCP CONFIG API
+# ══════════════════════════════════════════════
+
+CLAUDE_SETTINGS_PATH = Path(CC_CWD) / ".claude" / "settings.json"
+
+
+def read_claude_settings() -> dict:
+    if CLAUDE_SETTINGS_PATH.exists():
+        try:
+            return json.loads(CLAUDE_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def write_claude_settings(data: dict):
+    CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CLAUDE_SETTINGS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+@app.get("/api/mcp")
+async def get_mcp_config():
+    """Get all MCP server configs and their enabled status."""
+    settings = read_claude_settings()
+    servers = settings.get("mcpServers", {})
+    permissions = settings.get("permissions", {}).get("allow", [])
+
+    result = []
+    for name, cfg in servers.items():
+        result.append({
+            "name": name,
+            "url": cfg.get("url", ""),
+            "command": cfg.get("command", ""),
+            "enabled": any(p.startswith(f"mcp__{name}") for p in permissions),
+        })
+    return {"servers": result}
+
+
+@app.post("/api/mcp/toggle")
+async def toggle_mcp(body: dict = None):
+    """Toggle an MCP server on/off in permissions."""
+    from fastapi import Request
+    if body is None:
+        return {"error": "no body"}
+
+    name = body.get("name", "")
+    enabled = body.get("enabled", True)
+
+    if not name:
+        return {"error": "name required"}
+
+    settings = read_claude_settings()
+    permissions = settings.setdefault("permissions", {}).setdefault("allow", [])
+    pattern = f"mcp__{name}"
+
+    if enabled:
+        if pattern not in permissions:
+            permissions.append(pattern)
+            log.info(f"MCP enabled: {name}")
+    else:
+        permissions[:] = [p for p in permissions if not p.startswith(pattern)]
+        log.info(f"MCP disabled: {name}")
+
+    write_claude_settings(settings)
+    return {"ok": True, "name": name, "enabled": enabled}
+
+
+@app.post("/api/mcp/add")
+async def add_mcp_server(body: dict = None):
+    """Add a new MCP server."""
+    if body is None:
+        return {"error": "no body"}
+
+    name = body.get("name", "")
+    url = body.get("url", "")
+
+    if not name or not url:
+        return {"error": "name and url required"}
+
+    settings = read_claude_settings()
+    servers = settings.setdefault("mcpServers", {})
+    servers[name] = {"url": url}
+
+    # Auto-enable
+    permissions = settings.setdefault("permissions", {}).setdefault("allow", [])
+    pattern = f"mcp__{name}"
+    if pattern not in permissions:
+        permissions.append(pattern)
+
+    write_claude_settings(settings)
+    log.info(f"MCP added: {name} → {url}")
+    return {"ok": True}
+
+
+@app.post("/api/mcp/remove")
+async def remove_mcp_server(body: dict = None):
+    """Remove an MCP server."""
+    if body is None:
+        return {"error": "no body"}
+
+    name = body.get("name", "")
+    if not name:
+        return {"error": "name required"}
+
+    settings = read_claude_settings()
+    servers = settings.get("mcpServers", {})
+    servers.pop(name, None)
+
+    permissions = settings.get("permissions", {}).get("allow", [])
+    permissions[:] = [p for p in permissions if not p.startswith(f"mcp__{name}")]
+
+    write_claude_settings(settings)
+    log.info(f"MCP removed: {name}")
+    return {"ok": True}
+
+
 @app.get("/health")
 async def health():
     return {

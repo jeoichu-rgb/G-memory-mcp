@@ -448,6 +448,71 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .empty-icon { font-size:64px; opacity:.3; margin-bottom:16px; }
 .empty-text { font-size:13px; }
 
+/* Menu button */
+.menu-btn {
+  background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2);
+  color:var(--text-header); font-size:14px; padding:4px 8px; border-radius:4px;
+  cursor:pointer; font-family:var(--font); transition:background .15s;
+}
+.menu-btn:hover { background:rgba(255,255,255,.2); }
+
+/* MCP Panel */
+.mcp-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50;
+}
+.mcp-overlay.open { display:flex; justify-content:flex-end; }
+.mcp-panel {
+  width:340px; max-width:90vw; height:100%; background:var(--bg-sidebar);
+  display:flex; flex-direction:column; box-shadow:-4px 0 20px rgba(0,0,0,.15);
+}
+.mcp-panel-header {
+  padding:16px; display:flex; justify-content:space-between; align-items:center;
+  font-family:var(--serif); font-size:16px; border-bottom:1px solid var(--border);
+}
+.mcp-panel-body { flex:1; overflow-y:auto; padding:8px 0; }
+
+.mcp-server {
+  padding:12px 16px; border-bottom:1px solid var(--border);
+}
+.mcp-server-header {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+}
+.mcp-server-name { font-size:13px; font-weight:500; }
+.mcp-server-url { font-size:10px; color:var(--text-secondary); margin-top:2px; word-break:break-all; }
+.mcp-server-actions { display:flex; align-items:center; gap:8px; }
+.mcp-toggle {
+  position:relative; width:36px; height:20px; border-radius:10px;
+  background:var(--border); cursor:pointer; transition:background .2s;
+  border:none; padding:0;
+}
+.mcp-toggle.on { background:var(--accent); }
+.mcp-toggle::after {
+  content:''; position:absolute; top:2px; left:2px;
+  width:16px; height:16px; border-radius:50%; background:#fff;
+  transition:transform .2s;
+}
+.mcp-toggle.on::after { transform:translateX(16px); }
+.mcp-remove {
+  background:none; border:none; color:var(--text-secondary);
+  cursor:pointer; font-size:14px; padding:2px; opacity:.5;
+  transition:opacity .15s;
+}
+.mcp-remove:hover { opacity:1; color:var(--context-red); }
+
+.mcp-add-section {
+  padding:12px 16px; border-top:1px solid var(--border);
+}
+.mcp-input {
+  flex:1; background:var(--bg-input); border:1px solid var(--border);
+  border-radius:4px; padding:6px 8px; font-family:var(--font);
+  font-size:11px; color:var(--text-primary); outline:none;
+}
+.mcp-input:focus { border-color:var(--accent); }
+.mcp-add-btn {
+  background:var(--accent); color:#fff; border:none; border-radius:4px;
+  width:32px; font-size:16px; cursor:pointer; font-family:var(--font);
+}
+
 /* ══════════════════════════════════════
    MOBILE
 ══════════════════════════════════════ */
@@ -498,6 +563,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="chat-header-status" id="headerStatus">online</div>
       </div>
       <div class="chat-header-actions">
+        <button class="menu-btn" onclick="toggleMcpPanel()" title="MCP 工具">☰</button>
         <select id="modelSelect" onchange="switchModel()">
           <option value="claude-opus-4-6">Opus 4.6</option>
           <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
@@ -596,6 +662,27 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="bg-option" style="background:#d4e4d9;" onclick="setBg('#d4e4d9')" data-bg="#d4e4d9"></div>
         <input type="file" id="bgInput" accept="image/*" style="display:none" onchange="handleBgUpload(event)">
         <button class="settings-upload-btn" onclick="document.getElementById('bgInput').click()">自定义图片</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MCP TOOLS PANEL ═══ -->
+<div class="mcp-overlay" id="mcpOverlay" onclick="if(event.target===this)closeMcpPanel()">
+  <div class="mcp-panel">
+    <div class="mcp-panel-header">
+      <span>MCP 工具</span>
+      <button class="settings-close" onclick="closeMcpPanel()">✕</button>
+    </div>
+    <div class="mcp-panel-body" id="mcpServerList">
+      <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>
+    </div>
+    <div class="mcp-add-section">
+      <div class="settings-label">添加 MCP 服务器</div>
+      <div style="display:flex;gap:6px;">
+        <input class="mcp-input" id="mcpAddName" placeholder="名称 (如 palace)">
+        <input class="mcp-input" id="mcpAddUrl" placeholder="SSE URL" style="flex:2;">
+        <button class="mcp-add-btn" onclick="addMcpServer()">+</button>
       </div>
     </div>
   </div>
@@ -1356,6 +1443,112 @@ function handleBgUpload(e) {
     document.getElementById('messages').style.background = bgColor;
   }
 })();
+
+/* ══════════════════════════════════════
+   MCP PANEL
+══════════════════════════════════════ */
+const MCP_API = window.location.origin.replace('chat.', '') + '/api/mcp';
+// If we're on chat.erikssheep.uk, API is at chat.erikssheep.uk/api/mcp (same origin via Caddy proxy)
+const MCP_BASE = '/api/mcp';
+
+function toggleMcpPanel() {
+  const overlay = document.getElementById('mcpOverlay');
+  if (overlay.classList.contains('open')) {
+    closeMcpPanel();
+  } else {
+    overlay.classList.add('open');
+    loadMcpServers();
+  }
+}
+
+function closeMcpPanel() {
+  document.getElementById('mcpOverlay').classList.remove('open');
+}
+
+async function loadMcpServers() {
+  const list = document.getElementById('mcpServerList');
+  try {
+    const resp = await fetch(MCP_BASE);
+    const data = await resp.json();
+    const servers = data.servers || [];
+
+    if (servers.length === 0) {
+      list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">
+        暂无 MCP 服务器<br>在下方添加一个
+      </div>`;
+      return;
+    }
+
+    list.innerHTML = servers.map(s => `
+      <div class="mcp-server" data-name="${escapeHtml(s.name)}">
+        <div class="mcp-server-header">
+          <div>
+            <div class="mcp-server-name">${escapeHtml(s.name)}</div>
+            <div class="mcp-server-url">${escapeHtml(s.url || s.command || '')}</div>
+          </div>
+          <div class="mcp-server-actions">
+            <button class="mcp-toggle ${s.enabled ? 'on' : ''}"
+              onclick="toggleMcp('${escapeHtml(s.name)}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
+            <button class="mcp-remove" onclick="removeMcp('${escapeHtml(s.name)}')" title="移除">✕</button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--context-red);font-size:12px;">
+      加载失败: ${escapeHtml(e.message)}
+    </div>`;
+  }
+}
+
+async function toggleMcp(name, enabled) {
+  try {
+    await fetch(MCP_BASE + '/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, enabled }),
+    });
+    loadMcpServers();
+  } catch(e) {
+    console.error('Toggle MCP failed:', e);
+  }
+}
+
+async function removeMcp(name) {
+  if (!confirm(`移除 MCP 服务器 "${name}"？`)) return;
+  try {
+    await fetch(MCP_BASE + '/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    loadMcpServers();
+  } catch(e) {
+    console.error('Remove MCP failed:', e);
+  }
+}
+
+async function addMcpServer() {
+  const nameInput = document.getElementById('mcpAddName');
+  const urlInput = document.getElementById('mcpAddUrl');
+  const name = nameInput.value.trim();
+  const url = urlInput.value.trim();
+
+  if (!name || !url) return;
+
+  try {
+    await fetch(MCP_BASE + '/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, url }),
+    });
+    nameInput.value = '';
+    urlInput.value = '';
+    loadMcpServers();
+  } catch(e) {
+    console.error('Add MCP failed:', e);
+  }
+}
 
 /* ══════════════════════════════════════
    INIT

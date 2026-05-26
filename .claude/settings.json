@@ -1,12 +1,12 @@
 {
   "mcpServers": {
-    "palace": {
+    "claude_ai_Erik_tools": {
       "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
     }
   },
   "permissions": {
     "allow": [
-      "mcp__palace"
+      "mcp__claude_ai_Erik_tools"
     ]
   }
 }
