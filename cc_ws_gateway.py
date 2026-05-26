@@ -326,4 +326,4 @@ if __name__ == "__main__":
     import uvicorn
 
     os.makedirs("/opt/G-memory-mcp/logs", exist_ok=True)
-    uvicorn.run(app, host="0.0.0.0", port=8082)
+    uvicorn.run(app, host="0.0.0.0", port=8081)
