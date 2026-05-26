@@ -576,8 +576,30 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
     elif etype == "tool":
         pass
 
+    elif etype == "user":
+        message = event.get("message", {})
+        content_blocks = message.get("content", [])
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                btype = block.get("type", "")
+                if btype == "tool_result":
+                    text = ""
+                    for item in block.get("content", []):
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text += item.get("text", "")
+                        elif isinstance(item, str):
+                            text += item
+                    if text:
+                        tool_info = {
+                            "type": "tool_result",
+                            "name": block.get("tool_use_id", "tool"),
+                            "output": text[:500],
+                        }
+                        session._current_tools.append(tool_info)
+                        await ws.send_json({"event": "stream:block", "block": tool_info})
+
     else:
-        log.info(f"Unknown CLI event type: {etype}")
+        log.info(f"Unknown CLI event type: {etype} — {json.dumps(event, ensure_ascii=False)[:500]}")
 
 
 # ══════════════════════════════════════════════
