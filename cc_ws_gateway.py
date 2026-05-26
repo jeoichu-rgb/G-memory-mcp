@@ -395,7 +395,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=1024 * 1024,
+            limit=20 * 1024 * 1024,
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         )
