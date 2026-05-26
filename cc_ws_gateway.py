@@ -380,7 +380,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         "--output-format", "stream-json",
         "--model", session.model,
         "--verbose",
-        "--dangerously-skip-permissions",
     ]
 
     if session.cc_session_id:
