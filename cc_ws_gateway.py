@@ -144,6 +144,7 @@ class Session:
         self._current_text = ""
         self._current_thinking = ""
         self._current_tools: list = []
+        self._result_sent = False
 
     def to_dict(self):
         return {
@@ -157,6 +158,7 @@ class Session:
         self._current_text = ""
         self._current_thinking = ""
         self._current_tools = []
+        self._result_sent = False
 
 
 sessions: dict[str, Session] = {}
@@ -339,7 +341,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             )
             save_session_meta(session)
 
-        await ws.send_json({"event": "message:complete", "usage": {}})
+        if not session._result_sent:
+            await ws.send_json({"event": "message:complete", "usage": {}})
 
     except Exception as e:
         log.exception(f"run_claude error: {e}")
@@ -455,6 +458,7 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         session_id = event.get("session_id", "")
         if session_id:
             session.cc_session_id = session_id
+        session._result_sent = True
         await ws.send_json(
             {"event": "message:complete", "usage": usage, "cost": cost}
         )
