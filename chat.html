@@ -715,6 +715,10 @@ function handleWSMessage(data) {
       wsSend('chat:respond', { response: 'approve' });
       break;
 
+    case 'session:history':
+      renderHistory(data.messages || []);
+      break;
+
     case 'system:usage':
       updateContext(data.usage);
       break;
@@ -904,6 +908,56 @@ function clearMessages() {
       <div class="empty-text">发条消息开始聊天</div>
     </div>
   `;
+}
+
+function renderHistory(messages) {
+  clearMessages();
+  if (!messages || messages.length === 0) return;
+  hideEmpty();
+  const msgArea = document.getElementById('messages');
+  messages.forEach(msg => {
+    const row = document.createElement('div');
+    const time = msg.time || '';
+    if (msg.role === 'user') {
+      row.className = 'msg-row out';
+      row.innerHTML = `
+        <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+          <span class="msg-time">${time}</span>
+          ${escapeHtml(msg.content)}
+          <div class="reactions"></div>
+        </div>`;
+    } else {
+      row.className = 'msg-row in';
+      let metaHtml = '';
+      if (msg.thinking) {
+        metaHtml += `<div class="thinking-block">
+          <div class="thinking-header" onclick="this.parentElement.classList.toggle('open')">
+            思考链 <span class="thinking-arrow">▸</span>
+          </div>
+          <div class="thinking-content">${escapeHtml(msg.thinking)}</div>
+        </div>`;
+      }
+      if (msg.tools && msg.tools.length) {
+        msg.tools.forEach(t => {
+          metaHtml += `<div class="tool-block">
+            <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
+              Called ${escapeHtml(t.name || 'tool')} <span class="tool-arrow">▸</span>
+            </div>
+            <div class="tool-content">${escapeHtml(JSON.stringify(t.input || {}, null, 2))}</div>
+          </div>`;
+        });
+      }
+      row.innerHTML = `
+        <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+          <div class="msg-meta-blocks">${metaHtml}</div>
+          <span class="msg-text">${renderMarkdown(msg.content || '')}</span>
+          <span class="msg-time">${time}</span>
+          <div class="reactions"></div>
+        </div>`;
+    }
+    msgArea.appendChild(row);
+  });
+  scrollToBottom();
 }
 
 /* ══════════════════════════════════════
