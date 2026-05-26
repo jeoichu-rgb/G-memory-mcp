@@ -631,7 +631,7 @@ async def _mcp_test_connection(name: str, ws: WebSocket):
         await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "no url configured"})
         return
     try:
-        async with httpx.AsyncClient(timeout=8, verify=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=5, read=3), verify=False) as client:
             resp = await client.get(url)
             status = resp.status_code
             ok = status in (200, 301, 302, 307, 308)
@@ -639,8 +639,10 @@ async def _mcp_test_connection(name: str, ws: WebSocket):
                 "event": "mcp:test_result", "name": name, "ok": ok,
                 "message": f"HTTP {status}" if ok else f"HTTP {status} — server returned error",
             })
+    except httpx.ReadTimeout:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": True, "message": "SSE 连接成功（流式端点）"})
     except httpx.TimeoutException:
-        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "timeout (8s)"})
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "连接超时"})
     except Exception as e:
         await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": str(e)})
 

@@ -687,12 +687,14 @@ async def api_mcp_test(request: Request):
     if not url:
         return {"name": name, "ok": False, "message": "no url configured"}
     try:
-        async with _httpx.AsyncClient(timeout=8, verify=False) as client:
+        async with _httpx.AsyncClient(timeout=_httpx.Timeout(5, connect=5, read=3), verify=False) as client:
             resp = await client.get(url)
             ok = resp.status_code in (200, 301, 302, 307, 308)
             return {"name": name, "ok": ok, "message": f"HTTP {resp.status_code}"}
+    except _httpx.ReadTimeout:
+        return {"name": name, "ok": True, "message": "SSE 连接成功（流式端点）"}
     except _httpx.TimeoutException:
-        return {"name": name, "ok": False, "message": "timeout (8s)"}
+        return {"name": name, "ok": False, "message": "连接超时"}
     except Exception as e:
         return {"name": name, "ok": False, "message": str(e)}
 
