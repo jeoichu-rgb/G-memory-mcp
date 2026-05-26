@@ -216,6 +216,13 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   background:var(--bg-in); border-top-left-radius:0;
 }
 
+/* Per-message usage */
+.msg-usage {
+  font-size:10px; color:var(--text-secondary); margin-top:4px;
+  padding-top:3px; border-top:1px dashed var(--border);
+  letter-spacing:.02em; opacity:.7;
+}
+
 /* Timestamp inside bubble */
 .msg-time {
   float:right; font-size:10.5px; color:var(--text-timestamp);
@@ -892,13 +899,44 @@ function finalizeMessage(data) {
   isStreaming = false;
   showTyping(false);
   document.getElementById('sendBtn').disabled = false;
+
+  // Show per-message usage under the bubble
+  if (currentBubble && data.usage) {
+    const u = data.usage;
+    const inp = u.input_tokens || 0;
+    const out = u.output_tokens || 0;
+    const cacheRead = u.cache_read_input_tokens || 0;
+    const cacheCreate = u.cache_creation_input_tokens || 0;
+    const cost = data.cost || 0;
+
+    let parts = [];
+    parts.push(`↑${fmtTokens(inp)}`);
+    if (cacheRead) parts.push(`cache ${fmtTokens(cacheRead)}`);
+    if (cacheCreate) parts.push(`+cache ${fmtTokens(cacheCreate)}`);
+    parts.push(`↓${fmtTokens(out)}`);
+    if (cost) parts.push(`$${cost.toFixed(4)}`);
+
+    const usageEl = document.createElement('div');
+    usageEl.className = 'msg-usage';
+    usageEl.textContent = parts.join(' · ');
+    currentBubble.appendChild(usageEl);
+  }
+
   currentAssistantRow = null;
   currentBubble = null;
   currentTextNode = null;
 
-  if (data.usage) {
+  // Update session-level context bar
+  if (data.session_usage) {
+    updateContextFromSession(data.session_usage);
+  } else if (data.usage) {
     updateContext(data.usage);
   }
+}
+
+function fmtTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toString();
 }
 
 function clearMessages() {
@@ -1082,6 +1120,33 @@ function updateContext(usage) {
   const input = usage.input_tokens || 0;
   const output = usage.output_tokens || 0;
   contextUsed = input + output;
+  renderContextBar();
+}
+
+function updateContextFromSession(su) {
+  if (!su) return;
+  const totalIn = su.total_input || 0;
+  const totalOut = su.total_output || 0;
+  const cacheRead = su.total_cache_read || 0;
+  const cacheCreate = su.total_cache_create || 0;
+  const cost = su.total_cost || 0;
+  contextUsed = totalIn + totalOut;
+
+  let label = `${fmtTokens(totalIn)} / ${fmtTokens(contextTotal)}`;
+  if (cacheRead) label += ` · cache ↑${fmtTokens(cacheRead)}`;
+  if (cost) label += ` · $${cost.toFixed(4)}`;
+
+  document.getElementById('contextText').textContent = label;
+
+  const pct = Math.round((contextUsed / contextTotal) * 100);
+  const fill = document.getElementById('contextFill');
+  fill.style.width = pct + '%';
+  if (pct < 40) fill.style.background = 'var(--context-green)';
+  else if (pct < 70) fill.style.background = 'var(--context-yellow)';
+  else fill.style.background = 'var(--context-red)';
+}
+
+function renderContextBar() {
   const pct = Math.round((contextUsed / contextTotal) * 100);
   const kUsed = (contextUsed / 1000).toFixed(1);
   const kTotal = (contextTotal / 1000).toFixed(0);

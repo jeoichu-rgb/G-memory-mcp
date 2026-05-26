@@ -145,6 +145,12 @@ class Session:
         self._current_thinking = ""
         self._current_tools: list = []
         self._result_sent = False
+        # Cumulative usage tracking
+        self.total_input = 0
+        self.total_output = 0
+        self.total_cache_read = 0
+        self.total_cache_create = 0
+        self.total_cost = 0.0
 
     def to_dict(self):
         return {
@@ -301,6 +307,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         "--output-format", "stream-json",
         "--model", session.model,
         "--verbose",
+        "--dangerously-skip-permissions",
     ]
 
     if session.cc_session_id:
@@ -467,12 +474,32 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         usage = event.get("usage", {})
         cost = event.get("cost_usd", 0)
         session_id = event.get("session_id", "")
+        log.info(f"Result event — usage: {json.dumps(usage)}, cost: {cost}")
         if session_id:
             session.cc_session_id = session_id
         session._result_sent = True
-        await ws.send_json(
-            {"event": "message:complete", "usage": usage, "cost": cost}
-        )
+        # Accumulate session totals
+        msg_input = usage.get("input_tokens", 0)
+        msg_output = usage.get("output_tokens", 0)
+        msg_cache_read = usage.get("cache_read_input_tokens", 0)
+        msg_cache_create = usage.get("cache_creation_input_tokens", 0)
+        session.total_input += msg_input
+        session.total_output += msg_output
+        session.total_cache_read += msg_cache_read
+        session.total_cache_create += msg_cache_create
+        session.total_cost += cost or 0
+        await ws.send_json({
+            "event": "message:complete",
+            "usage": usage,
+            "cost": cost,
+            "session_usage": {
+                "total_input": session.total_input,
+                "total_output": session.total_output,
+                "total_cache_read": session.total_cache_read,
+                "total_cache_create": session.total_cache_create,
+                "total_cost": round(session.total_cost, 4),
+            },
+        })
 
     elif etype == "tool":
         pass
