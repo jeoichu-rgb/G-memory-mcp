@@ -926,11 +926,9 @@ function finalizeMessage(data) {
   currentBubble = null;
   currentTextNode = null;
 
-  // Update session-level context bar
-  if (data.session_usage) {
-    updateContextFromSession(data.session_usage);
-  } else if (data.usage) {
-    updateContext(data.usage);
+  // Update context bar — use this turn's usage for context window size
+  if (data.session_usage || data.usage) {
+    updateContextFromSession(data.session_usage, data.usage, data.cost);
   }
 }
 
@@ -1123,18 +1121,23 @@ function updateContext(usage) {
   renderContextBar();
 }
 
-function updateContextFromSession(su) {
-  if (!su) return;
-  const totalIn = su.total_input || 0;
-  const totalOut = su.total_output || 0;
-  const cacheRead = su.total_cache_read || 0;
-  const cacheCreate = su.total_cache_create || 0;
-  const cost = su.total_cost || 0;
-  contextUsed = totalIn + totalOut;
+function updateContextFromSession(su, msgUsage, cost) {
+  // Context window = this turn's total input (non-cached + cached)
+  // This is NOT cumulative — each turn sends the full conversation
+  if (msgUsage) {
+    const inp = msgUsage.input_tokens || 0;
+    const cacheRead = msgUsage.cache_read_input_tokens || 0;
+    const cacheCreate = msgUsage.cache_creation_input_tokens || 0;
+    const out = msgUsage.output_tokens || 0;
+    contextUsed = inp + cacheRead + cacheCreate + out;
+  }
 
-  let label = `${fmtTokens(totalIn)} / ${fmtTokens(contextTotal)}`;
-  if (cacheRead) label += ` · cache ↑${fmtTokens(cacheRead)}`;
-  if (cost) label += ` · $${cost.toFixed(4)}`;
+  const sessionCost = su ? (su.total_cost || 0) : 0;
+  const totalCacheRead = su ? (su.total_cache_read || 0) : 0;
+
+  let label = `${fmtTokens(contextUsed)} / ${fmtTokens(contextTotal)}`;
+  if (totalCacheRead) label += ` · cache ${fmtTokens(totalCacheRead)}`;
+  if (sessionCost) label += ` · $${sessionCost.toFixed(4)}`;
 
   document.getElementById('contextText').textContent = label;
 
