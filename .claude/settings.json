@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "palace": {
+      "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
+    }
+  },
+  "permissions": {
+    "allow": [
+      "mcp__palace"
+    ]
+  }
+}
