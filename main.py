@@ -56,13 +56,14 @@ class CheckSecretMiddleware:
         path = scope.get("path", "")
         method = scope.get("method", "")
 
-        # 放行：根路径、OPTIONS、webhook、MCP 路径
+        # 放行：登录页、面板页（路由内自行鉴权）、OPTIONS、webhook、MCP
         if (
             path == "/"
+            or path == "/panel"
+            or path == "/chat.html"
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
-            or path == "/health/update"
             or path.startswith(mcp_path)
         ):
             await self.app(scope, receive, send)
@@ -88,16 +89,91 @@ class CheckSecretMiddleware:
 
 app.add_middleware(CheckSecretMiddleware)
 
-# 留一个给前端敲门用的门厅
+# 极简登录页（不暴露任何业务代码）
 from fastapi.responses import HTMLResponse
 
+MINIMAL_LOGIN = """<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>E</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1612;color:#f0ebe4;font-family:'Courier New',monospace;
+display:flex;justify-content:center;align-items:center;height:100vh}
+.b{width:280px;text-align:center}
+h1{font-size:48px;color:#c4a8ff;margin-bottom:8px}
+p{font-size:10px;letter-spacing:.35em;color:#8a7d72;margin-bottom:24px}
+input{width:100%;background:#221e19;border:1px solid #3d3530;color:#f0ebe4;
+font-family:inherit;font-size:13px;padding:10px 14px;outline:none;border-radius:6px;margin-bottom:12px}
+input:focus{border-color:#c4a8ff}
+button{width:100%;background:#2a1f42;border:1px solid #c4a8ff;color:#c4a8ff;
+font-family:inherit;font-size:12px;padding:10px;cursor:pointer;border-radius:6px}
+button:hover{background:#c4a8ff;color:#1a1612}
+.e{font-size:11px;color:#f87171;margin-top:8px;min-height:18px}
+</style></head><body><div class="b">
+<h1>E</h1><p>Memory Palace</p>
+<input id="p" type="password" placeholder="密码…" onkeydown="if(event.key==='Enter')go()">
+<button onclick="go()">进入</button>
+<div class="e" id="e"></div>
+</div><script>
+const K='gmp_pw';
+function load(pw){
+  fetch('/panel',{headers:{'x-secret':pw}}).then(r=>{
+    if(r.ok) return r.text();
+    throw new Error('auth');
+  }).then(html=>{
+    document.open();document.write(html);document.close();
+  }).catch(()=>{
+    localStorage.removeItem(K);
+    document.querySelector('.b').style.display='block';
+  })
+}
+const saved=localStorage.getItem(K);
+if(saved){document.querySelector('.b').style.display='none';load(saved)}
+function go(){
+  const v=document.getElementById('p').value.trim();
+  if(!v){document.getElementById('e').textContent='请输入密码';return}
+  fetch('/panel',{headers:{'x-secret':v}}).then(r=>{
+    if(r.ok) return r.text();
+    throw new Error('auth');
+  }).then(html=>{
+    localStorage.setItem(K,v);
+    document.open();document.write(html);document.close();
+  }).catch(()=>{document.getElementById('e').textContent='密码错误'})
+}
+</script></body></html>"""
+
 @app.get("/")
-async def serve_frontend():
+async def serve_login():
+    return HTMLResponse(content=MINIMAL_LOGIN)
+
+@app.get("/panel")
+async def serve_panel(request: Request):
+    # 路由级鉴权（中间件白名单放行了根路径，panel需自行校验）
+    secret = request.headers.get("x-secret", "")
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        secret = auth.split(" ", 1)[1]
+    if secret != PALACE_SECRET:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     try:
         with open("index.html", "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
-        return {"status": "Welcome home, Anomaly. (index.html not found)"}
+        return HTMLResponse(content="<h1>index.html not found</h1>", status_code=500)
+
+@app.get("/chat.html")
+async def serve_chat(request: Request):
+    secret = request.headers.get("x-secret", "")
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        secret = auth.split(" ", 1)[1]
+    if secret != PALACE_SECRET:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    try:
+        with open("chat.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>chat.html not found</h1>", status_code=500)
 
 gemini_client = OpenAI(
     api_key=os.getenv("GEMINI_API_KEY"),

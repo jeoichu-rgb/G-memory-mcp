@@ -271,7 +271,7 @@ textarea.inp{resize:vertical;line-height:1.7;}
   </div>
   <div class="scroll">
     <!-- Chat hero -->
-    <div class="hero-card" onclick="location.href='chat.html'" style="background:#0a2e28;border-color:var(--green);">
+    <div class="hero-card" onclick="openChat()" style="background:#0a2e28;border-color:var(--green);">
       <div class="hero-icon" style="color:var(--green);">💬</div>
       <div style="flex:1;">
         <div class="hero-label" style="color:var(--green);">Chat · Claude Code</div>
@@ -647,7 +647,7 @@ const GALLERY = [
 //  AUTH
 // ══════════════════════════════════════════════
 const PW_KEY = 'gmp_pw';
-function init() { const s = localStorage.getItem(PW_KEY); if (s) { go('dash'); loadDash(); } }
+function init() { const s = localStorage.getItem(PW_KEY); if (s) { go('dash'); loadDash(); } else { go('pw-screen'); } }
 async function checkPw() {
   const v = document.getElementById('pw-inp').value.trim();
   const err = document.getElementById('pw-err');
@@ -1231,6 +1231,15 @@ async function saveChronicle() {
     st.className = 'st ok'; st.textContent = '✓ 已保存';
     setTimeout(() => { go('erik'); erikTab('chronicle'); }, 800);
   } catch (e) { st.className = 'st err'; st.textContent = '保存失败：' + e.message; }
+}
+
+function openChat(){
+  fetch('/chat.html',{headers:{'x-secret':secret()}}).then(r=>{
+    if(r.ok) return r.text();
+    throw new Error('auth');
+  }).then(html=>{
+    document.open();document.write(html);document.close();
+  }).catch(()=>{alert('无法加载聊天页面');})
 }
 
 init();

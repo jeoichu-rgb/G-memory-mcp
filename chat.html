@@ -603,7 +603,8 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 /* ══════════════════════════════════════
    STATE
 ══════════════════════════════════════ */
-const WS_URL = 'wss://chat.erikssheep.uk/ws';
+// WS gateway: same host as chat page, /ws path
+const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
 const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','🔥','💀','🥺','(￣ω￣)','(*≧ω≦)','♥'];
 
 let ws = null;
@@ -636,13 +637,16 @@ function toggleTheme() {
 /* ══════════════════════════════════════
    WEBSOCKET
 ══════════════════════════════════════ */
+let reconnectDelay = 1000;
+
 function connectWS() {
+  updateStatus('connecting...');
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
-    console.log('[ws] connected');
+    console.log('[ws] connected to', WS_URL);
+    reconnectDelay = 1000;
     updateStatus('online');
-    // Request session list
     wsSend('session:list', {});
   };
 
@@ -657,7 +661,8 @@ function connectWS() {
 
   ws.onclose = () => {
     updateStatus('reconnecting...');
-    setTimeout(connectWS, 3000);
+    setTimeout(connectWS, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
   };
 
   ws.onerror = (err) => {
@@ -729,24 +734,48 @@ function handleWSMessage(data) {
 function sendMessage() {
   const input = document.getElementById('inputBox');
   const text = input.value.trim();
-  if (!text || isStreaming) return;
+  if (!text && !pendingImage) return;
+  if (isStreaming) return;
 
-  // Add user bubble
-  addUserMessage(text);
+  hideEmpty();
+  const msgArea = document.getElementById('messages');
+  const row = document.createElement('div');
+  row.className = 'msg-row out';
+  const time = formatTime(new Date());
+  let imgHtml = '';
+  if (pendingImage) {
+    imgHtml = `<img class="bubble-img" src="${pendingImage.dataUrl}" onclick="openLightbox(this.src)">`;
+  }
+  row.innerHTML = `
+    <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+      ${imgHtml}
+      <span class="msg-time">${time}</span>
+      ${text ? escapeHtml(text) : ''}
+      <div class="reactions"></div>
+    </div>
+  `;
+  msgArea.appendChild(row);
+  scrollToBottom();
 
-  // Check memory injection toggle
-  const memoryEnabled = document.getElementById('memoryToggle').checked;
-  // TODO: if memoryEnabled, call gateway to search memories first
-  // For now, send directly to CC via WebSocket
-
-  wsSend('chat:send', {
-    message: text,
+  const payload = {
+    message: text || '(image)',
     sessionId: currentSessionId,
-    cwd: '/app/erik-chat'
-  });
+  };
+
+  if (pendingImage) {
+    payload.content = [
+      { type: 'image', source: { type: 'base64', media_type: pendingImage.type, data: pendingImage.base64 } }
+    ];
+    if (text) {
+      payload.content.push({ type: 'text', text: text });
+    }
+  }
+
+  wsSend('chat:send', payload);
 
   input.value = '';
   autoResize(input);
+  clearUpload();
   showTyping(true);
   isStreaming = true;
   document.getElementById('sendBtn').disabled = true;
@@ -961,7 +990,7 @@ function renderSessions() {
 }
 
 function newSession() {
-  wsSend('session:create', { cwd: '/app/erik-chat' });
+  wsSend('session:create', { cwd: '/opt/G-memory-mcp' });
   // Mobile: switch to chat view
   document.getElementById('app').classList.add('chat-open');
 }
@@ -1094,61 +1123,6 @@ function clearUpload() {
   document.getElementById('uploadPreview').classList.remove('show');
 }
 
-// Override sendMessage to handle images
-const _origSendMessage = sendMessage;
-sendMessage = function() {
-  const input = document.getElementById('inputBox');
-  const text = input.value.trim();
-  if (!text && !pendingImage) return;
-  if (isStreaming) return;
-
-  // Add user bubble with optional image
-  hideEmpty();
-  const msgArea = document.getElementById('messages');
-  const row = document.createElement('div');
-  row.className = 'msg-row out';
-  const time = formatTime(new Date());
-  let imgHtml = '';
-  if (pendingImage) {
-    imgHtml = `<img class="bubble-img" src="${pendingImage.dataUrl}" onclick="openLightbox(this.src)">`;
-  }
-  row.innerHTML = `
-    <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
-      ${imgHtml}
-      <span class="msg-time">${time}</span>
-      ${text ? escapeHtml(text) : ''}
-      <div class="reactions"></div>
-    </div>
-  `;
-  msgArea.appendChild(row);
-  scrollToBottom();
-
-  // Build message payload
-  const payload = {
-    message: text || '(image)',
-    sessionId: currentSessionId,
-    cwd: '/app/erik-chat'
-  };
-
-  // If image, include as content block
-  if (pendingImage) {
-    payload.content = [
-      { type: 'image', source: { type: 'base64', media_type: pendingImage.type, data: pendingImage.base64 } }
-    ];
-    if (text) {
-      payload.content.push({ type: 'text', text: text });
-    }
-  }
-
-  wsSend('chat:send', payload);
-
-  input.value = '';
-  autoResize(input);
-  clearUpload();
-  showTyping(true);
-  isStreaming = true;
-  document.getElementById('sendBtn').disabled = true;
-};
 
 /* ══════════════════════════════════════
    LIGHTBOX
