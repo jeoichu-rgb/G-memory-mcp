@@ -14,7 +14,9 @@ import os
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(
     level=logging.INFO,
@@ -550,12 +552,9 @@ async def get_mcp_config():
 
 
 @app.post("/api/mcp/toggle")
-async def toggle_mcp(body: dict = None):
+async def toggle_mcp(request: Request):
     """Toggle an MCP server on/off in permissions."""
-    from fastapi import Request
-    if body is None:
-        return {"error": "no body"}
-
+    body = await request.json()
     name = body.get("name", "")
     enabled = body.get("enabled", True)
 
@@ -579,11 +578,9 @@ async def toggle_mcp(body: dict = None):
 
 
 @app.post("/api/mcp/add")
-async def add_mcp_server(body: dict = None):
+async def add_mcp_server(request: Request):
     """Add a new MCP server."""
-    if body is None:
-        return {"error": "no body"}
-
+    body = await request.json()
     name = body.get("name", "")
     url = body.get("url", "")
 
@@ -606,11 +603,9 @@ async def add_mcp_server(body: dict = None):
 
 
 @app.post("/api/mcp/remove")
-async def remove_mcp_server(body: dict = None):
+async def remove_mcp_server(request: Request):
     """Remove an MCP server."""
-    if body is None:
-        return {"error": "no body"}
-
+    body = await request.json()
     name = body.get("name", "")
     if not name:
         return {"error": "name required"}
@@ -627,6 +622,10 @@ async def remove_mcp_server(body: dict = None):
     return {"ok": True}
 
 
+# ══════════════════════════════════════════════
+#  STATIC FILES & HEALTH
+# ══════════════════════════════════════════════
+
 @app.get("/health")
 async def health():
     return {
@@ -634,6 +633,20 @@ async def health():
         "sessions": len(sessions),
         "time": datetime.now(SGT).isoformat(),
     }
+
+
+@app.get("/chat")
+@app.get("/chat.html")
+async def serve_chat():
+    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html")
+
+
+@app.get("/")
+async def serve_index():
+    index = Path(CC_CWD) / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html")
+    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html")
 
 
 if __name__ == "__main__":
