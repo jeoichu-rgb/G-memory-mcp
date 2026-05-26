@@ -603,8 +603,8 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 /* ══════════════════════════════════════
    STATE
 ══════════════════════════════════════ */
-// WS gateway: same host as chat page, /ws path
-const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+// WS gateway: always connect to chat subdomain
+const WS_URL = 'wss://chat.erikssheep.uk/ws';
 const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','🔥','💀','🥺','(￣ω￣)','(*≧ω≦)','♥'];
 
 let ws = null;
