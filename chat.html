@@ -704,6 +704,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 ══════════════════════════════════════ */
 // WS gateway: always connect to chat subdomain
 const WS_URL = 'wss://chat.erikssheep.uk/ws';
+const MCP_API = 'https://erikssheep.uk';
 const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','🔥','💀','🥺','(￣ω￣)','(*≧ω≦)','♥'];
 
 let ws = null;
@@ -826,21 +827,7 @@ function handleWSMessage(data) {
       showError(data.message || 'Unknown error');
       break;
 
-    case 'mcp:list':
-      renderMcpServers(data.servers || []);
-      break;
-
-    case 'mcp:toggled':
-      wsSend('mcp:list', {});
-      break;
-
-    case 'mcp:error':
-      showMcpStatus(data.message || 'Unknown error', true);
-      break;
-
-    case 'mcp:test_result':
-      showMcpTestResult(data);
-      break;
+    // MCP management handled via HTTP to main.py, not WS
 
     default:
       console.log('[ws] unhandled:', event, data);
@@ -1468,13 +1455,37 @@ function handleBgUpload(e) {
 /* ══════════════════════════════════════
    MCP PANEL
 ══════════════════════════════════════ */
+function mcpSecret() {
+  return localStorage.getItem('gmp_pw') || '';
+}
+
+function mcpHeaders() {
+  return { 'Content-Type': 'application/json', 'x-secret': mcpSecret() };
+}
+
 function toggleMcpPanel() {
   const overlay = document.getElementById('mcpOverlay');
   if (overlay.classList.contains('open')) {
     closeMcpPanel();
   } else {
     overlay.classList.add('open');
-    wsSend('mcp:list', {});
+    loadMcpServers();
+  }
+}
+
+async function loadMcpServers() {
+  const list = document.getElementById('mcpServerList');
+  list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>';
+  try {
+    const r = await fetch(`${MCP_API}/api/mcp`, { headers: mcpHeaders() });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    renderMcpServers(data.servers || []);
+  } catch(e) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--context-red);font-size:12px;">
+      加载失败: ${e.message}<br><br>
+      <span style="color:var(--text-secondary);font-size:10px;">请确认已从 Dashboard 进入（需要登录态）</span>
+    </div>`;
   }
 }
 
@@ -1514,30 +1525,41 @@ function renderMcpServers(servers) {
   }).join('');
 }
 
-function toggleMcp(name, enabled) {
-  wsSend('mcp:toggle', { name, enabled });
+async function toggleMcp(name, enabled) {
+  try {
+    await fetch(`${MCP_API}/api/mcp/toggle`, {
+      method: 'POST', headers: mcpHeaders(),
+      body: JSON.stringify({ name, enabled })
+    });
+    await loadMcpServers();
+  } catch(e) { showMcpStatus('切换失败: ' + e.message, true); }
 }
 
-function removeMcp(name) {
+async function removeMcp(name) {
   if (!confirm(`移除 MCP 服务器 "${name}"？`)) return;
-  wsSend('mcp:remove', { name });
+  try {
+    await fetch(`${MCP_API}/api/mcp/remove`, {
+      method: 'POST', headers: mcpHeaders(),
+      body: JSON.stringify({ name })
+    });
+    await loadMcpServers();
+  } catch(e) { showMcpStatus('移除失败: ' + e.message, true); }
 }
 
-function testMcp(name) {
+async function testMcp(name) {
   const el = document.getElementById('mcp-test-' + name);
   if (el) { el.textContent = '测试中...'; el.style.color = 'var(--text-secondary)'; }
-  wsSend('mcp:test', { name });
-}
-
-function showMcpTestResult(data) {
-  const el = document.getElementById('mcp-test-' + escapeHtml(data.name || ''));
-  if (!el) return;
-  if (data.ok) {
-    el.textContent = '✓ ' + (data.message || '连接成功');
-    el.style.color = 'var(--context-green)';
-  } else {
-    el.textContent = '✗ ' + (data.message || '连接失败');
-    el.style.color = 'var(--context-red)';
+  try {
+    const r = await fetch(`${MCP_API}/api/mcp/test`, {
+      method: 'POST', headers: mcpHeaders(),
+      body: JSON.stringify({ name })
+    });
+    const data = await r.json();
+    if (!el) return;
+    el.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+    el.style.color = data.ok ? 'var(--context-green)' : 'var(--context-red)';
+  } catch(e) {
+    if (el) { el.textContent = '✗ ' + e.message; el.style.color = 'var(--context-red)'; }
   }
 }
 
@@ -1549,7 +1571,7 @@ function showMcpStatus(msg, isError) {
   setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
 
-function addMcpServer() {
+async function addMcpServer() {
   const nameInput = document.getElementById('mcpAddName');
   const urlInput = document.getElementById('mcpAddUrl');
   const name = nameInput.value.trim();
@@ -1563,13 +1585,24 @@ function addMcpServer() {
   const btn = document.getElementById('mcpAddBtn');
   btn.disabled = true;
   btn.textContent = '…';
-  showMcpStatus('添加中...', false);
 
-  wsSend('mcp:add', { name, url });
-  nameInput.value = '';
-  urlInput.value = '';
-
-  setTimeout(() => { btn.disabled = false; btn.textContent = '+'; }, 1500);
+  try {
+    const r = await fetch(`${MCP_API}/api/mcp/add`, {
+      method: 'POST', headers: mcpHeaders(),
+      body: JSON.stringify({ name, url })
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    showMcpStatus(`已添加 ${name}`, false);
+    nameInput.value = '';
+    urlInput.value = '';
+    renderMcpServers(data.servers || []);
+  } catch(e) {
+    showMcpStatus('添加失败: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '+';
+  }
 }
 
 /* ══════════════════════════════════════

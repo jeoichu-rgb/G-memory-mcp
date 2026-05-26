@@ -583,6 +583,120 @@ async def admin_synthesis(payload: dict):
     except Exception as e:
         return {"status": "error", "output": str(e)}
 
+# ── MCP 管理 API ────────────────────────────────────────────────────
+import httpx as _httpx
+
+MCP_SETTINGS_PATH = Path(os.getenv("MCP_SETTINGS_PATH", "/opt/G-memory-mcp/.claude/settings.json"))
+
+
+def _read_mcp_settings() -> dict:
+    if MCP_SETTINGS_PATH.exists():
+        try:
+            return _json.loads(MCP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _write_mcp_settings(data: dict):
+    MCP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MCP_SETTINGS_PATH.write_text(
+        _json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _mcp_server_list() -> list:
+    settings = _read_mcp_settings()
+    servers = settings.get("mcpServers", {})
+    permissions = settings.get("permissions", {}).get("allow", [])
+    return [
+        {
+            "name": name,
+            "url": cfg.get("url", ""),
+            "command": cfg.get("command", ""),
+            "enabled": any(p.startswith(f"mcp__{name}") for p in permissions),
+        }
+        for name, cfg in servers.items()
+    ]
+
+
+@app.get("/api/mcp")
+async def api_mcp_list():
+    return {"servers": _mcp_server_list()}
+
+
+@app.post("/api/mcp/add")
+async def api_mcp_add(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    url = body.get("url", "")
+    if not name or not url:
+        return JSONResponse(status_code=400, content={"error": "name and url required"})
+    settings = _read_mcp_settings()
+    settings.setdefault("mcpServers", {})[name] = {"url": url}
+    perms = settings.setdefault("permissions", {}).setdefault("allow", [])
+    pattern = f"mcp__{name}"
+    if pattern not in perms:
+        perms.append(pattern)
+    _write_mcp_settings(settings)
+    return {"ok": True, "servers": _mcp_server_list()}
+
+
+@app.post("/api/mcp/toggle")
+async def api_mcp_toggle(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    enabled = body.get("enabled", True)
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "name required"})
+    settings = _read_mcp_settings()
+    perms = settings.setdefault("permissions", {}).setdefault("allow", [])
+    pattern = f"mcp__{name}"
+    if enabled:
+        if pattern not in perms:
+            perms.append(pattern)
+    else:
+        perms[:] = [p for p in perms if not p.startswith(pattern)]
+    _write_mcp_settings(settings)
+    return {"ok": True, "servers": _mcp_server_list()}
+
+
+@app.post("/api/mcp/remove")
+async def api_mcp_remove(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "name required"})
+    settings = _read_mcp_settings()
+    settings.get("mcpServers", {}).pop(name, None)
+    perms = settings.get("permissions", {}).get("allow", [])
+    perms[:] = [p for p in perms if not p.startswith(f"mcp__{name}")]
+    _write_mcp_settings(settings)
+    return {"ok": True, "servers": _mcp_server_list()}
+
+
+@app.post("/api/mcp/test")
+async def api_mcp_test(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    settings = _read_mcp_settings()
+    cfg = settings.get("mcpServers", {}).get(name)
+    if not cfg:
+        return {"name": name, "ok": False, "message": "server not found"}
+    url = cfg.get("url", "")
+    if not url:
+        return {"name": name, "ok": False, "message": "no url configured"}
+    try:
+        async with _httpx.AsyncClient(timeout=8, verify=False) as client:
+            resp = await client.get(url)
+            ok = resp.status_code in (200, 301, 302, 307, 308)
+            return {"name": name, "ok": ok, "message": f"HTTP {resp.status_code}"}
+    except _httpx.TimeoutException:
+        return {"name": name, "ok": False, "message": "timeout (8s)"}
+    except Exception as e:
+        return {"name": name, "ok": False, "message": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
