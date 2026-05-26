@@ -186,6 +186,8 @@ async def websocket_endpoint(ws: WebSocket):
     log.info("WS client connected")
 
     current_session: Session | None = None
+    pending_model = "claude-sonnet-4-6"
+    pending_effort = "medium"
 
     try:
         while True:
@@ -210,6 +212,8 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "session:create":
                 sid = uuid.uuid4().hex[:8]
                 session = Session(sid)
+                session.model = pending_model
+                session.effort = pending_effort
                 sessions[sid] = session
                 current_session = session
                 save_session_meta(session)
@@ -237,6 +241,8 @@ async def websocket_endpoint(ws: WebSocket):
                 if not current_session:
                     sid = uuid.uuid4().hex[:8]
                     current_session = Session(sid)
+                    current_session.model = pending_model
+                    current_session.effort = pending_effort
                     sessions[sid] = current_session
                     save_session_meta(current_session)
                     await ws.send_json(
@@ -252,16 +258,20 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "config:model":
                 model = data.get("model", "")
-                if current_session and model:
-                    current_session.model = model
-                    save_session_meta(current_session)
+                if model:
+                    pending_model = model
+                    if current_session:
+                        current_session.model = model
+                        save_session_meta(current_session)
                     log.info(f"Model → {model}")
 
             elif event == "config:effort":
                 effort = data.get("effort", "")
-                if current_session and effort:
-                    current_session.effort = effort
-                    save_session_meta(current_session)
+                if effort:
+                    pending_effort = effort
+                    if current_session:
+                        current_session.effort = effort
+                        save_session_meta(current_session)
                     log.info(f"Effort → {effort}")
 
             elif event == "chat:respond":
@@ -305,6 +315,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=1024 * 1024,
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         )
