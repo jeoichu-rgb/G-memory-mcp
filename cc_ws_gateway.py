@@ -74,6 +74,7 @@ def save_session_meta(session: "Session"):
         "effort": session.effort,
         "cc_session_id": session.cc_session_id,
         "created_at": session.created_at.isoformat(),
+        "last_active": session.last_active.isoformat(),
     }
     path = history_path(session.id)
     # Load existing file to preserve messages
@@ -142,6 +143,11 @@ def load_all_sessions() -> list["Session"]:
                     session.created_at = datetime.fromisoformat(meta["created_at"])
                 except Exception:
                     pass
+            if meta.get("last_active"):
+                try:
+                    session.last_active = datetime.fromisoformat(meta["last_active"])
+                except Exception:
+                    pass
             loaded.append(session)
         except Exception as e:
             log.warning(f"Failed to load session {f}: {e}")
@@ -158,6 +164,7 @@ class Session:
         self.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')}"
         self.cc_session_id: str | None = None
         self.created_at = datetime.now(SGT)
+        self.last_active = datetime.now(SGT)
         self.preview = ""
         self.model = "claude-sonnet-4-6"
         self.effort = "medium"
@@ -180,6 +187,7 @@ class Session:
             "name": self.name,
             "preview": self.preview,
             "time": self.created_at.strftime("%H:%M"),
+            "last_active": self.last_active.isoformat(),
         }
 
     def reset_accumulator(self):
@@ -242,10 +250,11 @@ async def websocket_endpoint(ws: WebSocket):
             log.info(f"← {event} {json.dumps(data, ensure_ascii=False)[:200]}")
 
             if event == "session:list":
+                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
                 await ws.send_json(
                     {
                         "event": "session:list",
-                        "sessions": [s.to_dict() for s in sessions.values()],
+                        "sessions": [s.to_dict() for s in sorted_sessions],
                     }
                 )
 
@@ -289,10 +298,8 @@ async def websocket_endpoint(ws: WebSocket):
                         {"event": "session:created", "sessionId": sid}
                     )
 
-                current_session.preview = message[:40]
                 # Save user message
                 append_message(current_session.id, "user", message)
-                save_session_meta(current_session)
 
                 await run_claude(message, current_session, ws)
 
@@ -461,7 +468,20 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
+            # Preview = Erik's reply (truncated), sorted by last_active
+            if session._current_text:
+                txt = session._current_text.replace("\n", " ")[:30]
+                if len(session._current_text) > 30:
+                    txt += "…"
+                session.preview = txt
+            session.last_active = datetime.now(SGT)
             save_session_meta(session)
+            # Push updated session list so sidebar reorders
+            sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+            await ws.send_json({
+                "event": "session:list",
+                "sessions": [s.to_dict() for s in sorted_sessions],
+            })
 
         if not session._result_sent:
             await ws.send_json({"event": "message:complete", "usage": {}})
