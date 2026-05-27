@@ -150,10 +150,18 @@ def load_all_sessions() -> list["Session"]:
                     session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
             else:
                 session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
-            # Backfill preview from last message (any role)
+            # Fallback: derive last_active from last message timestamp
             messages = data.get("messages", [])
+            if messages and not meta.get("last_active"):
+                last_msg = messages[-1]
+                if last_msg.get("timestamp"):
+                    try:
+                        session.last_active = datetime.fromisoformat(last_msg["timestamp"])
+                    except Exception:
+                        pass
+            # Backfill preview from last assistant message
             for msg in reversed(messages):
-                if msg.get("content"):
+                if msg.get("role") == "assistant" and msg.get("content"):
                     txt = msg["content"].replace("\n", " ")[:30]
                     if len(msg["content"]) > 30:
                         txt += "…"
@@ -193,11 +201,16 @@ class Session:
         self.total_cost = 0.0
 
     def to_dict(self):
+        now = datetime.now(SGT)
+        if self.last_active.date() == now.date():
+            time_str = self.last_active.strftime("%H:%M")
+        else:
+            time_str = self.last_active.strftime("%m/%d %H:%M")
         return {
             "id": self.id,
             "name": self.name,
             "preview": self.preview,
-            "time": self.last_active.strftime("%H:%M"),
+            "time": time_str,
             "last_active": self.last_active.isoformat(),
         }
 
@@ -316,10 +329,6 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Save user message & update last_active immediately
                 append_message(current_session.id, "user", message)
-                txt = message.replace("\n", " ")[:30]
-                if len(message) > 30:
-                    txt += "…"
-                current_session.preview = txt
                 current_session.last_active = datetime.now(SGT)
                 save_session_meta(current_session)
                 sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
