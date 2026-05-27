@@ -147,7 +147,18 @@ def load_all_sessions() -> list["Session"]:
                 try:
                     session.last_active = datetime.fromisoformat(meta["last_active"])
                 except Exception:
-                    pass
+                    session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
+            else:
+                session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
+            # Backfill preview from last assistant message if missing or stale
+            messages = data.get("messages", [])
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    txt = msg["content"].replace("\n", " ")[:30]
+                    if len(msg["content"]) > 30:
+                        txt += "…"
+                    session.preview = txt
+                    break
             loaded.append(session)
         except Exception as e:
             log.warning(f"Failed to load session {f}: {e}")
