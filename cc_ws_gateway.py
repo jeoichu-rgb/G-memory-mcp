@@ -150,10 +150,10 @@ def load_all_sessions() -> list["Session"]:
                     session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
             else:
                 session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
-            # Backfill preview from last assistant message if missing or stale
+            # Backfill preview from last message (any role)
             messages = data.get("messages", [])
             for msg in reversed(messages):
-                if msg.get("role") == "assistant" and msg.get("content"):
+                if msg.get("content"):
                     txt = msg["content"].replace("\n", " ")[:30]
                     if len(msg["content"]) > 30:
                         txt += "…"
@@ -197,7 +197,7 @@ class Session:
             "id": self.id,
             "name": self.name,
             "preview": self.preview,
-            "time": self.created_at.strftime("%H:%M"),
+            "time": self.last_active.strftime("%H:%M"),
             "last_active": self.last_active.isoformat(),
         }
 
@@ -280,6 +280,11 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json(
                     {"event": "session:created", "sessionId": sid}
                 )
+                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+                await ws.send_json({
+                    "event": "session:list",
+                    "sessions": [s.to_dict() for s in sorted_sessions],
+                })
                 log.info(f"Session created: {sid}")
 
             elif event == "session:switch":
@@ -309,8 +314,19 @@ async def websocket_endpoint(ws: WebSocket):
                         {"event": "session:created", "sessionId": sid}
                     )
 
-                # Save user message
+                # Save user message & update last_active immediately
                 append_message(current_session.id, "user", message)
+                txt = message.replace("\n", " ")[:30]
+                if len(message) > 30:
+                    txt += "…"
+                current_session.preview = txt
+                current_session.last_active = datetime.now(SGT)
+                save_session_meta(current_session)
+                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+                await ws.send_json({
+                    "event": "session:list",
+                    "sessions": [s.to_dict() for s in sorted_sessions],
+                })
 
                 await run_claude(message, current_session, ws)
 
@@ -479,7 +495,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
-            # Preview = Erik's reply (truncated), sorted by last_active
+            # Preview = last message (truncated)
             if session._current_text:
                 txt = session._current_text.replace("\n", " ")[:30]
                 if len(session._current_text) > 30:
