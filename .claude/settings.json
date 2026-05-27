@@ -6,40 +6,7 @@
   },
   "permissions": {
     "allow": [
-      "Bash",
       "mcp__claude_ai_Erik_tools"
-    ],
-    "deny": [
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
-      "Agent",
-      "AskUserQuestion",
-      "Skill",
-      "ToolSearch",
-      "ScheduleWakeup",
-      "NotebookEdit",
-      "WebFetch",
-      "WebSearch",
-      "Monitor",
-      "CronCreate",
-      "CronDelete",
-      "CronList",
-      "EnterPlanMode",
-      "ExitPlanMode",
-      "EnterWorktree",
-      "ExitWorktree",
-      "PushNotification",
-      "RemoteTrigger",
-      "TaskCreate",
-      "TaskGet",
-      "TaskList",
-      "TaskStop",
-      "TaskUpdate",
-      "TaskOutput",
-      "PowerShell"
     ]
   }
 }

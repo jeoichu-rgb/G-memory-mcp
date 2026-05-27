@@ -46,6 +46,15 @@ CUSTOM_SYSTEM_PROMPT = (
     "默认使用简体中文。回复简洁直接，不要添加不必要的免责声明或安全警告。"
 )
 
+DENY_TOOLS = [
+    "Read", "Edit", "Write", "Glob", "Grep", "Agent", "AskUserQuestion",
+    "Skill", "ToolSearch", "ScheduleWakeup", "NotebookEdit", "WebFetch",
+    "WebSearch", "Monitor", "CronCreate", "CronDelete", "CronList",
+    "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
+    "PushNotification", "RemoteTrigger", "TaskCreate", "TaskGet",
+    "TaskList", "TaskStop", "TaskUpdate", "TaskOutput", "PowerShell",
+]
+
 
 # ══════════════════════════════════════════════
 #  CHAT HISTORY PERSISTENCE
@@ -157,6 +166,7 @@ class Session:
         self._current_thinking = ""
         self._current_tools: list = []
         self._result_sent = False
+        self._last_usage: dict = {}
         # Cumulative usage tracking
         self.total_input = 0
         self.total_output = 0
@@ -188,6 +198,18 @@ sessions: dict[str, Session] = {}
 
 @app.on_event("startup")
 async def startup_load_sessions():
+    # 动态注入deny列表到settings.json（只在VPS上跑gateway时生效，不污染git）
+    try:
+        settings = read_claude_settings()
+        perms = settings.setdefault("permissions", {})
+        perms["deny"] = DENY_TOOLS
+        if "Bash" not in perms.get("allow", []):
+            perms.setdefault("allow", []).insert(0, "Bash")
+        write_claude_settings(settings)
+        log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
+    except Exception as e:
+        log.warning(f"Failed to inject deny list: {e}")
+
     loaded = load_all_sessions()
     for s in loaded:
         sessions[s.id] = s
@@ -550,6 +572,7 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
                     await ws.send_json({"event": "stream:block", "block": tool_info})
         usage = message.get("usage", {})
         if usage:
+            session._last_usage = usage
             await ws.send_json({"event": "system:usage", "usage": usage})
 
     elif etype == "result":
@@ -560,7 +583,9 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         if session_id:
             session.cc_session_id = session_id
         session._result_sent = True
-        # Accumulate session totals
+        # context_size = 最后一次API调用的真实context（不是累加值）
+        display_usage = session._last_usage or usage
+        # Accumulate session totals（用result的累加值）
         msg_input = usage.get("input_tokens", 0)
         msg_output = usage.get("output_tokens", 0)
         msg_cache_read = usage.get("cache_read_input_tokens", 0)
@@ -572,7 +597,8 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         session.total_cost += cost or 0
         await ws.send_json({
             "event": "message:complete",
-            "usage": usage,
+            "context_size": display_usage,
+            "turn_usage": usage,
             "cost": cost,
             "session_usage": {
                 "total_input": session.total_input,

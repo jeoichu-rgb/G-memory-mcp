@@ -995,9 +995,10 @@ function finalizeMessage(data) {
   showTyping(false);
   document.getElementById('sendBtn').disabled = false;
 
-  // Show per-message usage under the bubble
-  if (currentBubble && data.usage) {
-    const u = data.usage;
+  // Show per-message usage (turn_usage = this turn's cumulative API cost)
+  const turnUsage = data.turn_usage || data.usage;
+  if (currentBubble && turnUsage) {
+    const u = turnUsage;
     const inp = u.input_tokens || 0;
     const out = u.output_tokens || 0;
     const cacheRead = u.cache_read_input_tokens || 0;
@@ -1021,9 +1022,10 @@ function finalizeMessage(data) {
   currentBubble = null;
   currentTextNode = null;
 
-  // Update context bar — use this turn's usage for context window size
-  if (data.session_usage || data.usage) {
-    updateContextFromSession(data.session_usage, data.usage, data.cost);
+  // Update context bar — use context_size (last API call's real window, not cumulative)
+  const ctxUsage = data.context_size || turnUsage;
+  if (data.session_usage || ctxUsage) {
+    updateContextFromSession(data.session_usage, ctxUsage, data.cost);
   }
 }
 
@@ -1217,14 +1219,12 @@ function updateContext(usage) {
 }
 
 function updateContextFromSession(su, msgUsage, cost) {
-  // Context window = this turn's total input (non-cached + cached)
-  // This is NOT cumulative — each turn sends the full conversation
+  // Context window = last API call's input total (output doesn't occupy next turn's window)
   if (msgUsage) {
     const inp = msgUsage.input_tokens || 0;
     const cacheRead = msgUsage.cache_read_input_tokens || 0;
     const cacheCreate = msgUsage.cache_creation_input_tokens || 0;
-    const out = msgUsage.output_tokens || 0;
-    contextUsed = inp + cacheRead + cacheCreate + out;
+    contextUsed = inp + cacheRead + cacheCreate;
   }
 
   const sessionCost = su ? (su.total_cost || 0) : 0;
