@@ -634,7 +634,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         style="background:none;border:none;color:var(--icon);font-size:20px;cursor:pointer;padding:8px 2px;"
         title="上传图片">📷</button>
       <textarea class="input-box" id="inputBox" placeholder="消息…" rows="1"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"
+        onkeydown=""
         oninput="autoResize(this)"></textarea>
       <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
     </div>
