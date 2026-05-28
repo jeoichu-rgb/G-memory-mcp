@@ -542,6 +542,35 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 ══════════════════════════════════════ */
 @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
 .msg-row { animation:fadeIn .15s ease; }
+
+/* Session delete button */
+.session-delete {
+  background:none; border:none; color:var(--text-secondary);
+  cursor:pointer; font-size:12px; padding:2px 4px;
+  opacity:0; transition:opacity .15s, color .15s; margin-top:4px;
+}
+.session-item:hover .session-delete { opacity:0.5; }
+.session-delete:hover { opacity:1 !important; color:var(--context-red); }
+
+/* Message edit button */
+.msg-edit {
+  background:none; border:none; cursor:pointer;
+  color:var(--text-secondary); font-size:13px;
+  opacity:0; transition:opacity .15s; padding:4px 6px;
+  align-self:center; flex-shrink:0;
+}
+.msg-row.out:hover .msg-edit { opacity:0.5; }
+.msg-edit:hover { opacity:1 !important; }
+
+/* Send button stop state */
+.send-btn.stopping {
+  background:var(--context-red);
+}
+
+@media (max-width: 768px) {
+  .session-delete { opacity:0.3; }
+  .msg-edit { opacity:0.3; }
+}
 </style>
 </head>
 <body>
@@ -636,7 +665,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       <textarea class="input-box" id="inputBox" placeholder="消息…" rows="1"
         onkeydown=""
         oninput="autoResize(this)"></textarea>
-      <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+      <button class="send-btn" id="sendBtn" onclick="handleSendOrStop()">➤</button>
     </div>
   </div>
 </div>
@@ -828,6 +857,12 @@ function handleWSMessage(data) {
 
     case 'session:history':
       renderHistory(data.messages || []);
+      if (data.model) {
+        document.getElementById('modelSelect').value = data.model;
+      }
+      if (data.effort) {
+        document.getElementById('effortSelect').value = data.effort;
+      }
       break;
 
     case 'system:usage':
@@ -864,6 +899,7 @@ function sendMessage() {
     imgHtml = `<img class="bubble-img" src="${pendingImage.dataUrl}" onclick="openLightbox(this.src)">`;
   }
   row.innerHTML = `
+    <button class="msg-edit" onclick="editMessage(this)" title="编辑">✎</button>
     <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
       ${imgHtml}
       <span class="msg-time">${time}</span>
@@ -871,6 +907,11 @@ function sendMessage() {
       <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
     </div>
   `;
+  const rawSpan = document.createElement('span');
+  rawSpan.hidden = true;
+  rawSpan.className = 'msg-raw-text';
+  rawSpan.textContent = text;
+  row.appendChild(rawSpan);
   msgArea.appendChild(row);
   scrollToBottom();
 
@@ -895,7 +936,10 @@ function sendMessage() {
   clearUpload();
   showTyping(true);
   isStreaming = true;
-  document.getElementById('sendBtn').disabled = true;
+  const btn = document.getElementById('sendBtn');
+  btn.textContent = '■';
+  btn.classList.add('stopping');
+  btn.disabled = false;
 }
 
 function addUserMessage(text) {
@@ -1004,7 +1048,10 @@ function addMemoryBlock(memories) {
 function finalizeMessage(data) {
   isStreaming = false;
   showTyping(false);
-  document.getElementById('sendBtn').disabled = false;
+  const btn = document.getElementById('sendBtn');
+  btn.textContent = '➤';
+  btn.classList.remove('stopping');
+  btn.disabled = false;
 
   // Show per-message usage (turn_usage = this turn's cumulative API cost)
   const turnUsage = data.turn_usage || data.usage;
@@ -1065,11 +1112,17 @@ function renderHistory(messages) {
     if (msg.role === 'user') {
       row.className = 'msg-row out';
       row.innerHTML = `
+        <button class="msg-edit" onclick="editMessage(this)" title="编辑">✎</button>
         <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
           <span class="msg-time">${time}</span>
           ${escapeHtml(msg.content)}
           <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
         </div>`;
+      const rawSpan = document.createElement('span');
+      rawSpan.hidden = true;
+      rawSpan.className = 'msg-raw-text';
+      rawSpan.textContent = msg.content || '';
+      row.appendChild(rawSpan);
     } else {
       row.className = 'msg-row in';
       let metaHtml = '';
@@ -1182,6 +1235,7 @@ function renderSessions() {
       </div>
       <div class="session-meta">
         <div class="session-time">${s.time || ''}</div>
+        <button class="session-delete" onclick="event.stopPropagation();deleteSession('${s.id}')" title="删除">✕</button>
       </div>
     </div>
   `).join('');
@@ -1317,7 +1371,10 @@ function renderMarkdown(text) {
 function showError(msg) {
   isStreaming = false;
   showTyping(false);
-  document.getElementById('sendBtn').disabled = false;
+  const btn = document.getElementById('sendBtn');
+  btn.textContent = '➤';
+  btn.classList.remove('stopping');
+  btn.disabled = false;
   ensureAssistantBubble();
   currentTextNode.innerHTML = `<span style="color:var(--context-red);">⚠ ${escapeHtml(msg)}</span>`;
   currentAssistantRow = null;
@@ -1614,6 +1671,53 @@ async function addMcpServer() {
     btn.disabled = false;
     btn.textContent = '+';
   }
+}
+
+/* ══════════════════════════════════════
+   SEND / STOP / EDIT / DELETE
+══════════════════════════════════════ */
+function handleSendOrStop() {
+  if (isStreaming) {
+    stopGeneration();
+  } else {
+    sendMessage();
+  }
+}
+
+function stopGeneration() {
+  wsSend('chat:stop', {});
+  isStreaming = false;
+  showTyping(false);
+  const btn = document.getElementById('sendBtn');
+  btn.textContent = '➤';
+  btn.classList.remove('stopping');
+  btn.disabled = false;
+  if (currentAssistantRow) {
+    currentAssistantRow = null;
+    currentBubble = null;
+    currentTextNode = null;
+  }
+}
+
+function deleteSession(id) {
+  if (!confirm('删除这个对话？')) return;
+  wsSend('session:delete', { sessionId: id });
+  if (id === currentSessionId) {
+    currentSessionId = null;
+    clearMessages();
+  }
+}
+
+function editMessage(btn) {
+  if (isStreaming) return;
+  const row = btn.closest('.msg-row');
+  const raw = row.querySelector('.msg-raw-text');
+  const text = raw ? raw.textContent : '';
+  if (!text) return;
+  const input = document.getElementById('inputBox');
+  input.value = text;
+  autoResize(input);
+  input.focus();
 }
 
 /* ══════════════════════════════════════

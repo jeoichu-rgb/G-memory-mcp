@@ -176,7 +176,7 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         scored.append({"content": doc, "score": final, "meta": meta, "id": mid})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    top = [r for r in scored[:5] if r["score"] > 0.15]
+    top = [r for r in scored[:3] if r["score"] > 0.7]
 
     if not top:
         return None
@@ -201,7 +201,7 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
     diary_hits = claude_search_diary(keyword)
     if diary_hits:
         report += "【日记检索结果】\n"
-        for fn, content in diary_hits[:3]:
+        for fn, content in diary_hits[:1]:
             date_part = fn[:10]
             report += f"[日记 {date_part}]\n{content[:1500]}\n\n"
             

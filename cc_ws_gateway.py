@@ -193,6 +193,7 @@ class Session:
         self._current_tools: list = []
         self._result_sent = False
         self._last_usage: dict = {}
+        self._proc: asyncio.subprocess.Process | None = None
         # Cumulative usage tracking
         self.total_input = 0
         self.total_output = 0
@@ -304,12 +305,32 @@ async def websocket_endpoint(ws: WebSocket):
                 sid = data.get("sessionId", "")
                 if sid in sessions:
                     current_session = sessions[sid]
-                    # Send chat history to client
+                    pending_model = current_session.model
+                    pending_effort = current_session.effort
                     history = load_history(sid)
-                    await ws.send_json(
-                        {"event": "session:history", "messages": history.get("messages", [])}
-                    )
+                    await ws.send_json({
+                        "event": "session:history",
+                        "messages": history.get("messages", []),
+                        "model": current_session.model,
+                        "effort": current_session.effort,
+                    })
                     log.info(f"Switched to session: {sid}")
+
+            elif event == "session:delete":
+                sid = data.get("sessionId", "")
+                if sid in sessions:
+                    path = history_path(sid)
+                    if path.exists():
+                        path.unlink()
+                    del sessions[sid]
+                    if current_session and current_session.id == sid:
+                        current_session = None
+                    log.info(f"Session deleted: {sid}")
+                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+                await ws.send_json({
+                    "event": "session:list",
+                    "sessions": [s.to_dict() for s in sorted_sessions],
+                })
 
             elif event == "chat:send":
                 message = data.get("message", "")
@@ -359,6 +380,14 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "chat:respond":
                 pass
+
+            elif event == "chat:stop":
+                if current_session and current_session._proc:
+                    try:
+                        current_session._proc.terminate()
+                        log.info(f"Stopped generation for session {current_session.id}")
+                    except ProcessLookupError:
+                        pass
 
             elif event == "mcp:list":
                 try:
@@ -473,6 +502,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         )
+        session._proc = proc
 
         buffer = ""
         async for chunk in proc.stdout:
@@ -493,6 +523,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             log.warning(f"CLI stderr: {stderr_text[:500]}")
 
         await proc.wait()
+        session._proc = None
         log.info(f"CLI exited with code {proc.returncode}")
 
         # Save assistant response to history
