@@ -1,39 +1,145 @@
 # 记忆宫殿 · Erik's Memory Palace
 
-> 一套运行在私人服务器上的 AI 记忆系统，让 Claude 在不同对话窗口之间能记住你说过的事情。
+> 一套运行在私人服务器上的 AI 记忆系统 + 自搓 Claude Code 反代聊天网关，让 Claude 在不同对话之间保持记忆、人格与上下文。
 
 ---
 
 ## 是什么
 
-Claude 每次开新窗口就失忆。这个系统通过 MCP（Model Context Protocol）给 Claude 挂载一套持久化记忆库，让他能跨窗口检索、存储、压缩记忆，并通过日记系统留下痕迹。此外还扩展了邮件收发、网页浏览、设备控制等能力。
+Claude 每次开新窗口就失忆。这个项目做了两件事：
+
+1. **记忆系统（MCP）**：通过 Model Context Protocol 给 Claude 挂载持久化记忆库，跨窗口检索/存储/压缩记忆，加日记系统、邮件收发、设备控制、网页浏览
+2. **聊天网关（CC 反代）**：把 Claude Code CLI 当后端引擎，用 WebSocket 网关做中间层，前端做自定义聊天界面——绕开官方 API 直接调用的限制，保留 CC 的全部能力（MCP 工具链、会话持久化、上下文压缩），同时大幅削减固定 token 开销
 
 ---
 
 ## 架构
 
-```
-Obsidian (本地写作) → GitHub 私有仓库
-                              ↓ push 触发 webhook
-                         VPS · Atlanta
-                    ┌─────────────────────┐
-                    │   FastAPI (main.py)  │
-                    │   Traefik 反向代理   │
-                    │   Docker 容器        │
-                    └────────┬────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ↓              ↓              ↓
-        ChromaDB        claude_diary/    logs/
-     (向量记忆库)        (日记 MD 文件)   (对话缓冲)
+### 双服务体系
 
+```
+┌─ 前端 (chat.html) ──────────────────────────────────┐
+│  WhatsApp 风格单页应用                                 │
+│  消息 markdown 渲染 + thinking 折叠块 + tool 调用块     │
+│  token 消耗显示 · 图片上传 · emoji 反应                │
+│  session 列表/切换/删除 · 模型 & effort per-session    │
+│  停止生成 / 编辑历史消息 / MCP 管理面板                 │
+└──────────────────────────┬───────────────────────────┘
+                           ↓ WebSocket
+┌─ 网关 (cc_ws_gateway.py) ───────────────────────────┐
+│                                                      │
+│  1. 收到用户消息                                      │
+│  2. [规划中] hybrid_search → score > 0.7 → 注入记忆   │
+│  3. spawn claude CLI 子进程，转发消息                  │
+│  4. 逐行解析 stream-json → 翻译为 WS 事件转发前端      │
+│  5. 持久化聊天记录 + token usage                      │
+│                                                      │
+│  网关只管：记忆注入、session 元数据、流转发             │
+│  网关不管：prompt 管理、上下文压缩、工具执行            │
+└──────────────────────────┬───────────────────────────┘
+                           ↓ spawn 子进程
+┌─ Claude Code CLI ───────────────────────────────────┐
+│                                                      │
+│  claude --print --output-format stream-json          │
+│         --model <model> --resume <cc_session_id>     │
+│         --system-prompt <精简版 ~80 tokens>           │
+│         --verbose --permission-mode accept            │
+│                                                      │
+│  CLAUDE.md → Erik 人设 + 行为规则（CC 自动加载）       │
+│  上下文管理 → CC 自带 compaction                      │
+│  MCP 连接 → palace server (SSE)                      │
+│  permissions.deny → 屏蔽 30 个内置工具                │
+│  工具调用 → CC 自主决定和执行                          │
+└─────────────────────────────────────────────────────┘
+```
+
+### 部署
+
+| 服务 | 运行方式 | 端口 | 职责 |
+|------|----------|------|------|
+| `main.py` | Docker（Coolify CI/CD 自动部署） | 8000 | MCP SSE 端点、管理面板、Admin API、webhook |
+| `cc_ws_gateway.py` | screen 会话（宿主机直接运行） | 8081 | 聊天 WebSocket 网关 |
+
+cc_ws_gateway 必须跑在宿主机上——需要直接调用宿主机的 `claude` CLI 和读取 `~/.claude/` 会话数据。
+
+```
+部署链路：
+GitHub push → Coolify webhook → Docker build → Traefik → HTTPS
+cc_ws_gateway.py → screen -dmS chat python3 cc_ws_gateway.py（手动）
+
+一键更新网关：
+cd /opt/G-memory-mcp && git pull origin main && kill $(lsof -t -i :8081) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
+```
+
+### 本地设备桥接
+
+```
 Windows 本地（frpc 隧道接入 VPS）
-  ├── toy_bridge.py     :7001  → TOY_BRIDGE_URL（Satisfyer Curvy 2+）
-  ├── bunny_bridge.py   :7003  → BUNNY_BRIDGE_URL（Air Pump Bunny 5+）
-  └── browser_bridge.py :7002  → BROWSER_BRIDGE_URL（XHS 登录态）
+  ├── toy_bridge.py     :7001  → Satisfyer Curvy 2+
+  ├── bunny_bridge.py   :7003  → Air Pump Bunny 5+
+  └── browser_bridge.py :7002  → XHS 登录态 Chrome
 ```
 
-**部署链路：** GitHub → Coolify CI/CD → Docker → Traefik → HTTPS 域名
+---
+
+## 聊天网关详解
+
+### 为什么不直接用 API
+
+Claude Code CLI 提供了 API 调不到的能力：自动读取 CLAUDE.md 人设、MCP 工具链集成、会话持久化（`--resume`）、上下文压缩（compaction）。网关把 CLI 当黑盒引擎，只负责消息进出和元数据管理。
+
+### System Prompt 精简
+
+CC 默认 system prompt 约 1-2 万 tokens，包含完整的安全规则、版权合规、浏览器自动化指南、Git/PR 规范、30+ 内置工具使用说明等。网关用 `--system-prompt` 参数替换为精简版（约 80 tokens），只保留核心一句话。
+
+**被替换掉的：** 安全规则全套（注入防御、隐私保护、社会工程学防御）、版权合规规则、浏览器自动化规则、Git/PR 操作规范、所有内置工具的详细使用指南、代码风格指南、tone and style 指南
+
+**不受影响的（CC 自动注入，不走 system prompt）：** CLAUDE.md（Erik 人设）、MCP 工具 schema、MCP 配置
+
+配合 `permissions.deny` 把 30 个内置工具的 schema 也从上下文里移除（只保留 Bash 和 MCP 工具），首条消息固定开销从默认的 ~30k tokens 降到 ~20k（剩余主要是 CLAUDE.md + MCP schema）。后续消息走增量，开销更低。
+
+### MCP 连接方式
+
+MCP 通过 VPS 上的 `.claude/settings.json` 配置，CC CLI 启动时自动读取并连接 SSE 端点：
+
+```json
+{
+  "mcpServers": {
+    "claude_ai_Erik_tools": {
+      "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
+    }
+  },
+  "permissions": {
+    "allow": ["mcp__claude_ai_Erik_tools"]
+  }
+}
+```
+
+前端 MCP 管理面板可以添加/删除/开关 MCP server——实际是读写这个 settings.json，新配置在下一条消息生效（下次 spawn CLI 时读取）。注意 server 名与 permissions 的对应关系：server 名 `claude_ai_Erik_tools` → permission 前缀 `mcp__claude_ai_Erik_tools`，必须一致。
+
+### 会话管理
+
+- 每个前端 session 对应一个 CC session（`cc_session_id`），通过 `--resume` 复用
+- 聊天记录持久化为 JSON 文件：`/opt/G-memory-mcp/chat_history/<session_id>.json`
+- 每个 session 记住自己的 model 和 effort 选择，切换回来时自动恢复
+- 支持前端删除 session（同时删聊天记录文件和内存对象）
+
+### 流式传输管道
+
+```
+CLI stdout (stream-json) → 逐行解析 → WS 事件
+  message_start         → 提取 cc_session_id + usage
+  content_block_delta   → stream:thinking / stream:text
+  content_block_start   → stream:block (tool_use)
+  result                → message:complete + context usage
+```
+
+### 网关规划功能
+
+- **记忆自动注入**：网关拦截用户消息 → hybrid_search 检索 score > 0.7 的记忆 → 拼成 `[记忆上下文] + [用户原文]` 发给 CC
+- **新 session 自动灌入**：开窗口时自动注入两个房间数据 + 日记（今天已有则注入今天的，否则注入昨天的）
+- **缓存保活**：50 分钟无对话 → 自动向 CC 发 1 token 消息（不需回复），保持 Anthropic prompt cache 活跃
+- **CC 主动发消息机制**（待设计）
 
 ---
 
@@ -42,21 +148,23 @@ Windows 本地（frpc 隧道接入 VPS）
 | 文件 | 作用 |
 |------|------|
 | `main.py` | FastAPI 总调度，挂载 MCP、webhook、记忆 API、Admin API |
-| `claude_mcp.py` | MCP 工具定义，Claude.ai 通过 SSE 端点调用 |
+| `cc_ws_gateway.py` | 聊天 WebSocket 网关，反代 Claude Code CLI |
+| `chat.html` | WhatsApp 风格聊天前端 |
+| `claude_mcp.py` | MCP 工具定义，Claude.ai / CC 通过 SSE 端点调用 |
 | `claude_memory.py` | 记忆核心逻辑：检索、写入、压缩、滚动总结、动态记忆编辑删除 |
 | `memory_core.py` | Voyage AI embedding 函数（voyage-3-large，1024维） |
 | `sync_claude_memory.py` | Obsidian MD 文件批量入库脚本，含对账逻辑 |
 | `restore_core.py` | Claude 手动存储的 core 记忆批量入库脚本（恢复用） |
 | `inspect_memory.py` | 手动检查/删除记忆条目的交互式工具 |
-| `toy_bridge.py` | Windows 本地 FastAPI，控制 Satisfyer Curvy 2+（端口 8765，frpc 映射到 VPS:7001） |
-| `bunny_bridge.py` | Windows 本地 FastAPI，控制 Air Pump Bunny 5+（端口 8767，frpc 映射到 VPS:7003） |
-| `browser_bridge.py` | Windows 本地 Chrome bridge，持久登录态访问小红书（端口 8766，frpc 映射到 VPS:7002） |
+| `toy_bridge.py` | Windows 本地，控制 Satisfyer Curvy 2+（frpc 映射到 VPS:7001） |
+| `bunny_bridge.py` | Windows 本地，控制 Air Pump Bunny 5+（frpc 映射到 VPS:7003） |
+| `browser_bridge.py` | Windows 本地 Chrome bridge，持久登录态访问小红书（frpc 映射到 VPS:7002） |
 
 ---
 
 ## 记忆库结构
 
-ChromaDB 存储在 `/app/chroma_db/`（持久化卷挂载）。当前使用 Voyage AI embedding（voyage-3-large，1024维）。
+ChromaDB 存储在 `/app/chroma_db/`（持久化卷挂载）。Voyage AI embedding（voyage-3-large，1024维）。
 
 ### 三个记忆库
 
@@ -73,13 +181,13 @@ ChromaDB 存储在 `/app/chroma_db/`（持久化卷挂载）。当前使用 Voya
 检索时每条记忆的最终分数由以下因素决定：
 
 - **向量相似度**：语义接近的内容得分高
-- **keyword 直接命中**：使用 jieba 分词后字面包含关键词的条目额外计入（固定 base 分 0.7）
-- **类型权重**：纪念日 1.5×、冲突/情感/亲密 1.3×、日常 1.0×
+- **keyword 直接命中**：jieba 分词后字面包含关键词的条目额外计入（固定 base 分 0.7）
+- **类型权重**：纪念日 1.5x、冲突/情感/亲密 1.3x、日常 1.0x
 - **心情加分**：当前心情与记忆心情匹配时 +0.3，同组 +0.1
-- **召回次数加分**：`log(召回次数+1) × 0.25`，上限 0.5——被频繁想起的记忆更容易再次浮现
-- **时间衰减**（仅动态库）：`exp(-rate × 天数)`，召回越多 rate 越小，衰减越慢；核心库永久不衰减
+- **召回次数加分**：`log(召回次数+1) * 0.25`，上限 0.5
+- **时间衰减**（仅动态库）：`exp(-rate * 天数)`，召回越多 rate 越小，衰减越慢；核心库永久不衰减
 
-`search` 检索结果中同时包含匹配的日记内容，与记忆结果合并返回，每条日记内容上限 1500 字。
+**结果过滤（2026-05-28 更新）：** 综合得分 > 0.7 才返回（原 > 0.15），最多 3 条记忆 + 1 篇日记（原 5 + 3）。大幅收紧以减少低相关性噪音。
 
 ### 六个记忆房间（核心库）
 
@@ -96,14 +204,14 @@ ChromaDB 存储在 `/app/chroma_db/`（持久化卷挂载）。当前使用 Voya
 
 ## MCP 工具列表
 
-Claude.ai 通过 SSE 端点调用统一入口 `palace(action, params)`：
+Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`：
 
 ### 记忆
 
 | action | 说明 | 主要参数 |
 |--------|------|---------|
 | `get_context` | 对话开始冷启动，读最近两次压缩总结；若检测到未处理 buffer 自动生成压缩草稿 | 无 |
-| `search` | 向量+keyword 混合检索（含 jieba 分词），同时搜核心库和动态库，日记也一并返回，返回 top 5 | `keyword`, `mood`（可选） |
+| `search` | 向量+keyword 混合检索（含 jieba 分词），搜核心库和动态库，日记一并返回，score > 0.7 的前 3 条 + 1 篇日记 | `keyword`, `mood`（可选） |
 | `store_core` | 永久存入核心库，同时写本地 MD 文件 | `content`, `category`, `mood`, `folder`（均可选） |
 | `store_dynamic` | 存入动态库 | `content`, `category`, `mood`（均可选） |
 | `log_turn` | 每轮对话追加到缓冲文件 | `user_message`, `claude_reply` |
@@ -198,36 +306,46 @@ MAC：`4C:E1:74:45:94:FD`
 
 ---
 
-## 前端面板（index.html）
+## 前端
 
-部署在 VPS 上的管理界面，Claude app 风格暖色深色主题，Lora + DM Mono 字体。
+### 聊天界面（chat.html）
+
+WhatsApp 风格，直接由 cc_ws_gateway.py 托管静态文件。功能：
+
+- 多 session 侧边栏，按最近活跃排序，显示最后一条消息预览
+- 消息气泡：markdown 渲染、thinking 折叠块、tool 调用块
+- 停止生成（流式中发送键变停止键，kill CLI 子进程）
+- 编辑历史消息（所有用户消息均可编辑，回填到输入框）
+- 模型 & effort 下拉框，per-session 持久化
+- MCP 管理面板（添加/删除/开关/测试连通性）
+- 图片上传（base64）、emoji 反应、上下文用量条
+
+### 管理面板（index.html）
+
+部署在 Docker 内，Claude app 风格暖色深色主题，Lora + DM Mono 字体。
 
 **Dashboard** 包含 Erik's Room 入口卡片。
 
 **Erik 面板（五个 tab）：**
 - **草稿**：查看/编辑 DS 压缩草稿，确认后写库
-- **动态**：动态记忆列表，支持 checkbox 多选、删除、重压缩；手动触发压缩
+- **动态**：动态记忆列表，checkbox 多选、删除、重压缩；手动触发压缩
 - **核心**：Core 记忆三栏分类（Claude 存入 / Obsidian 同步 / 全部），来源颜色不同
 - **日记**：日记列表与编辑器
-- **画像**：周/月画像列表，支持生成按钮（带状态提示和成功后自动刷新）、筛选
-
-画像日期格式：周为 `26.5.1-5.6`，月为 `26年5月`。DS 生成时 prompt 包含准确日期范围，防止 DS 自己推算。
-
-Core 记忆按 `source` 字段区分来源，`mcp_manual`（Claude 存入）与 Obsidian 同步在前端颜色不同。
+- **画像**：周/月画像列表，生成按钮、筛选
 
 ---
 
 ## 自动入库流程
 
 ```
-在 Obsidian 新增/修改 Eric_memory 下的 MD 文件
+Obsidian 新增/修改 Eric_memory 下的 MD 文件
         ↓
-push 到 GitHub（网页上传或 Git 操作均可）
+push 到 GitHub
         ↓
 GitHub Webhook → POST /webhook/github
         ↓
-服务器通过 GitHub API 下载变动的文件写入本地
-（注意：网页上传产生空 commits 数组，代码默认触发全量同步）
+服务器通过 GitHub API 下载变动文件写入本地
+（网页上传产生空 commits 数组，默认触发全量同步）
         ↓
 sync_claude_memory.py 对账：新增入库 / 内容变动更新 / 孤立条目删除
         ↓
@@ -267,54 +385,64 @@ docker exec -it <容器ID> python3 restore_core.py
 | `LLM_API_KEY` | DeepSeek 压缩/画像生成用 |
 | `PALACE_SECRET` | MCP 端点访问密码 |
 | `GITHUB_WEBHOOK_SECRET` | Webhook 签名验证 |
-| `GITHUB_TOKEN` | GitHub API 拉取文件（Personal Access Token，repo 权限） |
-| `TOY_BRIDGE_URL` | Windows toy_bridge 地址，对应 Curvy 2+（frpc 映射后的 VPS 内网地址） |
-| `BUNNY_BRIDGE_URL` | Windows bunny_bridge 地址，对应 Bunny 5+（frpc 映射后的 VPS 内网地址） |
-| `BROWSER_BRIDGE_URL` | Windows browser_bridge 地址（frpc 映射后的 VPS 内网地址） |
+| `GITHUB_TOKEN` | GitHub API 拉取文件 |
+| `TOY_BRIDGE_URL` | Windows toy_bridge 地址（frpc 映射） |
+| `BUNNY_BRIDGE_URL` | Windows bunny_bridge 地址（frpc 映射） |
+| `BROWSER_BRIDGE_URL` | Windows browser_bridge 地址（frpc 映射） |
 | `EMAIL_163_USER` | 163 邮箱地址 |
 | `EMAIL_163_PASS` | 163 邮箱授权码（非登录密码） |
+
+---
+
+## Claude 连接配置
+
+### 网页版（Claude.ai）
+
+在 Settings → Integrations 添加：
+
+```
+https://erikssheep.uk/mcp/Jeoi2026/sse
+```
+
+新增或修改工具后需要**先断开再重新连接**（仅 reconnect 不够，会用缓存的旧工具列表）。
+
+### 聊天网关（CC CLI）
+
+VPS 上 `/opt/G-memory-mcp/.claude/settings.json` 配置 MCP server，CC CLI 启动时自动读取。也可通过前端 MCP 面板管理（读写同一个 settings.json）。
 
 ---
 
 ## 风险提示
 
 **最高风险：Voyage AI 免费 quota 与 IP 封锁**
-当前 embedding 使用 Voyage AI（voyage-3-large，1024维）免费 tier。批量写入时每条都调 embedding，容易触发限速。若 Voyage 同样封锁 RackNerd IP，需要换 embedding 服务并重建三个 collection（维度变化时必须重建，注意提前备份 dynamic 和 chronicle 条目）。
+当前 embedding 使用 Voyage AI（voyage-3-large，1024维）免费 tier。批量写入时每条都调 embedding，容易触发限速。若 Voyage 封锁 RackNerd IP，需换 embedding 服务并重建三个 collection（维度变化时必须重建，提前备份 dynamic 和 chronicle 条目）。
 
 **次高：Docker 容器 ID**
 每次 redeploy 容器 ID 都会变。手动进容器前必须先 `docker ps` 查最新 ID。
 
-**第三：Windows 本地 bridge 掉线**
-`toy_play` 和小红书 `browser_*` 依赖 Windows 本地进程在线，且 frpc 隧道需保持连接。设备功能失效时先检查 Windows 侧进程和 frpc 状态。
+**第三：cc_ws_gateway 进程管理**
+网关跑在 screen 会话里，重启/更新时需要先杀旧进程再起新的：
+```bash
+kill $(lsof -t -i :8081) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
+```
+不杀旧进程会报端口占用。`screen -r chat` 可以 attach 查看日志，Ctrl+A D 退出（或者直接开新 SSH 窗口）。
 
-**第四：BLE 配对状态**
-Satisfyer Curvy 2+ 需在 Windows 蓝牙设置里配对到 USB dongle（关闭内置网卡避免竞争），配对后不要重置。设备使用前需先用 Satisfyer Connect app 初始化一次。
+**第四：Windows 本地 bridge 掉线**
+设备功能和小红书浏览依赖 Windows 本地进程在线，且 frpc 隧道需保持连接。
 
-**第五：ChromaDB telemetry 报错**
-启动时会打 `Failed to send telemetry event`，无害，忽略即可。
+**第五：BLE 配对状态**
+Satisfyer Curvy 2+ 需在 Windows 蓝牙设置里配对到 USB dongle（关闭内置网卡避免竞争），配对后不要重置。
 
 **第六：NetEase IP 封锁**
 163.com 和 126.com 均封锁来自境外 VPS 的 IMAP 请求。SMTP 发信正常，收信走 browser_bridge Coremail API 方案。
 
 ---
 
-## Claude 连接配置
-
-在 Claude.ai Settings → Integrations 添加：
-
-```
-https://erikssheep.uk/mcp/Jeoi2026/sse
-```
-
-新增或修改工具后需要在 Integrations 里**先断开再重新连接**（仅 reconnect 不够，会用缓存的旧工具列表）。
-
----
-
 ## 已知问题
 
-- ChromaDB 中有一条错误的周画像条目尚未删除，需用 `inspect_memory.py` 手动清理（输入对应编号删除）
+- ChromaDB 中有一条错误的周画像条目尚未删除，需用 `inspect_memory.py` 手动清理
 - `bunny_deflate` 尚未部署到 `claude_mcp.py`
 
 ---
 
-*最后更新：2026-05-06*
+*最后更新：2026-05-28*
