@@ -668,8 +668,16 @@ def parse_action(text: str) -> tuple[str, str]:
         content = text[idx + 8:].strip()
     # Fallback: CC didn't use ACTION/CONTENT format but wrote something → treat as message
     if not has_format and text.strip():
-        action = "message"
-        content = text.strip()
+        _ERR_PATTERNS = ("failed to authenticate", "api error", "invalid authentication",
+                         "401", "403", "rate limit", "server error", "connection refused",
+                         "timed out", "error:", "traceback")
+        lower = text.lower()
+        if any(p in lower for p in _ERR_PATTERNS):
+            action = "error"
+            content = text.strip()
+        else:
+            action = "message"
+            content = text.strip()
     return action, content
 
 
@@ -731,6 +739,10 @@ async def run_cc_oneshot(
         text = "".join(text_parts).strip()
         thinking = "".join(thinking_parts).strip()
         log.info(f"Pebbling CC response (text={len(text)}, thinking={len(thinking)} chars): {text[:200]}")
+
+        if proc.returncode and proc.returncode != 0 and not thinking:
+            log.warning(f"CC exited {proc.returncode}, raw output: {raw[:300]}")
+
         return text, thinking
     except asyncio.TimeoutError:
         log.warning("Pebbling CC call timed out")
@@ -753,6 +765,23 @@ async def send_telegram(text: str):
             )
     except Exception as e:
         log.warning(f"Telegram send failed: {e}")
+
+
+async def push_system_error(source: str, error_text: str):
+    """Push error notification via WS + Telegram. Not saved as chat message."""
+    global active_ws
+    notice = f"⚠ {source} 报错：{error_text[:200]}"
+    log.warning(f"System error push: {notice}")
+    if active_ws:
+        try:
+            await active_ws.send_json({
+                "event": "system:error",
+                "message": notice,
+                "time": datetime.now(SGT).strftime("%H:%M"),
+            })
+        except Exception:
+            pass
+    await send_telegram(notice)
 
 
 # ── Push helper (WS if available, else pending queue) ──
@@ -822,6 +851,9 @@ async def run_patrol(session: "Session", elapsed_seconds: float) -> str:
     action, content = parse_action(text)
     log.info(f"Patrol → action={action}, content={content[:80] if content else ''}")
 
+    if action == "error":
+        await push_system_error("patrol", content)
+        return "none"
     if action == "message" and content:
         await push_pebbling_msg("patrol", content, session, thinking=thinking)
 
@@ -847,6 +879,9 @@ async def run_pebbling_action(
     log.info(f"Pebbling → action={action}, mode={mode}, "
              f"content={content[:80] if content else ''}")
 
+    if action == "error":
+        await push_system_error("pebbling", content)
+        return "none"
     if action == "message" and content:
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
