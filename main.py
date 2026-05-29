@@ -176,6 +176,24 @@ async def serve_chat(request: Request):
     except FileNotFoundError:
         return HTMLResponse(content="<h1>chat.html not found</h1>", status_code=500)
 
+# ── iOS Shortcut proxy → cc_ws_gateway:3000 ──
+import httpx as _httpx
+
+@app.post("/api/pebbling/event")
+async def proxy_pebbling_event_post(request: Request):
+    body = await request.body()
+    async with _httpx.AsyncClient(timeout=10) as c:
+        r = await c.post("http://localhost:3000/api/pebbling/event",
+                         content=body, headers={"content-type": "application/json"})
+    return JSONResponse(status_code=r.status_code, content=r.json())
+
+@app.get("/api/pebbling/event")
+async def proxy_pebbling_event_get(request: Request):
+    async with _httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(f"http://localhost:3000/api/pebbling/event?{request.query_params}")
+    return JSONResponse(status_code=r.status_code, content=r.json())
+
+
 gemini_client = OpenAI(
     api_key=os.getenv("GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
