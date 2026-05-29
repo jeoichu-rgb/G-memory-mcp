@@ -58,7 +58,7 @@ Claude 每次开新窗口就失忆。这个项目做了两件事：
 | 服务 | 运行方式 | 端口 | 职责 |
 |------|----------|------|------|
 | `main.py` | Docker（Coolify CI/CD 自动部署） | 8000 | MCP SSE 端点、管理面板、Admin API、webhook |
-| `cc_ws_gateway.py` | screen 会话（宿主机直接运行） | 8081 | 聊天 WebSocket 网关 |
+| `cc_ws_gateway.py` | screen 会话（宿主机直接运行） | 3000 | 聊天 WebSocket 网关 |
 
 cc_ws_gateway 必须跑在宿主机上——需要直接调用宿主机的 `claude` CLI 和读取 `~/.claude/` 会话数据。
 
@@ -68,7 +68,7 @@ GitHub push → Coolify webhook → Docker build → Traefik → HTTPS
 cc_ws_gateway.py → screen -dmS chat python3 cc_ws_gateway.py（手动）
 
 一键更新网关：
-cd /opt/G-memory-mcp && git pull origin main && kill $(lsof -t -i :8081) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
+cd /opt/G-memory-mcp && git pull origin main && kill $(lsof -t -i :3000) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
 ```
 
 ### 本地设备桥接
@@ -136,9 +136,10 @@ CLI stdout (stream-json) → 逐行解析 → WS 事件
 
 ### 网关规划功能
 
-- **记忆自动注入**：网关拦截用户消息 → hybrid_search 检索 score > 0.7 的记忆 → 拼成 `[记忆上下文] + [用户原文]` 发给 CC
-- **新 session 自动灌入**：开窗口时自动注入两个房间数据 + 日记（今天已有则注入今天的，否则注入昨天的）
-- **缓存保活**：50 分钟无对话 → 自动向 CC 发 1 token 消息（不需回复），保持 Anthropic prompt cache 活跃
+- **上下文摘要生成**（已实现）：前端触发 → DeepSeek 总结最近 40 轮对话 → 3-4 条摘要存入 `context_store.json`，可编辑/删除
+- **新 session 自动注入**（已实现）：开新 session 时自动注入日记（今天已有则注入今天的，否则注入昨天的）+ 最新日期的上下文摘要，原始消息不变地存入聊天记录
+- **缓存保活**（已实现）：50 分钟无对话 → 自动向 CC 发 1 token 消息（`--resume` 同 session），保持 Anthropic prompt cache 活跃
+- **记忆自动注入**（规划中）：📎 开关 → 网关调 `/admin/search` 检索记忆 + 日记 → 注入用户消息前缀
 - **CC 主动发消息机制**（待设计）
 
 ---
@@ -317,7 +318,10 @@ WhatsApp 风格，直接由 cc_ws_gateway.py 托管静态文件。功能：
 - 停止生成（流式中发送键变停止键，kill CLI 子进程）
 - 编辑历史消息（所有用户消息均可编辑，回填到输入框）
 - 模型 & effort 下拉框，per-session 持久化
-- MCP 管理面板（添加/删除/开关/测试连通性）
+- ☰ 设置面板（导航式菜单 → 子页面 → 返回）：
+  - **上下文管理**：一键让 DeepSeek 总结最近 40 轮对话为 3-4 条摘要，摘要可编辑、可删除，存入 `context_store.json`，新 session 自动注入
+  - **MCP 工具**：添加/删除/开关/测试 MCP server 连通性
+- 缓存保活开关（🔋）：50 分钟无对话自动发 1 token 保持 Anthropic prompt cache
 - 图片上传（base64）、emoji 反应、上下文用量条
 
 ### 管理面板（index.html）
@@ -423,7 +427,7 @@ VPS 上 `/opt/G-memory-mcp/.claude/settings.json` 配置 MCP server，CC CLI 启
 **第三：cc_ws_gateway 进程管理**
 网关跑在 screen 会话里，重启/更新时需要先杀旧进程再起新的：
 ```bash
-kill $(lsof -t -i :8081) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
+kill $(lsof -t -i :3000) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
 ```
 不杀旧进程会报端口占用。`screen -r chat` 可以 attach 查看日志，Ctrl+A D 退出（或者直接开新 SSH 窗口）。
 
