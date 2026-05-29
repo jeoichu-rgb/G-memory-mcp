@@ -199,9 +199,9 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .keepalive-status.ok { color:var(--context-green); }
 .keepalive-status.fail { color:var(--context-red); }
 
-/* Context section in MCP panel */
+/* Context section */
 .ctx-section {
-  border-top:1px solid var(--border); padding:12px 16px;
+  padding:12px 16px; flex:1; display:flex; flex-direction:column; overflow:hidden;
 }
 .ctx-header {
   display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;
@@ -214,7 +214,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 }
 .ctx-generate-btn:hover { background:var(--accent-hover); }
 .ctx-generate-btn:disabled { opacity:.5; cursor:not-allowed; }
-.ctx-list { max-height:240px; overflow-y:auto; }
+.ctx-list { flex:1; overflow-y:auto; }
 .ctx-item {
   background:var(--bg-input); border:1px solid var(--border);
   border-radius:6px; padding:8px 28px 8px 10px; margin-bottom:6px;
@@ -512,7 +512,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 }
 .menu-btn:hover { background:rgba(255,255,255,.2); }
 
-/* MCP Panel */
+/* Side Panel (☰) */
 .mcp-overlay {
   display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50;
 }
@@ -522,9 +522,30 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   display:flex; flex-direction:column; box-shadow:-4px 0 20px rgba(0,0,0,.15);
 }
 .mcp-panel-header {
-  padding:16px; display:flex; justify-content:space-between; align-items:center;
-  font-family:var(--serif); font-size:16px; border-bottom:1px solid var(--border);
+  padding:0; display:flex; align-items:center;
+  border-bottom:1px solid var(--border); position:relative;
 }
+.panel-tabs {
+  display:flex; flex:1;
+}
+.panel-tab {
+  flex:1; padding:14px 8px; background:none; border:none;
+  font-family:var(--serif); font-size:13px; cursor:pointer;
+  color:var(--text-secondary); border-bottom:2px solid transparent;
+  transition:color .15s, border-color .15s;
+}
+.panel-tab.active {
+  color:var(--text-primary); border-bottom-color:var(--accent);
+}
+.panel-tab:hover { color:var(--text-primary); }
+.panel-close-btn {
+  position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  background:none; border:none; font-size:18px; cursor:pointer;
+  color:var(--text-secondary); padding:4px;
+}
+.panel-close-btn:hover { color:var(--text-primary); }
+.panel-tab-content { display:none; flex:1; flex-direction:column; overflow:hidden; }
+.panel-tab-content.active { display:flex; }
 .mcp-panel-body { flex:1; overflow-y:auto; padding:8px 0; }
 
 .mcp-server {
@@ -758,38 +779,47 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   </div>
 </div>
 
-<!-- ═══ MCP TOOLS PANEL ═══ -->
+<!-- ═══ SIDE PANEL (☰) ═══ -->
 <div class="mcp-overlay" id="mcpOverlay" onclick="if(event.target===this)closeMcpPanel()">
   <div class="mcp-panel">
     <div class="mcp-panel-header">
-      <span>MCP 工具</span>
-      <button class="settings-close" onclick="closeMcpPanel()">✕</button>
-    </div>
-    <div class="mcp-panel-body" id="mcpServerList">
-      <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>
-    </div>
-    <div class="mcp-add-section">
-      <div id="mcpStatus" style="display:none;font-size:11px;padding:6px 0;"></div>
-      <div class="settings-label">添加 MCP 服务器</div>
-      <div style="display:flex;gap:6px;">
-        <input class="mcp-input" id="mcpAddName" placeholder="名称 (如 palace)">
-        <input class="mcp-input" id="mcpAddUrl" placeholder="SSE URL" style="flex:2;">
-        <button class="mcp-add-btn" id="mcpAddBtn" onclick="addMcpServer()">+</button>
+      <div class="panel-tabs">
+        <button class="panel-tab active" id="tabCtx" onclick="switchPanelTab('ctx')">上下文管理</button>
+        <button class="panel-tab" id="tabMcp" onclick="switchPanelTab('mcp')">MCP 工具</button>
       </div>
-      <div style="font-size:10px;color:var(--text-secondary);margin-top:6px;line-height:1.6;">
-        添加后，下一条消息的 CLI 进程会自动连接此 MCP 服务器。<br>
-        工具名格式：mcp__&lt;名称&gt;__&lt;工具名&gt;
+      <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+    </div>
+
+    <!-- Tab: 上下文管理 -->
+    <div class="panel-tab-content active" id="ctxTab">
+      <div class="ctx-section">
+        <div class="ctx-header">
+          <button class="ctx-generate-btn" id="ctxGenerateBtn" onclick="generateContext()">生成摘要</button>
+        </div>
+        <div id="ctxStatus" class="ctx-status" style="display:none;"></div>
+        <div class="ctx-list" id="ctxList">
+          <div style="font-size:11px;color:var(--text-secondary);text-align:center;padding:8px;">暂无上下文条目</div>
+        </div>
       </div>
     </div>
-    <!-- Context management section -->
-    <div class="ctx-section">
-      <div class="ctx-header">
-        <span>上下文管理</span>
-        <button class="ctx-generate-btn" id="ctxGenerateBtn" onclick="generateContext()">生成摘要</button>
+
+    <!-- Tab: MCP 工具 -->
+    <div class="panel-tab-content" id="mcpTab">
+      <div class="mcp-panel-body" id="mcpServerList">
+        <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>
       </div>
-      <div id="ctxStatus" class="ctx-status" style="display:none;"></div>
-      <div class="ctx-list" id="ctxList">
-        <div style="font-size:11px;color:var(--text-secondary);text-align:center;padding:8px;">暂无上下文条目</div>
+      <div class="mcp-add-section">
+        <div id="mcpStatus" style="display:none;font-size:11px;padding:6px 0;"></div>
+        <div class="settings-label">添加 MCP 服务器</div>
+        <div style="display:flex;gap:6px;">
+          <input class="mcp-input" id="mcpAddName" placeholder="名称 (如 palace)">
+          <input class="mcp-input" id="mcpAddUrl" placeholder="SSE URL" style="flex:2;">
+          <button class="mcp-add-btn" id="mcpAddBtn" onclick="addMcpServer()">+</button>
+        </div>
+        <div style="font-size:10px;color:var(--text-secondary);margin-top:6px;line-height:1.6;">
+          添加后，下一条消息的 CLI 进程会自动连接此 MCP 服务器。<br>
+          工具名格式：mcp__&lt;名称&gt;__&lt;工具名&gt;
+        </div>
       </div>
     </div>
   </div>
@@ -1649,6 +1679,15 @@ async function loadMcpServers() {
 
 function closeMcpPanel() {
   document.getElementById('mcpOverlay').classList.remove('open');
+}
+
+function switchPanelTab(tab) {
+  document.getElementById('tabCtx').classList.toggle('active', tab === 'ctx');
+  document.getElementById('tabMcp').classList.toggle('active', tab === 'mcp');
+  document.getElementById('ctxTab').classList.toggle('active', tab === 'ctx');
+  document.getElementById('mcpTab').classList.toggle('active', tab === 'mcp');
+  if (tab === 'mcp') loadMcpServers();
+  if (tab === 'ctx') wsSend('context:list', {});
 }
 
 function renderMcpServers(servers) {
