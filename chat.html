@@ -704,12 +704,12 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <input type="checkbox" id="memoryToggle" checked>
         <div class="toggle-track"></div>
       </label>
-      <label class="memory-toggle" title="缓存保活 (50min)">
-        <span>🔋</span>
-        <input type="checkbox" id="keepaliveToggle" onchange="toggleKeepalive()">
+      <label class="memory-toggle" title="Pebbling (keepalive + patrol + 自由活动)">
+        <span id="pebbleIcon">🐧</span>
+        <input type="checkbox" id="pebbleToggle" onchange="togglePebbling()">
         <div class="toggle-track"></div>
       </label>
-      <span class="keepalive-status" id="keepaliveStatus"></span>
+      <span class="keepalive-status" id="pebbleStatus"></span>
     </div>
 
     <!-- Messages -->
@@ -1014,14 +1014,22 @@ function handleWSMessage(data) {
       document.getElementById('ctxGenerateBtn').textContent = '生成摘要';
       break;
 
-    // Keepalive
+    // Pebbling system
     case 'keepalive:ok':
-      showKeepaliveStatus('✓' + (data.time || ''), 'ok');
+      showPebbleStatus('✓' + (data.time || ''), 'ok');
       break;
     case 'keepalive:fail':
-      showKeepaliveStatus('✗', 'fail');
+      showPebbleStatus('✗', 'fail');
       break;
-    case 'keepalive:status':
+    case 'pebbling:status':
+      if (data.enabled) {
+        document.getElementById('pebbleIcon').textContent = '🪨';
+      } else {
+        document.getElementById('pebbleIcon').textContent = '🐧';
+      }
+      break;
+    case 'pebbling:message':
+      addPebblingMessage(data.content, data.source, data.time);
       break;
 
     default:
@@ -1927,18 +1935,35 @@ function showCtxStatus(msg, isError) {
 }
 
 /* ══════════════════════════════════════
-   KEEPALIVE
+   PEBBLING
 ══════════════════════════════════════ */
-function toggleKeepalive() {
-  const enabled = document.getElementById('keepaliveToggle').checked;
-  wsSend('keepalive:toggle', { enabled });
-  showKeepaliveStatus(enabled ? 'ON' : '', enabled ? 'ok' : '');
+function togglePebbling() {
+  const enabled = document.getElementById('pebbleToggle').checked;
+  wsSend('pebbling:toggle', { enabled });
+  document.getElementById('pebbleIcon').textContent = enabled ? '🪨' : '🐧';
+  showPebbleStatus(enabled ? 'ON' : '', enabled ? 'ok' : '');
 }
 
-function showKeepaliveStatus(text, cls) {
-  const el = document.getElementById('keepaliveStatus');
+function showPebbleStatus(text, cls) {
+  const el = document.getElementById('pebbleStatus');
   el.textContent = text;
   el.className = 'keepalive-status' + (cls ? ' ' + cls : '');
+}
+
+function addPebblingMessage(content, source, time) {
+  hideEmpty();
+  const container = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'message assistant';
+  const label = source === 'patrol' ? '巡查' : '送石头';
+  div.innerHTML =
+    '<div class="msg-header">' +
+      '<span class="msg-role">Erik</span>' +
+      '<span class="msg-time" style="opacity:0.5;font-size:0.75em;">🪨 ' + label + ' · ' + (time || '') + '</span>' +
+    '</div>' +
+    '<div class="msg-content">' + markdownToHtml(content) + '</div>';
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
 }
 
 /* ══════════════════════════════════════

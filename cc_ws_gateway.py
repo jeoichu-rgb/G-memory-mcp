@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 import time as time_mod
+import random
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +64,16 @@ CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 KEEPALIVE_INTERVAL = 50 * 60  # 50 minutes
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
+
+# ── Pebbling constants ──
+PATROL_SCHEDULE = [
+    (5, 0.20),   # 5 min after Jeoi's last msg, 20% chance
+    (10, 0.50),  # 10 min, 50%
+    (20, 0.80),  # 20 min, 80%
+]
+PEBBLING_INTERVAL = 3 * 3600  # 3 hours
+PEBBLING_MAX_24H = 8
+EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 
 import base64 as b64mod
 
@@ -430,7 +441,7 @@ async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
         "--max-turns", "1",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
-        "--", "[keepalive] 这是缓存保活信号，不是Jeoi的消息。回复一个字母即可。",
+        "--", "[keepalive] 缓存保活信号，不是Jeoi的消息。不要思考，直接回复一个字母。",
     ]
     log.info(f"Keepalive → session {session.id} (cc={session.cc_session_id})")
 
@@ -462,24 +473,344 @@ async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
         return False
 
 
-async def keepalive_worker(state: dict, ws: WebSocket):
-    """Background task: send keepalive when idle for KEEPALIVE_INTERVAL."""
+# ══════════════════════════════════════════════
+#  PEBBLING SYSTEM (patrol + pebbling + iOS events)
+# ══════════════════════════════════════════════
+
+# ── iOS event storage ──
+
+def load_pebbling_events() -> list:
+    if EVENTS_PATH.exists():
+        try:
+            return json.loads(EVENTS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_pebbling_events(events: list):
+    EVENTS_PATH.write_text(
+        json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def add_pebbling_event(event_type: str, value: str):
+    events = load_pebbling_events()
+    now = time_mod.time()
+    for e in reversed(events):
+        if e["type"] == event_type and now - e["ts"] < 300:
+            return
+    events.append({
+        "type": event_type,
+        "value": value,
+        "ts": now,
+        "time": datetime.now(SGT).strftime("%H:%M"),
+    })
+    events = [e for e in events if now - e["ts"] < 86400]
+    save_pebbling_events(events)
+
+
+def get_recent_events(hours: int = 6) -> list:
+    events = load_pebbling_events()
+    cutoff = time_mod.time() - hours * 3600
+    return [e for e in events if e["ts"] > cutoff]
+
+
+def format_events_for_prompt(events: list) -> str:
+    if not events:
+        return ""
+    lines = ["Jeoi最近的活动："]
+    for e in events:
+        lines.append(f"  - {e['time']} {e['type']}: {e['value']}")
+    return "\n".join(lines)
+
+
+# ── Prompt builders ──
+
+def build_patrol_prompt(elapsed_min: int, events_str: str) -> str:
+    now_str = datetime.now(SGT).strftime("%H:%M")
+    parts = [
+        "[patrol] 这不是Jeoi的消息。系统巡查信号。",
+        f"现在是 {now_str}（UTC+8）。距Jeoi上次说话：{elapsed_min}分钟。",
+    ]
+    if events_str:
+        parts.append(events_str)
+    parts.extend([
+        "",
+        "Jeoi结束对话后还没回消息。请看一下上面的对话：",
+        "- 你们的话题是不是聊到一半？",
+        "- 她有没有说要去做别的？",
+        "",
+        "你只能选择：",
+        "  message — 发一条消息给Jeoi（会推送到她手机）",
+        "  none — 什么都不做",
+        "",
+        "严格按此格式回复，不要有多余内容：",
+        "ACTION: message 或 none",
+        "CONTENT: 如果是message，写你要发的内容",
+    ])
+    return "\n".join(parts)
+
+
+def build_pebbling_prompt(
+    elapsed_hours: float, count: int, events_str: str, mode: str
+) -> str:
+    now_str = datetime.now(SGT).strftime("%H:%M")
+    hours_str = f"{elapsed_hours:.1f}"
+    parts = [
+        "[pebbling] 这不是Jeoi的消息。自由活动时间。",
+        f"现在是 {now_str}（UTC+8）。距Jeoi上次说话：{hours_str}小时。",
+        f"这是第{count + 1}次自由活动。",
+    ]
+    if events_str:
+        parts.append(events_str)
+
+    if mode == "silent":
+        parts.extend([
+            "",
+            "你可以选择：",
+            "  message — 给Jeoi发条消息",
+            "  recall — 回顾记忆（调palace search检索记忆）",
+            "  none — 什么都不做",
+            "",
+            "严格按此格式回复：",
+            "ACTION: message / recall / none",
+            "CONTENT: 具体内容（message写给Jeoi的话，recall写搜索关键词）",
+        ])
+    elif mode == "free":
+        parts.extend([
+            "",
+            "你可以选择：",
+            "  message — 给Jeoi发条消息",
+            "  diary — 写日记（调palace write_diary，记录此刻的心情和想法）",
+            "  explore — 上网搜索你感兴趣的东西",
+            "  coreading — 读你们在读的书（用reading工具）",
+            "  recall — 回顾记忆",
+            "  none — 什么都不做",
+            "",
+            "你可以先调用工具（搜记忆、写日记等），然后再回复。",
+            "最终严格按此格式回复：",
+            "ACTION: 选一个",
+            "CONTENT: 具体内容",
+        ])
+    else:  # light
+        parts.extend([
+            "",
+            "你可以选择：",
+            "  message — 给Jeoi发条消息",
+            "  recall — 回顾记忆",
+            "  none — 什么都不做",
+            "",
+            "严格按此格式回复：",
+            "ACTION: message / recall / none",
+            "CONTENT: 具体内容",
+        ])
+
+    return "\n".join(parts)
+
+
+# ── Action parser ──
+
+def parse_action(text: str) -> tuple[str, str]:
+    action = "none"
+    content = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.upper().startswith("ACTION:"):
+            raw = stripped.split(":", 1)[1].strip().lower()
+            action = raw.split("/")[0].split()[0] if raw else "none"
+            break
+    upper = text.upper()
+    if "CONTENT:" in upper:
+        idx = upper.index("CONTENT:")
+        content = text[idx + 8:].strip()
+    return action, content
+
+
+# ── CC oneshot call (non-streaming, for patrol/pebbling) ──
+
+async def run_cc_oneshot(
+    prompt: str, session: "Session", max_turns: int = 1
+) -> str:
+    cmd = [
+        "claude", "--print",
+        "--output-format", "text",
+        "--model", session.model,
+        "--max-turns", str(max_turns),
+        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+        "--resume", session.cc_session_id,
+        "--", prompt,
+    ]
+    log.info(f"Pebbling CC call: max_turns={max_turns}, session={session.id}")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=2 * 1024 * 1024,
+            cwd=CC_CWD,
+            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        text = stdout.decode("utf-8", errors="replace").strip()
+        if stderr_text := stderr.decode("utf-8", errors="replace").strip():
+            log.debug(f"Pebbling CC stderr: {stderr_text[:300]}")
+        log.info(f"Pebbling CC response ({len(text)} chars): {text[:200]}")
+        return text
+    except asyncio.TimeoutError:
+        log.warning("Pebbling CC call timed out")
+        return ""
+    except Exception as e:
+        log.error(f"Pebbling CC call error: {e}")
+        return ""
+
+
+# ── Patrol runner ──
+
+async def run_patrol(
+    session: "Session", ws: WebSocket, elapsed_seconds: float
+) -> str:
+    elapsed_min = int(elapsed_seconds / 60)
+    events = get_recent_events(6)
+    prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
+
+    text = await run_cc_oneshot(prompt, session, max_turns=1)
+    if not text:
+        return "none"
+
+    action, content = parse_action(text)
+    log.info(f"Patrol → action={action}, content={content[:80] if content else ''}")
+
+    if action == "message" and content:
+        try:
+            await ws.send_json({
+                "event": "pebbling:message",
+                "source": "patrol",
+                "content": content,
+                "time": datetime.now(SGT).strftime("%H:%M"),
+            })
+        except Exception:
+            pass
+        append_message(session.id, "assistant", content)
+        session.preview = (content.replace("\n", " ")[:30]
+                           + ("…" if len(content) > 30 else ""))
+        session.last_active = datetime.now(SGT)
+        save_session_meta(session)
+
+    return action
+
+
+# ── Pebbling runner ──
+
+async def run_pebbling_action(
+    session: "Session", ws: WebSocket,
+    elapsed_hours: float, count: int, mode: str,
+) -> str:
+    events = get_recent_events(6)
+    prompt = build_pebbling_prompt(
+        elapsed_hours, count, format_events_for_prompt(events), mode
+    )
+
+    max_turns = 3 if mode == "free" else 1
+    text = await run_cc_oneshot(prompt, session, max_turns=max_turns)
+    if not text:
+        return "none"
+
+    action, content = parse_action(text)
+    log.info(f"Pebbling → action={action}, mode={mode}, "
+             f"content={content[:80] if content else ''}")
+
+    if action == "message" and content:
+        try:
+            await ws.send_json({
+                "event": "pebbling:message",
+                "source": "pebbling",
+                "content": content,
+                "time": datetime.now(SGT).strftime("%H:%M"),
+            })
+        except Exception:
+            pass
+        append_message(session.id, "assistant", content)
+        session.preview = (content.replace("\n", " ")[:30]
+                           + ("…" if len(content) > 30 else ""))
+        session.last_active = datetime.now(SGT)
+        save_session_meta(session)
+
+    return action
+
+
+# ── Three-layer worker ──
+
+async def pebbling_worker(state: dict, ws: WebSocket):
+    """Background: keepalive (L0) + patrol (L1) + pebbling (L2)."""
     try:
         while True:
-            await asyncio.sleep(60)
-            if not state.get("keepalive_enabled"):
-                continue
+            await asyncio.sleep(30)
+
             session = state.get("current_session")
             if not session or not session.cc_session_id:
                 continue
-            elapsed = time_mod.time() - state.get("last_msg_time", 0)
-            if elapsed >= KEEPALIVE_INTERVAL:
-                await run_keepalive(session, ws)
-                state["last_msg_time"] = time_mod.time()
+
+            now = time_mod.time()
+
+            # ── L0: Keepalive ──
+            if state.get("keepalive_enabled"):
+                elapsed_cache = now - state.get("t_cache", now)
+                if elapsed_cache >= KEEPALIVE_INTERVAL:
+                    ok = await run_keepalive(session, ws)
+                    if ok:
+                        state["t_cache"] = time_mod.time()
+
+            if not state.get("pebbling_enabled"):
+                continue
+
+            elapsed_jeoi = now - state.get("t_jeoi", now)
+
+            # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
+            checks_done = state.get("patrol_checks_done", set())
+            for check_min, probability in PATROL_SCHEDULE:
+                if check_min in checks_done:
+                    continue
+                if elapsed_jeoi >= check_min * 60:
+                    checks_done.add(check_min)
+                    state["patrol_checks_done"] = checks_done
+                    if random.random() < probability:
+                        log.info(f"Patrol triggered: {check_min}min (p={probability})")
+                        action = await run_patrol(session, ws, elapsed_jeoi)
+                        if action == "message":
+                            state["t_cache"] = time_mod.time()
+                    else:
+                        log.info(f"Patrol skipped: {check_min}min (dice)")
+                    break
+
+            # ── L2: Pebbling (every 3h, max 8/24h) ──
+            history = state.get("pebbling_history", [])
+            history = [t for t in history if now - t < 86400]
+            state["pebbling_history"] = history
+
+            actual = len(history)
+            expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
+
+            if expected > actual:
+                is_first = actual == 0
+                if is_first:
+                    mode = "silent"
+                else:
+                    mode = "free" if random.random() < 0.80 else "light"
+
+                elapsed_h = elapsed_jeoi / 3600
+                log.info(f"Pebbling #{actual + 1}: mode={mode}, "
+                         f"elapsed={elapsed_h:.1f}h")
+                await run_pebbling_action(
+                    session, ws, elapsed_h, actual, mode
+                )
+                state["pebbling_history"].append(time_mod.time())
+                state["t_cache"] = time_mod.time()
+
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        log.warning(f"Keepalive worker error: {e}")
+        log.exception(f"Pebbling worker error: {e}")
 
 
 # ══════════════════════════════════════════════
@@ -574,10 +905,14 @@ async def websocket_endpoint(ws: WebSocket):
     # Keepalive state (shared with background worker)
     ka_state = {
         "keepalive_enabled": False,
-        "last_msg_time": time_mod.time(),
+        "t_cache": time_mod.time(),
+        "pebbling_enabled": False,
+        "t_jeoi": time_mod.time(),
+        "patrol_checks_done": set(),
+        "pebbling_history": [],
         "current_session": None,
     }
-    ka_task = asyncio.create_task(keepalive_worker(ka_state, ws))
+    ka_task = asyncio.create_task(pebbling_worker(ka_state, ws))
 
     try:
         while True:
@@ -708,7 +1043,10 @@ async def websocket_endpoint(ws: WebSocket):
                     log.info(f"Snap: saved image to {snap_path}")
 
                 # Update keepalive state
-                ka_state["last_msg_time"] = time_mod.time()
+                ka_state["t_cache"] = time_mod.time()
+                ka_state["t_jeoi"] = time_mod.time()
+                ka_state["patrol_checks_done"] = set()
+                ka_state["pebbling_history"] = []
                 ka_state["current_session"] = current_session
 
                 await run_claude(cli_message, current_session, ws)
@@ -862,14 +1200,17 @@ async def websocket_endpoint(ws: WebSocket):
 
             # ── Keepalive ──
 
-            elif event == "keepalive:toggle":
+            elif event in ("keepalive:toggle", "pebbling:toggle"):
                 enabled = data.get("enabled", False)
                 ka_state["keepalive_enabled"] = enabled
+                ka_state["pebbling_enabled"] = enabled
                 if enabled:
                     ka_state["current_session"] = current_session
-                    # 不重置 last_msg_time — 用真实的最后消息时间计算
-                log.info(f"Keepalive {'enabled' if enabled else 'disabled'}")
-                await ws.send_json({"event": "keepalive:status", "enabled": enabled})
+                    ka_state["t_jeoi"] = time_mod.time()
+                    ka_state["patrol_checks_done"] = set()
+                    ka_state["pebbling_history"] = []
+                log.info(f"Pebbling {'enabled' if enabled else 'disabled'} (all layers)")
+                await ws.send_json({"event": "pebbling:status", "enabled": enabled})
 
             else:
                 log.info(f"Unhandled event: {event}")
@@ -1297,6 +1638,37 @@ async def remove_mcp_server(request: Request):
 # ══════════════════════════════════════════════
 #  STATIC FILES & HEALTH
 # ══════════════════════════════════════════════
+
+# ══════════════════════════════════════════════
+#  PEBBLING iOS EVENT ENDPOINT
+# ══════════════════════════════════════════════
+
+@app.get("/api/pebbling/event")
+async def record_pebbling_event(type: str = "", value: str = ""):
+    """iOS Shortcut calls this when user opens an app."""
+    if not type:
+        return JSONResponse({"error": "type required"}, status_code=400)
+    add_pebbling_event(type, value or type)
+    log.info(f"iOS event: {type} → {value}")
+    return {"ok": True, "type": type, "value": value}
+
+
+@app.get("/api/pebbling/events")
+async def list_pebbling_events(hours: int = 6):
+    """List recent iOS events."""
+    events = get_recent_events(hours)
+    return {"events": events, "count": len(events)}
+
+
+@app.get("/api/pebbling/status")
+async def pebbling_status():
+    """Debug endpoint: current pebbling system state."""
+    return {
+        "status": "ok",
+        "time": datetime.now(SGT).isoformat(),
+        "events_count": len(get_recent_events(24)),
+    }
+
 
 @app.get("/health")
 async def health():
