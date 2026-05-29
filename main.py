@@ -65,6 +65,7 @@ class CheckSecretMiddleware:
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
             or path.startswith(mcp_path)
+            or path == "/api/pebbling/event"
         ):
             await self.app(scope, receive, send)
             return
