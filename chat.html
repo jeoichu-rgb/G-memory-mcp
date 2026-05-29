@@ -1067,6 +1067,7 @@ function sendMessage() {
   const payload = {
     message: text || '(image)',
     sessionId: currentSessionId,
+    memory_enabled: document.getElementById('memoryToggle').checked,
   };
 
   if (pendingImage) {

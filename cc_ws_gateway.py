@@ -365,6 +365,30 @@ async def build_injection() -> str:
     return header + "\n\n" + "\n\n".join(parts) + "\n\n" + footer
 
 
+async def search_memory_for_injection(message: str) -> str:
+    """Search memory via admin API, return formatted injection or empty string."""
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            headers = {"x-secret": PALACE_SECRET}
+            r = await client.get(
+                f"{ADMIN_API}/admin/search",
+                params={"keyword": message[:200]},
+                headers=headers,
+            )
+            if r.status_code != 200:
+                log.warning(f"Memory search failed: HTTP {r.status_code}")
+                return ""
+            report = r.json().get("report", "")
+            if not report:
+                return ""
+            header = "═══ 自动注入 · 以下是与你消息相关的记忆，不是Jeoi的消息 ═══"
+            footer = "═══════════════════════════════════════════════════════════════"
+            return header + "\n\n" + report + "\n" + footer
+    except Exception as e:
+        log.warning(f"Memory search error: {e}")
+        return ""
+
+
 # ══════════════════════════════════════════════
 #  KEEPALIVE (cache TTL refresh)
 # ══════════════════════════════════════════════
@@ -625,13 +649,22 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
 
-                # New session injection: prepend diary + context on first message
+                # Injection logic: 📎 toggle controls both modes
                 cli_message = message
-                if not current_session.cc_session_id:
-                    injection = await build_injection()
-                    if injection:
-                        cli_message = injection + "\n\n" + message
-                        log.info(f"Injected context for new session {current_session.id}")
+                memory_on = data.get("memory_enabled", False)
+                if memory_on:
+                    if not current_session.cc_session_id:
+                        # New session → inject diary + context summaries
+                        injection = await build_injection()
+                        if injection:
+                            cli_message = injection + "\n\n" + message
+                            log.info(f"Injected context for new session {current_session.id}")
+                    else:
+                        # Existing session → search memory by message content
+                        mem_injection = await search_memory_for_injection(message)
+                        if mem_injection:
+                            cli_message = mem_injection + "\n\n" + message
+                            log.info(f"Injected memory for session {current_session.id}")
 
                 # Update keepalive state
                 ka_state["last_msg_time"] = time_mod.time()

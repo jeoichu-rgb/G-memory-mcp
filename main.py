@@ -10,7 +10,7 @@ from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app
 import hmac
 import hashlib
-from claude_memory import claude_add_core_memory
+from claude_memory import claude_add_core_memory, claude_search_memory
 from datetime import datetime, timezone, timedelta
 SGT = timezone(timedelta(hours=8))
 
@@ -546,6 +546,15 @@ class RecompressItem(BaseModel):
 
 class RecompressPayload(BaseModel):
     items: list[RecompressItem]
+
+@app.get("/admin/search")
+async def admin_search_memory(keyword: str, mood: str = "平静"):
+    """Search memories using claude_search_memory (0.7 threshold, top 3 + diary)."""
+    try:
+        result = claude_search_memory(keyword, mood)
+        return {"report": result or ""}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/admin/recompress-selected")
 async def admin_recompress_selected(payload: RecompressPayload):
