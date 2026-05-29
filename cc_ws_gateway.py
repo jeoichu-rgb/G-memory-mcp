@@ -427,9 +427,10 @@ async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
     cmd = [
         "claude", "--print", "--output-format", "stream-json",
         "--model", session.model,
+        "--max-turns", "1",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
-        "--", ".",
+        "--", "[keepalive] 这是缓存保活信号，不是Jeoi的消息。回复一个字母即可。",
     ]
     log.info(f"Keepalive → session {session.id} (cc={session.cc_session_id})")
 
@@ -866,7 +867,7 @@ async def websocket_endpoint(ws: WebSocket):
                 ka_state["keepalive_enabled"] = enabled
                 if enabled:
                     ka_state["current_session"] = current_session
-                    ka_state["last_msg_time"] = time_mod.time()
+                    # 不重置 last_msg_time — 用真实的最后消息时间计算
                 log.info(f"Keepalive {'enabled' if enabled else 'disabled'}")
                 await ws.send_json({"event": "keepalive:status", "enabled": enabled})
 
