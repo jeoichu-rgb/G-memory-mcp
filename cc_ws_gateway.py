@@ -677,10 +677,11 @@ def parse_action(text: str) -> tuple[str, str]:
 
 async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns: int | None = None
-) -> str:
+) -> tuple[str, str]:
+    """Returns (text, thinking)."""
     cmd = [
         "claude", "--print",
-        "--output-format", "text",
+        "--output-format", "stream-json",
         "--model", session.model,
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
@@ -699,17 +700,44 @@ async def run_cc_oneshot(
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        text = stdout.decode("utf-8", errors="replace").strip()
+        raw = stdout.decode("utf-8", errors="replace").strip()
         if stderr_text := stderr.decode("utf-8", errors="replace").strip():
             log.debug(f"Pebbling CC stderr: {stderr_text[:300]}")
-        log.info(f"Pebbling CC response ({len(text)} chars): {text[:200]}")
-        return text
+
+        text_parts, thinking_parts = [], []
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                text_parts.append(line)
+                continue
+            etype = ev.get("type", "")
+            if etype == "assistant":
+                for block in ev.get("message", {}).get("content", []):
+                    if block.get("type") == "thinking":
+                        thinking_parts.append(block.get("thinking", ""))
+                    elif block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+            elif etype == "content_block_delta":
+                delta = ev.get("delta", {})
+                if delta.get("type") == "thinking_delta":
+                    thinking_parts.append(delta.get("thinking", ""))
+                elif delta.get("type") == "text_delta":
+                    text_parts.append(delta.get("text", ""))
+
+        text = "".join(text_parts).strip()
+        thinking = "".join(thinking_parts).strip()
+        log.info(f"Pebbling CC response (text={len(text)}, thinking={len(thinking)} chars): {text[:200]}")
+        return text, thinking
     except asyncio.TimeoutError:
         log.warning("Pebbling CC call timed out")
-        return ""
+        return "", ""
     except Exception as e:
         log.error(f"Pebbling CC call error: {e}")
-        return ""
+        return "", ""
 
 
 # ── Telegram push ──
@@ -729,14 +757,14 @@ async def send_telegram(text: str):
 
 # ── Push helper (WS if available, else pending queue) ──
 
-async def push_pebbling_msg(source: str, content: str, session: "Session"):
+async def push_pebbling_msg(source: str, content: str, session: "Session", thinking: str = ""):
     global active_ws
     msg = {
         "source": source, "content": content,
         "time": datetime.now(SGT).strftime("%H:%M"),
         "ts": time_mod.time(), "session_id": session.id,
     }
-    append_message(session.id, "assistant", content)
+    append_message(session.id, "assistant", content, thinking=thinking)
     session.preview = (content.replace("\n", " ")[:30]
                        + ("…" if len(content) > 30 else ""))
     session.last_active = datetime.now(SGT)
@@ -745,10 +773,13 @@ async def push_pebbling_msg(source: str, content: str, session: "Session"):
     sent = False
     if active_ws:
         try:
-            await active_ws.send_json({
+            peb_ws_msg = {
                 "event": "pebbling:message",
                 "source": source, "content": content, "time": msg["time"],
-            })
+            }
+            if thinking:
+                peb_ws_msg["thinking"] = thinking
+            await active_ws.send_json(peb_ws_msg)
             sent = True
         except Exception:
             pass
@@ -784,7 +815,7 @@ async def run_patrol(session: "Session", elapsed_seconds: float) -> str:
     events = get_recent_events(6)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
 
-    text = await run_cc_oneshot(prompt, session, max_turns=1)
+    text, thinking = await run_cc_oneshot(prompt, session, max_turns=1)
     if not text:
         return "none"
 
@@ -792,7 +823,7 @@ async def run_patrol(session: "Session", elapsed_seconds: float) -> str:
     log.info(f"Patrol → action={action}, content={content[:80] if content else ''}")
 
     if action == "message" and content:
-        await push_pebbling_msg("patrol", content, session)
+        await push_pebbling_msg("patrol", content, session, thinking=thinking)
 
     return action
 
@@ -808,7 +839,7 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    text = await run_cc_oneshot(prompt, session)
+    text, thinking = await run_cc_oneshot(prompt, session)
     if not text:
         return "none"
 
@@ -817,7 +848,7 @@ async def run_pebbling_action(
              f"content={content[:80] if content else ''}")
 
     if action == "message" and content:
-        await push_pebbling_msg("pebbling", content, session)
+        await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
     return action
 
