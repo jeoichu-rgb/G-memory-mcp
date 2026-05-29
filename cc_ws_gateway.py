@@ -550,7 +550,7 @@ def add_pebbling_event(event_type: str, value: str):
     save_pebbling_events(events)
 
 
-def get_recent_events(hours: int = 6) -> list:
+def get_recent_events(hours: float = 6) -> list:
     events = load_pebbling_events()
     cutoff = time_mod.time() - hours * 3600
     return [e for e in events if e["ts"] > cutoff]
@@ -839,9 +839,9 @@ async def replay_pending(ws: WebSocket):
 
 # ── Patrol runner ──
 
-async def run_patrol(session: "Session", elapsed_seconds: float) -> str:
+async def run_patrol(session: "Session", elapsed_seconds: float, check_min: int = 10) -> str:
     elapsed_min = int(elapsed_seconds / 60)
-    events = get_recent_events(6)
+    events = get_recent_events(check_min / 60)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
 
     text, thinking = await run_cc_oneshot(prompt, session, max_turns=1)
@@ -866,7 +866,8 @@ async def run_pebbling_action(
     session: "Session",
     elapsed_hours: float, count: int, mode: str,
 ) -> str:
-    events = get_recent_events(6)
+    event_hours = 4 if elapsed_hours < 6 else 6
+    events = get_recent_events(event_hours)
     prompt = build_pebbling_prompt(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
@@ -928,7 +929,7 @@ async def pebbling_worker():
                     peb_state["patrol_checks_done"] = list(checks_done)
                     save_peb_state()
                     log.info(f"Patrol triggered: {check_min}min")
-                    action = await run_patrol(session, elapsed_jeoi)
+                    action = await run_patrol(session, elapsed_jeoi, check_min)
                     if action == "message":
                         peb_state["t_cache"] = time_mod.time()
                         save_peb_state()
