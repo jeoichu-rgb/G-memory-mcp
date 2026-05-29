@@ -190,7 +190,13 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
             decay = math.exp(-decay_rate * days)
 
         final = rrf * cat_w * mood_mult * decay
-        scored.append({"content": doc, "score": final, "meta": meta, "id": mid})
+        # 记录命中路径
+        paths = []
+        if mid in vec_rank:
+            paths.append("向量")
+        if mid in kw_rank:
+            paths.append("关键词")
+        scored.append({"content": doc, "score": final, "meta": meta, "id": mid, "paths": paths})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     # RRF 分数量级不同，用相对阈值：取最高分的 40% 作为下限
@@ -207,15 +213,13 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         nm["last_recalled_ts"] = time.time()
         claude_update_metadata(item["id"], nm)
 
-    # 归一化分数用于展示（最高分 = 1.0）
-    max_score = top[0]["score"] if top else 1
     report = "【Claude记忆检索报告 · RRF双路融合】\n"
     for i, item in enumerate(top):
         source_tag = "核心" if item["meta"].get("is_permanent") else "动态"
-        norm = item["score"] / max_score if max_score > 0 else 0
+        path_tag = "+".join(item["paths"]) if item["paths"] else "?"
         report += (
             f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
-            f"| 吻合度: {norm:.2f}\n"
+            f"| 命中: {path_tag}\n"
             f"内容: {item['content'][:1500]}\n\n"
         )
 
