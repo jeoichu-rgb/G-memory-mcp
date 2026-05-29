@@ -67,6 +67,28 @@ def _mood_group(mood: str) -> str:
             return g
     return "未知"
 
+# ── 唤醒度映射：情绪越激烈，记忆越鲜明 ─────────────────────────────────
+AROUSAL_MAP = {
+    "兴奋": 1.0, "生气": 1.0, "感动": 0.9,
+    "不安": 0.7, "委屈": 0.7, "思念": 0.6,
+    "撒娇": 0.5, "开心": 0.4, "低落": 0.4,
+    "平静": 0.1,
+}
+HEAT_DECAY_RATE = 0.15  # 每天衰减系数（越大冷却越快）
+
+def _current_heat(meta: dict) -> float:
+    """计算记忆当前温度：stored_heat × exp(-rate × days)"""
+    stored = meta.get("heat", 0.0)
+    last_ts = meta.get("heat_ts", 0)
+    if not last_ts or not stored:
+        return 0.0
+    days = (time.time() - last_ts) / 86400
+    return stored * math.exp(-HEAT_DECAY_RATE * days)
+
+def _arousal(meta: dict) -> float:
+    """从存储时的 mood 获取唤醒度"""
+    return AROUSAL_MAP.get(meta.get("mood", ""), 0.1)
+
 def _time_decay(last_recalled_ts: float) -> float:
     if last_recalled_ts == 0:
         return 1.0
@@ -174,29 +196,19 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
                 cat_w = w
                 break
 
-        # 心情加分
+        # 心情匹配
         mem_mood = meta.get("mood", "")
         mood_mult = 1.3 if mem_mood == current_mood else (
                     1.1 if _mood_group(mem_mood) == cur_group else 1.0)
 
-        # 时间衰减（永久记忆不衰减）
-        if meta.get("is_permanent", False):
-            decay = 1.0
-        else:
-            recall_count = meta.get("recall_count", 0)
-            last_ts = meta.get("last_recalled_ts", 0)
-            days = (time.time() - last_ts) / 86400 if last_ts else 0
-            decay_rate = max(0.01, 0.1 / (1 + recall_count * 0.3))
-            decay = math.exp(-decay_rate * days)
+        # heat + arousal 加权（帖子公式）
+        heat = _current_heat(meta)
+        arousal = _arousal(meta)
+        ha_mult = 1.0 + 0.25 * heat + 0.15 * arousal
 
-        final = rrf * cat_w * mood_mult * decay
-        # 记录命中路径
-        paths = []
-        if mid in vec_rank:
-            paths.append("向量")
-        if mid in kw_rank:
-            paths.append("关键词")
-        scored.append({"content": doc, "score": final, "meta": meta, "id": mid, "paths": paths})
+        final = rrf * cat_w * mood_mult * ha_mult
+        scored.append({"content": doc, "score": final, "meta": meta, "id": mid,
+                        "heat": heat, "arousal": arousal})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     # RRF 分数量级不同，用相对阈值：取最高分的 40% 作为下限
@@ -206,21 +218,23 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
     if not top:
         return None
 
-    # 更新被想起次数
+    # 更新温度：衰减后的当前值 +1，刷新时间戳
     for item in top:
         nm = item["meta"].copy()
         nm["recall_count"] = nm.get("recall_count", 0) + 1
         nm["last_recalled_ts"] = time.time()
+        nm["heat"] = item["heat"] + 1.0       # 衰减后的温度 + 1
+        nm["heat_ts"] = time.time()            # 记录本次加热时间
         claude_update_metadata(item["id"], nm)
 
     report = "【Claude记忆检索报告 · RRF双路融合】\n"
     for i, item in enumerate(top):
         source_tag = "核心" if item["meta"].get("is_permanent") else "动态"
-        # 原始分 ×1000 方便阅读（双路命中约 20-33，单路约 10-17）
         display_score = item["score"] * 1000
+        heat_str = f" 🔥{item['heat']:.1f}" if item["heat"] >= 0.5 else ""
         report += (
             f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
-            f"| RRF: {display_score:.1f}\n"
+            f"| RRF: {display_score:.1f}{heat_str}\n"
             f"内容: {item['content'][:1500]}\n\n"
         )
 
