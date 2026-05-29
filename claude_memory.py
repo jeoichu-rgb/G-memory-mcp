@@ -216,10 +216,11 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
     report = "【Claude记忆检索报告 · RRF双路融合】\n"
     for i, item in enumerate(top):
         source_tag = "核心" if item["meta"].get("is_permanent") else "动态"
-        path_tag = "+".join(item["paths"]) if item["paths"] else "?"
+        # 原始分 ×1000 方便阅读（双路命中约 20-33，单路约 10-17）
+        display_score = item["score"] * 1000
         report += (
             f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
-            f"| 命中: {path_tag}\n"
+            f"| RRF: {display_score:.1f}\n"
             f"内容: {item['content'][:1500]}\n\n"
         )
 
