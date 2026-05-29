@@ -99,84 +99,103 @@ def claude_update_metadata(memory_id: str, new_metadata: dict):
 
 def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | None:
     """
-    同时检索 claude_core_palace + claude_dynamic_palace
-    向量检索 + keyword直接匹配，结果合并去重后打分排序
+    RRF 双路融合检索 claude_core_palace + claude_dynamic_palace
+    向量路: 余弦相似度排名
+    关键词路: jieba分词 → 标签命中×1.5 + 内容命中×1.0 → 按总分排名
+    RRF(k=60) 合并两路排名 → 加权（类型/心情/衰减）→ 阈值过滤
     """
-    seen_ids = set()
-    docs, metas, dists, ids = [], [], [], []
+    RRF_K = 60
+    all_items = {}  # mid → {doc, meta}
 
-    # ── 向量检索 ──────────────────────────────────────────────────
-    for col, n in [(claude_core, 3), (claude_dynamic, 7)]:
+    # ── 向量路 ──────────────────────────────────────────────────
+    vec_ranked = []  # [(mid, similarity), ...]
+    for col, n in [(claude_core, 5), (claude_dynamic, 10)]:
         try:
             r = col.query(query_texts=[keyword], n_results=n)
             for doc, meta, dist, mid in zip(
                 r["documents"][0], r["metadatas"][0],
                 r["distances"][0], r["ids"][0]
             ):
-                if mid not in seen_ids:
-                    seen_ids.add(mid)
-                    docs.append(doc)
-                    metas.append(meta)
-                    dists.append(dist)
-                    ids.append(mid)
+                sim = max(0, 1.0 - dist)
+                if sim >= 0.3:  # 向量路阈值：相似度 0.3 以上才入选
+                    all_items[mid] = {"doc": doc, "meta": meta}
+                    vec_ranked.append((mid, sim))
         except:
             pass
+    # 按相似度降序排名
+    vec_ranked.sort(key=lambda x: x[1], reverse=True)
+    vec_rank = {mid: rank for rank, (mid, _) in enumerate(vec_ranked)}
 
-    # ── keyword 字面匹配（jieba分词后多token并联）────────────────
+    # ── 关键词路 ────────────────────────────────────────────────
     tokens = list(jieba.cut_for_search(keyword))
     tokens = list({t.strip() for t in tokens if len(t.strip()) > 1})
     if not tokens:
         tokens = [keyword]
+
+    kw_scores = {}  # mid → float
     for col in [claude_core, claude_dynamic]:
         for token in tokens:
             try:
                 r = col.get(where_document={"$contains": token})
                 for doc, meta, mid in zip(r["documents"], r["metadatas"], r["ids"]):
-                    if mid not in seen_ids:
-                        seen_ids.add(mid)
-                        docs.append(doc)
-                        metas.append(meta)
-                        dists.append(0.3)
-                        ids.append(mid)
+                    all_items.setdefault(mid, {"doc": doc, "meta": meta})
+                    # 标签（category）命中 ×1.5，内容命中 ×1.0
+                    cat = meta.get("category", "")
+                    tag_hit = 1.5 if token in cat else 0
+                    content_hit = 1.0
+                    kw_scores[mid] = kw_scores.get(mid, 0) + tag_hit + content_hit
             except:
                 pass
+    # 按关键词得分降序排名
+    kw_ranked = sorted(kw_scores.items(), key=lambda x: x[1], reverse=True)
+    kw_rank = {mid: rank for rank, (mid, _) in enumerate(kw_ranked)}
 
-    if not docs:
+    if not all_items:
         return None
 
-    # ── 打分（逻辑与原版一致）────────────────────────────────────
-    scored = []
+    # ── RRF 融合 ────────────────────────────────────────────────
     cur_group = _mood_group(current_mood)
+    scored = []
 
-    for doc, meta, dist, mid in zip(docs, metas, dists, ids):
-        base = max(0, 1.0 - dist)
-        is_permanent = meta.get("is_permanent", False)
+    for mid, item in all_items.items():
+        doc, meta = item["doc"], item["meta"]
 
+        # RRF 基础分：两路排名倒数求和
+        rrf = 0
+        if mid in vec_rank:
+            rrf += 1.0 / (RRF_K + vec_rank[mid])
+        if mid in kw_rank:
+            rrf += 1.0 / (RRF_K + kw_rank[mid])
+
+        # 类型权重
         cat_w = 1.0
         for k, w in CATEGORY_WEIGHTS.items():
             if k in meta.get("category", ""):
                 cat_w = w
                 break
 
+        # 心情加分
         mem_mood = meta.get("mood", "")
-        mood_bonus = 0.3 if mem_mood == current_mood else (
-                     0.1 if _mood_group(mem_mood) == cur_group else 0)
+        mood_mult = 1.3 if mem_mood == current_mood else (
+                    1.1 if _mood_group(mem_mood) == cur_group else 1.0)
 
-        recall_bonus = min(0.5, math.log1p(meta.get("recall_count", 0)) * 0.25)
-        # 改成
-        if is_permanent:
-           decay = 1.0
+        # 时间衰减（永久记忆不衰减）
+        if meta.get("is_permanent", False):
+            decay = 1.0
         else:
             recall_count = meta.get("recall_count", 0)
-            days = (time.time() - meta.get("last_recalled_ts", 0)) / 86400 if meta.get("last_recalled_ts", 0) else 0
+            last_ts = meta.get("last_recalled_ts", 0)
+            days = (time.time() - last_ts) / 86400 if last_ts else 0
             decay_rate = max(0.01, 0.1 / (1 + recall_count * 0.3))
             decay = math.exp(-decay_rate * days)
-        final = (base + recall_bonus + mood_bonus) * cat_w * decay
 
+        final = rrf * cat_w * mood_mult * decay
         scored.append({"content": doc, "score": final, "meta": meta, "id": mid})
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    top = [r for r in scored[:3] if r["score"] > 0.7]
+    # RRF 分数量级不同，用相对阈值：取最高分的 40% 作为下限
+    cutoff = scored[0]["score"] * 0.4 if scored else 0
+    top = [r for r in scored[:3] if r["score"] >= cutoff]
 
     if not top:
         return None
@@ -188,12 +207,15 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         nm["last_recalled_ts"] = time.time()
         claude_update_metadata(item["id"], nm)
 
-    report = "【Claude记忆检索报告】\n"
+    # 归一化分数用于展示（最高分 = 1.0）
+    max_score = top[0]["score"] if top else 1
+    report = "【Claude记忆检索报告 · RRF双路融合】\n"
     for i, item in enumerate(top):
         source_tag = "核心" if item["meta"].get("is_permanent") else "动态"
+        norm = item["score"] / max_score if max_score > 0 else 0
         report += (
             f"[{i+1}] [{source_tag}] 分类: {item['meta'].get('category', '未知')} "
-            f"| 吻合度: {item['score']:.2f}\n"
+            f"| 吻合度: {norm:.2f}\n"
             f"内容: {item['content'][:1500]}\n\n"
         )
 
