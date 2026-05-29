@@ -70,6 +70,45 @@ PATROL_SCHEDULE = [5, 10, 20]  # minutes after Jeoi's last msg → always call C
 PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
+PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
+
+# ── Global pebbling state (persisted, independent of WS) ──
+active_ws: WebSocket | None = None
+peb_state: dict = {}
+
+
+def load_peb_state() -> dict:
+    defaults = {
+        "enabled": False,
+        "pebbling_session_id": None,
+        "t_cache": time_mod.time(),
+        "t_jeoi": time_mod.time(),
+        "patrol_checks_done": [],
+        "pebbling_history": [],
+        "pending_messages": [],
+    }
+    if PEBBLING_STATE_PATH.exists():
+        try:
+            data = json.loads(PEBBLING_STATE_PATH.read_text(encoding="utf-8"))
+            for k, v in defaults.items():
+                data.setdefault(k, v)
+            # Clean up entries > 48h
+            cutoff = time_mod.time() - 48 * 3600
+            data["pebbling_history"] = [t for t in data["pebbling_history"] if t > cutoff]
+            data["pending_messages"] = [m for m in data["pending_messages"] if m.get("ts", 0) > cutoff]
+            return data
+        except Exception:
+            pass
+    return defaults
+
+
+def save_peb_state():
+    data = {**peb_state}
+    data["patrol_checks_done"] = list(data.get("patrol_checks_done", []))
+    PEBBLING_STATE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
 
 import base64 as b64mod
 
@@ -426,8 +465,9 @@ async def search_memory_for_injection(message: str) -> str:
 #  KEEPALIVE (cache TTL refresh)
 # ══════════════════════════════════════════════
 
-async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
+async def run_keepalive(session: "Session") -> bool:
     """Send minimal keepalive to CC CLI to refresh prompt cache."""
+    global active_ws
     if not session.cc_session_id:
         return False
 
@@ -452,20 +492,22 @@ async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
         )
         await asyncio.wait_for(proc.communicate(), timeout=30)
         log.info(f"Keepalive OK (exit={proc.returncode})")
-        try:
-            await ws.send_json({
-                "event": "keepalive:ok",
-                "time": datetime.now(SGT).strftime("%H:%M"),
-            })
-        except Exception:
-            pass
+        if active_ws:
+            try:
+                await active_ws.send_json({
+                    "event": "keepalive:ok",
+                    "time": datetime.now(SGT).strftime("%H:%M"),
+                })
+            except Exception:
+                pass
         return True
     except Exception as e:
         log.warning(f"Keepalive failed: {e}")
-        try:
-            await ws.send_json({"event": "keepalive:fail", "message": str(e)})
-        except Exception:
-            pass
+        if active_ws:
+            try:
+                await active_ws.send_json({"event": "keepalive:fail", "message": str(e)})
+            except Exception:
+                pass
         return False
 
 
@@ -662,11 +704,57 @@ async def run_cc_oneshot(
         return ""
 
 
+# ── Push helper (WS if available, else pending queue) ──
+
+async def push_pebbling_msg(source: str, content: str, session: "Session"):
+    global active_ws
+    msg = {
+        "source": source, "content": content,
+        "time": datetime.now(SGT).strftime("%H:%M"),
+        "ts": time_mod.time(), "session_id": session.id,
+    }
+    append_message(session.id, "assistant", content)
+    session.preview = (content.replace("\n", " ")[:30]
+                       + ("…" if len(content) > 30 else ""))
+    session.last_active = datetime.now(SGT)
+    save_session_meta(session)
+
+    sent = False
+    if active_ws:
+        try:
+            await active_ws.send_json({
+                "event": "pebbling:message",
+                "source": source, "content": content, "time": msg["time"],
+            })
+            sent = True
+        except Exception:
+            pass
+    if not sent:
+        peb_state.setdefault("pending_messages", []).append(msg)
+        save_peb_state()
+        log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
+
+
+async def replay_pending(ws: WebSocket):
+    pending = peb_state.get("pending_messages", [])
+    if not pending:
+        return
+    log.info(f"Replaying {len(pending)} pending pebbling messages")
+    for msg in pending:
+        try:
+            await ws.send_json({
+                "event": "pebbling:message",
+                "source": msg["source"], "content": msg["content"], "time": msg["time"],
+            })
+        except Exception:
+            break
+    peb_state["pending_messages"] = []
+    save_peb_state()
+
+
 # ── Patrol runner ──
 
-async def run_patrol(
-    session: "Session", ws: WebSocket, elapsed_seconds: float
-) -> str:
+async def run_patrol(session: "Session", elapsed_seconds: float) -> str:
     elapsed_min = int(elapsed_seconds / 60)
     events = get_recent_events(6)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
@@ -679,20 +767,7 @@ async def run_patrol(
     log.info(f"Patrol → action={action}, content={content[:80] if content else ''}")
 
     if action == "message" and content:
-        try:
-            await ws.send_json({
-                "event": "pebbling:message",
-                "source": "patrol",
-                "content": content,
-                "time": datetime.now(SGT).strftime("%H:%M"),
-            })
-        except Exception:
-            pass
-        append_message(session.id, "assistant", content)
-        session.preview = (content.replace("\n", " ")[:30]
-                           + ("…" if len(content) > 30 else ""))
-        session.last_active = datetime.now(SGT)
-        save_session_meta(session)
+        await push_pebbling_msg("patrol", content, session)
 
     return action
 
@@ -700,7 +775,7 @@ async def run_patrol(
 # ── Pebbling runner ──
 
 async def run_pebbling_action(
-    session: "Session", ws: WebSocket,
+    session: "Session",
     elapsed_hours: float, count: int, mode: str,
 ) -> str:
     events = get_recent_events(6)
@@ -717,71 +792,61 @@ async def run_pebbling_action(
              f"content={content[:80] if content else ''}")
 
     if action == "message" and content:
-        try:
-            await ws.send_json({
-                "event": "pebbling:message",
-                "source": "pebbling",
-                "content": content,
-                "time": datetime.now(SGT).strftime("%H:%M"),
-            })
-        except Exception:
-            pass
-        append_message(session.id, "assistant", content)
-        session.preview = (content.replace("\n", " ")[:30]
-                           + ("…" if len(content) > 30 else ""))
-        session.last_active = datetime.now(SGT)
-        save_session_meta(session)
+        await push_pebbling_msg("pebbling", content, session)
 
     return action
 
 
 # ── Three-layer worker ──
 
-async def pebbling_worker(state: dict, ws: WebSocket):
-    """Background: keepalive (L0) + patrol (L1) + pebbling (L2)."""
+async def pebbling_worker():
+    """App-level background: keepalive (L0) + patrol (L1) + pebbling (L2).
+    Runs independently of WebSocket connections."""
+    global peb_state
     try:
         while True:
             await asyncio.sleep(30)
 
-            now = time_mod.time()
-
-            # ── L0: Keepalive (uses current_session — whichever has cache) ──
-            if state.get("keepalive_enabled"):
-                ka_session = state.get("current_session")
-                if ka_session and ka_session.cc_session_id:
-                    elapsed_cache = now - state.get("t_cache", now)
-                    if elapsed_cache >= KEEPALIVE_INTERVAL:
-                        ok = await run_keepalive(ka_session, ws)
-                        if ok:
-                            state["t_cache"] = time_mod.time()
-
-            if not state.get("pebbling_enabled"):
+            if not peb_state.get("enabled"):
                 continue
 
-            session = state.get("pebbling_session")
+            sid = peb_state.get("pebbling_session_id")
+            session = sessions.get(sid) if sid else None
             if not session or not session.cc_session_id:
                 continue
 
-            elapsed_jeoi = now - state.get("t_jeoi", now)
+            now = time_mod.time()
+
+            # ── L0: Keepalive ──
+            elapsed_cache = now - peb_state.get("t_cache", now)
+            if elapsed_cache >= KEEPALIVE_INTERVAL:
+                ok = await run_keepalive(session)
+                if ok:
+                    peb_state["t_cache"] = time_mod.time()
+                    save_peb_state()
+
+            elapsed_jeoi = now - peb_state.get("t_jeoi", now)
 
             # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
-            checks_done = state.get("patrol_checks_done", set())
+            checks_done = set(peb_state.get("patrol_checks_done", []))
             for check_min in PATROL_SCHEDULE:
                 if check_min in checks_done:
                     continue
                 if elapsed_jeoi >= check_min * 60:
                     checks_done.add(check_min)
-                    state["patrol_checks_done"] = checks_done
+                    peb_state["patrol_checks_done"] = list(checks_done)
+                    save_peb_state()
                     log.info(f"Patrol triggered: {check_min}min")
-                    action = await run_patrol(session, ws, elapsed_jeoi)
+                    action = await run_patrol(session, elapsed_jeoi)
                     if action == "message":
-                        state["t_cache"] = time_mod.time()
+                        peb_state["t_cache"] = time_mod.time()
+                        save_peb_state()
                     break
 
             # ── L2: Pebbling (every 3h, max 8/24h) ──
-            history = state.get("pebbling_history", [])
+            history = peb_state.get("pebbling_history", [])
             history = [t for t in history if now - t < 86400]
-            state["pebbling_history"] = history
+            peb_state["pebbling_history"] = history
 
             actual = len(history)
             expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
@@ -797,10 +862,11 @@ async def pebbling_worker(state: dict, ws: WebSocket):
                 log.info(f"Pebbling #{actual + 1}: mode={mode}, "
                          f"elapsed={elapsed_h:.1f}h")
                 await run_pebbling_action(
-                    session, ws, elapsed_h, actual, mode
+                    session, elapsed_h, actual, mode
                 )
-                state["pebbling_history"].append(time_mod.time())
-                state["t_cache"] = time_mod.time()
+                peb_state["pebbling_history"].append(time_mod.time())
+                peb_state["t_cache"] = time_mod.time()
+                save_peb_state()
 
     except asyncio.CancelledError:
         pass
@@ -866,6 +932,7 @@ sessions: dict[str, Session] = {}
 
 @app.on_event("startup")
 async def startup_load_sessions():
+    global peb_state
     # 动态注入deny列表到settings.json（只在VPS上跑gateway时生效，不污染git）
     try:
         settings = read_claude_settings()
@@ -883,6 +950,13 @@ async def startup_load_sessions():
         sessions[s.id] = s
     log.info(f"Loaded {len(loaded)} sessions from disk")
 
+    # Restore pebbling state and start app-level worker
+    peb_state = load_peb_state()
+    log.info(f"Pebbling state loaded: enabled={peb_state.get('enabled')}, "
+             f"session={peb_state.get('pebbling_session_id')}, "
+             f"pending={len(peb_state.get('pending_messages', []))}")
+    asyncio.create_task(pebbling_worker())
+
 
 # ══════════════════════════════════════════════
 #  WEBSOCKET
@@ -890,25 +964,24 @@ async def startup_load_sessions():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    global active_ws
     await ws.accept()
+    active_ws = ws
     log.info("WS client connected")
 
     current_session: Session | None = None
     pending_model = "claude-sonnet-4-6"
     pending_effort = "medium"
 
-    # Keepalive state (shared with background worker)
-    ka_state = {
-        "keepalive_enabled": False,
-        "t_cache": time_mod.time(),
-        "pebbling_enabled": False,
-        "t_jeoi": time_mod.time(),
-        "patrol_checks_done": set(),
-        "pebbling_history": [],
-        "current_session": None,
-        "pebbling_session": None,
-    }
-    ka_task = asyncio.create_task(pebbling_worker(ka_state, ws))
+    # Send current pebbling status to frontend
+    await ws.send_json({
+        "event": "pebbling:status",
+        "enabled": peb_state.get("enabled", False),
+        "session_id": peb_state.get("pebbling_session_id"),
+    })
+
+    # Replay any pending messages from while WS was disconnected
+    await replay_pending(ws)
 
     try:
         while True:
@@ -1038,13 +1111,13 @@ async def websocket_endpoint(ws: WebSocket):
                     cli_message = snap_instruction + "\n\n" + cli_message
                     log.info(f"Snap: saved image to {snap_path}")
 
-                # Update keepalive state
-                ka_state["t_cache"] = time_mod.time()
-                ka_state["t_jeoi"] = time_mod.time()
-                ka_state["patrol_checks_done"] = set()
-                ka_state["pebbling_history"] = []
-                ka_state["current_session"] = current_session
-                ka_state["pebbling_session"] = current_session
+                # Update global pebbling state
+                peb_state["t_cache"] = time_mod.time()
+                peb_state["t_jeoi"] = time_mod.time()
+                peb_state["patrol_checks_done"] = []
+                peb_state["pebbling_history"] = []
+                peb_state["pebbling_session_id"] = current_session.id
+                save_peb_state()
 
                 await run_claude(cli_message, current_session, ws)
 
@@ -1199,11 +1272,11 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event in ("keepalive:toggle", "pebbling:toggle"):
                 enabled = data.get("enabled", False)
-                ka_state["keepalive_enabled"] = enabled
-                ka_state["pebbling_enabled"] = enabled
+                peb_state["enabled"] = enabled
                 if enabled:
-                    ka_state["patrol_checks_done"] = set()
-                    ka_state["pebbling_history"] = []
+                    peb_state["patrol_checks_done"] = []
+                    peb_state["pebbling_history"] = []
+                save_peb_state()
                 log.info(f"Pebbling {'enabled' if enabled else 'disabled'} (all layers)")
                 await ws.send_json({"event": "pebbling:status", "enabled": enabled})
 
@@ -1211,11 +1284,13 @@ async def websocket_endpoint(ws: WebSocket):
                 log.info(f"Unhandled event: {event}")
 
     except WebSocketDisconnect:
-        log.info("WS client disconnected")
-        ka_task.cancel()
+        log.info("WS client disconnected (pebbling worker continues)")
+        if active_ws is ws:
+            active_ws = None
     except Exception as e:
         log.exception(f"WS error: {e}")
-        ka_task.cancel()
+        if active_ws is ws:
+            active_ws = None
 
 
 # ══════════════════════════════════════════════

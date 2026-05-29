@@ -908,6 +908,13 @@ function connectWS() {
     reconnectDelay = 1000;
     updateStatus('online');
     wsSend('session:list', {});
+    // Restore last active session on reconnect
+    const lastSid = localStorage.getItem('last-session-id');
+    if (lastSid) {
+      currentSessionId = lastSid;
+      wsSend('session:switch', { sessionId: lastSid });
+      document.getElementById('app').classList.add('chat-open');
+    }
   };
 
   ws.onmessage = (e) => {
@@ -947,6 +954,7 @@ function handleWSMessage(data) {
 
     case 'session:created':
       currentSessionId = data.sessionId;
+      localStorage.setItem('last-session-id', data.sessionId);
       clearMessages();
       renderSessions();
       break;
@@ -1020,11 +1028,9 @@ function handleWSMessage(data) {
       showPebbleStatus('✗', 'fail');
       break;
     case 'pebbling:status':
-      if (data.enabled) {
-        document.getElementById('pebbleIcon').textContent = '🪨';
-      } else {
-        document.getElementById('pebbleIcon').textContent = '🐧';
-      }
+      document.getElementById('pebbleToggle').checked = data.enabled;
+      document.getElementById('pebbleIcon').textContent = data.enabled ? '🪨' : '🐧';
+      showPebbleStatus(data.enabled ? 'ON' : '', data.enabled ? 'ok' : '');
       break;
     case 'pebbling:message':
       addPebblingMessage(data.content, data.source, data.time);
@@ -1405,6 +1411,7 @@ function newSession() {
 
 function switchSession(id) {
   currentSessionId = id;
+  localStorage.setItem('last-session-id', id);
   wsSend('session:switch', { sessionId: id });
   clearMessages();
   renderSessions();
