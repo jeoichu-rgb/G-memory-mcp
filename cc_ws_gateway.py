@@ -35,6 +35,8 @@ app = FastAPI(title="CC WebSocket Gateway")
 
 PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 CC_CWD = os.getenv("CC_CWD", "/opt/G-memory-mcp")
+TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8843423989:AAGrgrkYAUIznKlI_0tbY7-C_B3wjDaHXCc")
+TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "6830267835")
 HISTORY_DIR = Path(CC_CWD) / "chat_history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 SGT = timezone(timedelta(hours=8))
@@ -704,6 +706,21 @@ async def run_cc_oneshot(
         return ""
 
 
+# ── Telegram push ──
+
+async def send_telegram(text: str):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TG_CHAT_ID, "text": text},
+            )
+    except Exception as e:
+        log.warning(f"Telegram send failed: {e}")
+
+
 # ── Push helper (WS if available, else pending queue) ──
 
 async def push_pebbling_msg(source: str, content: str, session: "Session"):
@@ -733,6 +750,8 @@ async def push_pebbling_msg(source: str, content: str, session: "Session"):
         peb_state.setdefault("pending_messages", []).append(msg)
         save_peb_state()
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
+
+    await send_telegram(content)
 
 
 async def replay_pending(ws: WebSocket):
