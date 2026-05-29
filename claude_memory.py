@@ -201,8 +201,9 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
         mood_mult = 1.3 if mem_mood == current_mood else (
                     1.1 if _mood_group(mem_mood) == cur_group else 1.0)
 
-        # heat + arousal 加权（帖子公式）
-        heat = _current_heat(meta)
+        # heat（仅动态记忆）+ arousal（全部）
+        is_perm = meta.get("is_permanent", False)
+        heat = 0.0 if is_perm else _current_heat(meta)
         arousal = _arousal(meta)
         ha_mult = 1.0 + 0.25 * heat + 0.15 * arousal
 
@@ -218,13 +219,14 @@ def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | No
     if not top:
         return None
 
-    # 更新温度：衰减后的当前值 +1，刷新时间戳
+    # 更新 recall + heat（heat 仅动态记忆）
     for item in top:
         nm = item["meta"].copy()
         nm["recall_count"] = nm.get("recall_count", 0) + 1
         nm["last_recalled_ts"] = time.time()
-        nm["heat"] = item["heat"] + 1.0       # 衰减后的温度 + 1
-        nm["heat_ts"] = time.time()            # 记录本次加热时间
+        if not nm.get("is_permanent", False):
+            nm["heat"] = item["heat"] + 1.0
+            nm["heat_ts"] = time.time()
         claude_update_metadata(item["id"], nm)
 
     report = "【Claude记忆检索报告 · RRF双路融合】\n"
