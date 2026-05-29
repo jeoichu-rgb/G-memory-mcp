@@ -18,6 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
+import time as time_mod
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +55,12 @@ DENY_TOOLS = [
     "PushNotification", "RemoteTrigger", "TaskCreate", "TaskGet",
     "TaskList", "TaskStop", "TaskUpdate", "TaskOutput", "PowerShell",
 ]
+
+# DeepSeek API for context summarization (same key as claude_memory.py)
+DS_API_KEY = os.getenv("LLM_API_KEY", "")
+ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
+CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
+KEEPALIVE_INTERVAL = 50 * 60  # 50 minutes
 
 
 # ══════════════════════════════════════════════
@@ -174,6 +181,257 @@ def load_all_sessions() -> list["Session"]:
 
 
 # ══════════════════════════════════════════════
+#  CONTEXT STORE (DS-generated summaries)
+# ══════════════════════════════════════════════
+
+def load_context_store() -> dict:
+    if CONTEXT_STORE_PATH.exists():
+        try:
+            return json.loads(CONTEXT_STORE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"items": []}
+
+
+def save_context_store(data: dict):
+    CONTEXT_STORE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+async def call_deepseek(prompt: str) -> str:
+    if not DS_API_KEY:
+        log.warning("LLM_API_KEY not set, cannot call DeepSeek")
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DS_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        log.error(f"DeepSeek API error: {e}")
+        return ""
+
+
+async def generate_context_summary(session_id: str) -> list[dict]:
+    """Summarize last ~40 turns of a session via DeepSeek."""
+    history = load_history(session_id)
+    messages = history.get("messages", [])
+    recent = messages[-80:] if len(messages) > 80 else messages
+
+    conversation_lines = []
+    for msg in recent:
+        role, content = msg.get("role", ""), msg.get("content", "")
+        if not content:
+            continue
+        if role == "user":
+            conversation_lines.append(f"Jeoi: {content}")
+        elif role == "assistant":
+            conversation_lines.append(f"Erik: {content}")
+    if not conversation_lines:
+        return []
+
+    conversation = "\n\n".join(conversation_lines)
+    prompt = f"""以下是Jeoi和Erik的对话记录。请将其总结为3-4条独立的上下文摘要。
+
+要求：
+- 每条摘要50-150字
+- 只总结Jeoi说的话和Erik的回复内容
+- 不要总结思考过程、工具调用、记忆检索等技术性内容
+- 保留关键的情感信息、决定、讨论结论
+- 称呼用户为Jeoi，称呼AI为Erik
+- 用事实陈述的方式
+
+格式（严格按此格式输出，不要有其他说明）：
+【摘要1】内容...
+【摘要2】内容...
+【摘要3】内容...
+
+对话记录：
+{conversation}"""
+
+    raw = await call_deepseek(prompt)
+    if not raw:
+        return []
+
+    today = datetime.now(SGT).strftime("%Y-%m-%d")
+    ts = int(time_mod.time())
+    items = []
+    for idx, seg in enumerate(raw.split("【摘要")):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if "】" in seg:
+            seg = seg.split("】", 1)[1].strip()
+        if seg:
+            items.append({
+                "id": f"ctx_{ts}_{idx}",
+                "content": seg,
+                "source_session": session_id,
+                "date": today,
+                "created_at": datetime.now(SGT).isoformat(),
+            })
+
+    store = load_context_store()
+    store["items"].extend(items)
+    save_context_store(store)
+    log.info(f"Generated {len(items)} context summaries for session {session_id}")
+    return items
+
+
+# ══════════════════════════════════════════════
+#  NEW SESSION INJECTION (diary + context)
+# ══════════════════════════════════════════════
+
+async def fetch_diary_for_injection() -> tuple[str, str]:
+    """Fetch today's or yesterday's diary from admin API. Returns (content, label)."""
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            headers = {"x-secret": PALACE_SECRET}
+            r = await client.get(f"{ADMIN_API}/admin/diary?limit=10", headers=headers)
+            if r.status_code != 200:
+                return "", ""
+            items = r.json().get("items", [])
+            if not items:
+                return "", ""
+
+            today = datetime.now(SGT).strftime("%Y-%m-%d")
+            yesterday = (datetime.now(SGT) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            target, label = None, ""
+            for fname in items:
+                if fname.startswith(today):
+                    target, label = fname, "今天"
+                    break
+            if not target:
+                for fname in items:
+                    if fname.startswith(yesterday):
+                        target, label = fname, "昨天"
+                        break
+            if not target:
+                return "", ""
+
+            r2 = await client.get(
+                f"{ADMIN_API}/admin/diary/{target}", headers=headers
+            )
+            if r2.status_code != 200:
+                return "", ""
+            return r2.json().get("content", ""), label
+    except Exception as e:
+        log.warning(f"Failed to fetch diary: {e}")
+        return "", ""
+
+
+def get_context_items_for_injection() -> list[dict]:
+    """Get context items with the latest date for new session injection."""
+    store = load_context_store()
+    items = store.get("items", [])
+    if not items:
+        return []
+    latest_date = max(item.get("date", "") for item in items)
+    if not latest_date:
+        return []
+    return [item for item in items if item.get("date", "") == latest_date]
+
+
+async def build_injection() -> str:
+    """Build context injection prefix for new sessions."""
+    parts = []
+
+    diary, label = await fetch_diary_for_injection()
+    if diary:
+        parts.append(f"📖 这是你{label}写的日记：\n{diary}")
+
+    ctx_items = get_context_items_for_injection()
+    if ctx_items:
+        ctx_text = "\n".join(f"• {item['content']}" for item in ctx_items)
+        parts.append(f"📋 这是你们上次聊到的话题（上下文摘要）：\n{ctx_text}")
+
+    if not parts:
+        return ""
+
+    header = "═══ 自动注入 · 以下是系统为你恢复的上下文，不是Jeoi的消息 ═══"
+    footer = "═══════════════════════════════════════════════════════════════"
+    return header + "\n\n" + "\n\n".join(parts) + "\n\n" + footer
+
+
+# ══════════════════════════════════════════════
+#  KEEPALIVE (cache TTL refresh)
+# ══════════════════════════════════════════════
+
+async def run_keepalive(session: "Session", ws: WebSocket) -> bool:
+    """Send minimal keepalive to CC CLI to refresh prompt cache."""
+    if not session.cc_session_id:
+        return False
+
+    cmd = [
+        "claude", "--print", "--output-format", "stream-json",
+        "--model", session.model,
+        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+        "--resume", session.cc_session_id,
+        "--", ".",
+    ]
+    log.info(f"Keepalive → session {session.id} (cc={session.cc_session_id})")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=1024 * 1024,
+            cwd=CC_CWD,
+            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=30)
+        log.info(f"Keepalive OK (exit={proc.returncode})")
+        try:
+            await ws.send_json({
+                "event": "keepalive:ok",
+                "time": datetime.now(SGT).strftime("%H:%M"),
+            })
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        log.warning(f"Keepalive failed: {e}")
+        try:
+            await ws.send_json({"event": "keepalive:fail", "message": str(e)})
+        except Exception:
+            pass
+        return False
+
+
+async def keepalive_worker(state: dict, ws: WebSocket):
+    """Background task: send keepalive when idle for KEEPALIVE_INTERVAL."""
+    try:
+        while True:
+            await asyncio.sleep(60)
+            if not state.get("keepalive_enabled"):
+                continue
+            session = state.get("current_session")
+            if not session or not session.cc_session_id:
+                continue
+            elapsed = time_mod.time() - state.get("last_msg_time", 0)
+            if elapsed >= KEEPALIVE_INTERVAL:
+                await run_keepalive(session, ws)
+                state["last_msg_time"] = time_mod.time()
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        log.warning(f"Keepalive worker error: {e}")
+
+
+# ══════════════════════════════════════════════
 #  SESSION
 # ══════════════════════════════════════════════
 
@@ -262,6 +520,14 @@ async def websocket_endpoint(ws: WebSocket):
     pending_model = "claude-sonnet-4-6"
     pending_effort = "medium"
 
+    # Keepalive state (shared with background worker)
+    ka_state = {
+        "keepalive_enabled": False,
+        "last_msg_time": time_mod.time(),
+        "current_session": None,
+    }
+    ka_task = asyncio.create_task(keepalive_worker(ka_state, ws))
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -307,6 +573,7 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session = sessions[sid]
                     pending_model = current_session.model
                     pending_effort = current_session.effort
+                    ka_state["current_session"] = current_session
                     history = load_history(sid)
                     await ws.send_json({
                         "event": "session:history",
@@ -358,7 +625,19 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
 
-                await run_claude(message, current_session, ws)
+                # New session injection: prepend diary + context on first message
+                cli_message = message
+                if not current_session.cc_session_id:
+                    injection = await build_injection()
+                    if injection:
+                        cli_message = injection + "\n\n" + message
+                        log.info(f"Injected context for new session {current_session.id}")
+
+                # Update keepalive state
+                ka_state["last_msg_time"] = time_mod.time()
+                ka_state["current_session"] = current_session
+
+                await run_claude(cli_message, current_session, ws)
 
             elif event == "config:model":
                 model = data.get("model", "")
@@ -459,13 +738,69 @@ async def websocket_endpoint(ws: WebSocket):
                 mcp_name = data.get("name", "")
                 await _mcp_test_connection(mcp_name, ws)
 
+            # ── Context management ──
+
+            elif event == "context:generate":
+                if current_session:
+                    await ws.send_json({"event": "context:generating"})
+                    try:
+                        items = await generate_context_summary(current_session.id)
+                        await ws.send_json({
+                            "event": "context:generated",
+                            "items": items,
+                            "count": len(items),
+                        })
+                    except Exception as e:
+                        log.exception(f"Context generation error: {e}")
+                        await ws.send_json({"event": "context:error", "message": str(e)})
+                else:
+                    await ws.send_json({"event": "context:error", "message": "无活跃会话"})
+
+            elif event == "context:list":
+                store = load_context_store()
+                await ws.send_json({
+                    "event": "context:list",
+                    "items": store.get("items", []),
+                })
+
+            elif event == "context:delete":
+                ctx_id = data.get("id", "")
+                store = load_context_store()
+                store["items"] = [i for i in store["items"] if i.get("id") != ctx_id]
+                save_context_store(store)
+                await ws.send_json({"event": "context:list", "items": store["items"]})
+
+            elif event == "context:edit":
+                ctx_id = data.get("id", "")
+                new_content = data.get("content", "")
+                store = load_context_store()
+                for item in store["items"]:
+                    if item.get("id") == ctx_id:
+                        item["content"] = new_content
+                        break
+                save_context_store(store)
+                await ws.send_json({"event": "context:list", "items": store["items"]})
+
+            # ── Keepalive ──
+
+            elif event == "keepalive:toggle":
+                enabled = data.get("enabled", False)
+                ka_state["keepalive_enabled"] = enabled
+                if enabled:
+                    ka_state["current_session"] = current_session
+                    ka_state["last_msg_time"] = time_mod.time()
+                log.info(f"Keepalive {'enabled' if enabled else 'disabled'}")
+                await ws.send_json({"event": "keepalive:status", "enabled": enabled})
+
             else:
                 log.info(f"Unhandled event: {event}")
 
     except WebSocketDisconnect:
         log.info("WS client disconnected")
+        ka_task.cancel()
     except Exception as e:
         log.exception(f"WS error: {e}")
+        ka_task.cancel()
 
 
 # ══════════════════════════════════════════════
