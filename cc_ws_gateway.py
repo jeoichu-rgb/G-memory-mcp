@@ -654,16 +654,22 @@ def build_pebbling_prompt(
 def parse_action(text: str) -> tuple[str, str]:
     action = "none"
     content = ""
+    has_format = False
     for line in text.split("\n"):
         stripped = line.strip()
         if stripped.upper().startswith("ACTION:"):
             raw = stripped.split(":", 1)[1].strip().lower()
             action = raw.split("/")[0].split()[0] if raw else "none"
+            has_format = True
             break
     upper = text.upper()
     if "CONTENT:" in upper:
         idx = upper.index("CONTENT:")
         content = text[idx + 8:].strip()
+    # Fallback: CC didn't use ACTION/CONTENT format but wrote something → treat as message
+    if not has_format and text.strip():
+        action = "message"
+        content = text.strip()
     return action, content
 
 
