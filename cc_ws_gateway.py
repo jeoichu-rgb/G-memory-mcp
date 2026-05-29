@@ -1805,12 +1805,25 @@ async def remove_mcp_server(request: Request):
 
 @app.get("/api/pebbling/event")
 async def record_pebbling_event(type: str = "", value: str = ""):
-    """iOS Shortcut calls this when user opens an app."""
+    """iOS Shortcut calls this when user opens an app (GET)."""
     if not type:
         return JSONResponse({"error": "type required"}, status_code=400)
     add_pebbling_event(type, value or type)
     log.info(f"iOS event: {type} → {value}")
     return {"ok": True, "type": type, "value": value}
+
+
+@app.post("/api/pebbling/event")
+async def record_pebbling_event_post(request: Request):
+    """iOS Shortcut POST — body: {action: "open"/"close", app: "AppName"}."""
+    body = await request.json()
+    action = body.get("action", "")
+    app_name = body.get("app", "")
+    event_type = f"app_{action}" if action else "app_unknown"
+    value = app_name or action or "unknown"
+    add_pebbling_event(event_type, value)
+    log.info(f"iOS event (POST): {event_type} → {value}")
+    return {"ok": True, "type": event_type, "value": value}
 
 
 @app.get("/api/pebbling/events")
