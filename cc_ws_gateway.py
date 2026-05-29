@@ -48,7 +48,7 @@ CUSTOM_SYSTEM_PROMPT = (
 )
 
 DENY_TOOLS = [
-    "Read", "Edit", "Write", "Glob", "Grep", "Agent", "AskUserQuestion",
+    "Edit", "Write", "Glob", "Grep", "Agent", "AskUserQuestion",
     "Skill", "ToolSearch", "ScheduleWakeup", "NotebookEdit", "WebFetch",
     "WebSearch", "Monitor", "CronCreate", "CronDelete", "CronList",
     "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
@@ -61,6 +61,32 @@ DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 KEEPALIVE_INTERVAL = 50 * 60  # 50 minutes
+SNAP_DIR = Path("/tmp/snap")
+SNAP_DIR.mkdir(exist_ok=True)
+
+import base64 as b64mod
+
+
+def save_snap(content_blocks: list) -> str | None:
+    """Save base64 image from content blocks to temp file. Returns path or None."""
+    for block in content_blocks:
+        if block.get("type") == "image":
+            src = block.get("source", {})
+            if src.get("type") == "base64":
+                ext = src.get("media_type", "image/png").split("/")[-1]
+                fname = f"snap_{uuid.uuid4().hex[:8]}.{ext}"
+                fpath = SNAP_DIR / fname
+                fpath.write_bytes(b64mod.b64decode(src["data"]))
+                return str(fpath)
+    return None
+
+
+def cleanup_snap(path: str):
+    """Delete temp snap file."""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════
@@ -649,28 +675,47 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
 
+                # Snap: save image to temp file for CC to Read
+                snap_path = None
+                content_blocks = data.get("content")
+                if content_blocks:
+                    snap_path = save_snap(content_blocks)
+
                 # Injection logic: 📎 toggle controls both modes
                 cli_message = message
                 memory_on = data.get("memory_enabled", False)
                 if memory_on:
                     if not current_session.cc_session_id:
-                        # New session → inject diary + context summaries
                         injection = await build_injection()
                         if injection:
                             cli_message = injection + "\n\n" + message
                             log.info(f"Injected context for new session {current_session.id}")
                     else:
-                        # Existing session → search memory by message content
                         mem_injection = await search_memory_for_injection(message)
                         if mem_injection:
                             cli_message = mem_injection + "\n\n" + message
                             log.info(f"Injected memory for session {current_session.id}")
+
+                # Snap: prepend image instruction
+                if snap_path:
+                    snap_instruction = (
+                        f"[snap] Jeoi发了一张图片，保存在 {snap_path}，"
+                        f"请用Read工具查看后自然地回复。"
+                        f"这是阅后即焚的——看完就删，你的回复就是对这张图的全部记忆。"
+                    )
+                    cli_message = snap_instruction + "\n\n" + cli_message
+                    log.info(f"Snap: saved image to {snap_path}")
 
                 # Update keepalive state
                 ka_state["last_msg_time"] = time_mod.time()
                 ka_state["current_session"] = current_session
 
                 await run_claude(cli_message, current_session, ws)
+
+                # Snap cleanup: delete temp file after CC has read it
+                if snap_path:
+                    cleanup_snap(snap_path)
+                    log.info(f"Snap: cleaned up {snap_path}")
 
             elif event == "config:model":
                 model = data.get("model", "")
