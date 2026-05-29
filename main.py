@@ -176,22 +176,49 @@ async def serve_chat(request: Request):
     except FileNotFoundError:
         return HTMLResponse(content="<h1>chat.html not found</h1>", status_code=500)
 
-# ── iOS Shortcut proxy → cc_ws_gateway:3000 ──
-import httpx as _httpx
+# ── iOS Shortcut pebbling event (shared JSON file with cc_ws_gateway) ──
+import json as _json
+from pathlib import Path as _Path
+
+_EVENTS_PATH = _Path("/opt/G-memory-mcp/pebbling_events.json")
+
+
+def _add_pebbling_event(event_type: str, value: str):
+    events = []
+    if _EVENTS_PATH.exists():
+        try:
+            events = _json.loads(_EVENTS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    now = time.time()
+    for e in reversed(events):
+        if e["type"] == event_type and now - e["ts"] < 300:
+            return
+    events.append({
+        "type": event_type, "value": value,
+        "ts": now, "time": datetime.now(SGT).strftime("%H:%M"),
+    })
+    events = [e for e in events if now - e["ts"] < 86400]
+    _EVENTS_PATH.write_text(_json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 @app.post("/api/pebbling/event")
-async def proxy_pebbling_event_post(request: Request):
-    body = await request.body()
-    async with _httpx.AsyncClient(timeout=10) as c:
-        r = await c.post("http://localhost:3000/api/pebbling/event",
-                         content=body, headers={"content-type": "application/json"})
-    return JSONResponse(status_code=r.status_code, content=r.json())
+async def record_pebbling_event_post(request: Request):
+    body = await request.json()
+    action = body.get("action", "")
+    app_name = body.get("app", "")
+    event_type = f"app_{action}" if action else "app_unknown"
+    value = app_name or action or "unknown"
+    _add_pebbling_event(event_type, value)
+    return {"ok": True, "type": event_type, "value": value}
+
 
 @app.get("/api/pebbling/event")
-async def proxy_pebbling_event_get(request: Request):
-    async with _httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(f"http://localhost:3000/api/pebbling/event?{request.query_params}")
-    return JSONResponse(status_code=r.status_code, content=r.json())
+async def record_pebbling_event_get(type: str = "", value: str = ""):
+    if not type:
+        return JSONResponse({"error": "type required"}, status_code=400)
+    _add_pebbling_event(type, value or type)
+    return {"ok": True, "type": type, "value": value}
 
 
 gemini_client = OpenAI(
