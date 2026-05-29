@@ -1028,7 +1028,6 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session = sessions[sid]
                     pending_model = current_session.model
                     pending_effort = current_session.effort
-                    ka_state["current_session"] = current_session
                     history = load_history(sid)
                     await ws.send_json({
                         "event": "session:history",
