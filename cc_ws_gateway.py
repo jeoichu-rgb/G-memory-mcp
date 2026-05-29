@@ -66,11 +66,7 @@ SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
 # ── Pebbling constants ──
-PATROL_SCHEDULE = [
-    (5, 0.20),   # 5 min after Jeoi's last msg, 20% chance
-    (10, 0.50),  # 10 min, 50%
-    (20, 0.80),  # 20 min, 80%
-]
+PATROL_SCHEDULE = [5, 10, 20]  # minutes after Jeoi's last msg → always call CC
 PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
@@ -630,17 +626,18 @@ def parse_action(text: str) -> tuple[str, str]:
 # ── CC oneshot call (non-streaming, for patrol/pebbling) ──
 
 async def run_cc_oneshot(
-    prompt: str, session: "Session", max_turns: int = 1
+    prompt: str, session: "Session", max_turns: int | None = None
 ) -> str:
     cmd = [
         "claude", "--print",
         "--output-format", "text",
         "--model", session.model,
-        "--max-turns", str(max_turns),
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
-        "--", prompt,
     ]
+    if max_turns is not None:
+        cmd.extend(["--max-turns", str(max_turns)])
+    cmd.extend(["--", prompt])
     log.info(f"Pebbling CC call: max_turns={max_turns}, session={session.id}")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -711,8 +708,7 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    max_turns = 3 if mode == "free" else 1
-    text = await run_cc_oneshot(prompt, session, max_turns=max_turns)
+    text = await run_cc_oneshot(prompt, session)
     if not text:
         return "none"
 
@@ -747,40 +743,39 @@ async def pebbling_worker(state: dict, ws: WebSocket):
         while True:
             await asyncio.sleep(30)
 
-            session = state.get("current_session")
-            if not session or not session.cc_session_id:
-                continue
-
             now = time_mod.time()
 
-            # ── L0: Keepalive ──
+            # ── L0: Keepalive (uses current_session — whichever has cache) ──
             if state.get("keepalive_enabled"):
-                elapsed_cache = now - state.get("t_cache", now)
-                if elapsed_cache >= KEEPALIVE_INTERVAL:
-                    ok = await run_keepalive(session, ws)
-                    if ok:
-                        state["t_cache"] = time_mod.time()
+                ka_session = state.get("current_session")
+                if ka_session and ka_session.cc_session_id:
+                    elapsed_cache = now - state.get("t_cache", now)
+                    if elapsed_cache >= KEEPALIVE_INTERVAL:
+                        ok = await run_keepalive(ka_session, ws)
+                        if ok:
+                            state["t_cache"] = time_mod.time()
 
             if not state.get("pebbling_enabled"):
+                continue
+
+            session = state.get("pebbling_session")
+            if not session or not session.cc_session_id:
                 continue
 
             elapsed_jeoi = now - state.get("t_jeoi", now)
 
             # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
             checks_done = state.get("patrol_checks_done", set())
-            for check_min, probability in PATROL_SCHEDULE:
+            for check_min in PATROL_SCHEDULE:
                 if check_min in checks_done:
                     continue
                 if elapsed_jeoi >= check_min * 60:
                     checks_done.add(check_min)
                     state["patrol_checks_done"] = checks_done
-                    if random.random() < probability:
-                        log.info(f"Patrol triggered: {check_min}min (p={probability})")
-                        action = await run_patrol(session, ws, elapsed_jeoi)
-                        if action == "message":
-                            state["t_cache"] = time_mod.time()
-                    else:
-                        log.info(f"Patrol skipped: {check_min}min (dice)")
+                    log.info(f"Patrol triggered: {check_min}min")
+                    action = await run_patrol(session, ws, elapsed_jeoi)
+                    if action == "message":
+                        state["t_cache"] = time_mod.time()
                     break
 
             # ── L2: Pebbling (every 3h, max 8/24h) ──
@@ -911,6 +906,7 @@ async def websocket_endpoint(ws: WebSocket):
         "patrol_checks_done": set(),
         "pebbling_history": [],
         "current_session": None,
+        "pebbling_session": None,
     }
     ka_task = asyncio.create_task(pebbling_worker(ka_state, ws))
 
@@ -1048,6 +1044,7 @@ async def websocket_endpoint(ws: WebSocket):
                 ka_state["patrol_checks_done"] = set()
                 ka_state["pebbling_history"] = []
                 ka_state["current_session"] = current_session
+                ka_state["pebbling_session"] = current_session
 
                 await run_claude(cli_message, current_session, ws)
 
@@ -1205,8 +1202,6 @@ async def websocket_endpoint(ws: WebSocket):
                 ka_state["keepalive_enabled"] = enabled
                 ka_state["pebbling_enabled"] = enabled
                 if enabled:
-                    ka_state["current_session"] = current_session
-                    ka_state["t_jeoi"] = time_mod.time()
                     ka_state["patrol_checks_done"] = set()
                     ka_state["pebbling_history"] = []
                 log.info(f"Pebbling {'enabled' if enabled else 'disabled'} (all layers)")
