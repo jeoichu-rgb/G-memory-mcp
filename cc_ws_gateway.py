@@ -539,7 +539,7 @@ def add_pebbling_event(event_type: str, value: str):
     events = load_pebbling_events()
     now = time_mod.time()
     for e in reversed(events):
-        if e["type"] == event_type and now - e["ts"] < 300:
+        if e["type"] == event_type and e["value"] == value and now - e["ts"] < 300:
             return
     events.append({
         "type": event_type,
