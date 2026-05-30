@@ -1,12 +1,19 @@
 {
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"
+  },
   "mcpServers": {
     "claude_ai_Erik_tools": {
       "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
+    },
+    "claude_ai_coreading": {
+      "url": "https://read.erikssheep.uk/sse?token=Jeoi2026"
     }
   },
   "permissions": {
     "allow": [
-      "mcp__claude_ai_Erik_tools"
+      "mcp__claude_ai_Erik_tools",
+      "mcp__claude_ai_coreading"
     ]
   }
 }
