@@ -1034,6 +1034,26 @@ async def startup_load_sessions():
         perms["deny"] = DENY_TOOLS
         if "Bash" not in perms.get("allow", []):
             perms.setdefault("allow", []).insert(0, "Bash")
+
+        # Auto-detect internal palace URL (skip Traefik/nginx for SSE stability)
+        palace_url = os.getenv("PALACE_MCP_URL", "")
+        if not palace_url:
+            for base in ["http://localhost:8000", "http://127.0.0.1:8000"]:
+                try:
+                    r = httpx.get(f"{base}/health", timeout=3)
+                    if r.status_code == 200:
+                        palace_url = f"{base}/mcp/{PALACE_SECRET}/sse"
+                        log.info(f"Palace internal URL auto-detected: {palace_url}")
+                        break
+                except Exception:
+                    continue
+        if palace_url:
+            servers = settings.setdefault("mcpServers", {})
+            if "claude_ai_Erik_tools" in servers:
+                old = servers["claude_ai_Erik_tools"].get("url", "")
+                servers["claude_ai_Erik_tools"]["url"] = palace_url
+                log.info(f"MCP URL: {old} → {palace_url}")
+
         write_claude_settings(settings)
         log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
     except Exception as e:
