@@ -843,7 +843,7 @@ async def replay_pending(ws: WebSocket):
 
 async def run_patrol(session: "Session", elapsed_seconds: float, check_min: int = 10) -> str:
     elapsed_min = int(elapsed_seconds / 60)
-    events = get_recent_events(check_min / 60)
+    events = get_recent_events(max(check_min, 10) / 60)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
 
     text, thinking = await run_cc_oneshot(prompt, session, max_turns=1)
