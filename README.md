@@ -67,17 +67,17 @@ Claude 每次开新窗口就失忆。这个项目做了两件事：
 | 服务 | 运行方式 | 端口 | 职责 |
 |------|----------|------|------|
 | `main.py` | Docker（Coolify CI/CD 自动部署） | 8000 | MCP SSE 端点、管理面板、Admin API、webhook |
-| `cc_ws_gateway.py` | screen 会话（宿主机直接运行） | 3000 | 聊天 WebSocket 网关 |
+| `cc_ws_gateway.py` | 宿主机后台进程（nohup） | 3000 | 聊天 WebSocket 网关 |
 
 cc_ws_gateway 必须跑在宿主机上——需要直接调用宿主机的 `claude` CLI 和读取 `~/.claude/` 会话数据。
 
 ```
 部署链路：
 GitHub push → Coolify webhook → Docker build → Traefik → HTTPS
-cc_ws_gateway.py → screen -dmS chat python3 cc_ws_gateway.py（手动）
+cc_ws_gateway.py → 宿主机手动运行（nohup）
 
 一键更新网关：
-cd /opt/G-memory-mcp && git pull origin main && kill $(lsof -t -i :3000) 2>/dev/null; screen -dmS chat python3 cc_ws_gateway.py
+cd /opt/G-memory-mcp && git pull && kill $(pgrep -f cc_ws_gateway) 2>/dev/null; nohup python3 cc_ws_gateway.py > /dev/null 2>&1 &
 ```
 
 ### 本地设备桥接
