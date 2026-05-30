@@ -181,7 +181,7 @@ import json as _json
 from pathlib import Path as _Path
 
 # Docker 容器内 localhost ≠ 宿主机，用 Docker bridge gateway 访问宿主机
-_GATEWAY_BASE = os.getenv("GATEWAY_URL", "http://172.17.0.1:3000")
+_GATEWAY_BASE = os.getenv("GATEWAY_URL", "http://10.0.0.1:3000")
 
 
 async def _proxy_pebbling_event(payload: dict) -> dict:
