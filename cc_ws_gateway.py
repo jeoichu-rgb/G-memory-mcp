@@ -475,11 +475,12 @@ async def run_keepalive(session: "Session") -> bool:
 
     cmd = [
         "claude", "--print", "--output-format", "stream-json",
+        "--verbose",
         "--model", session.model,
         "--max-turns", "1",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
-        "--", "[keepalive] 缓存保活信号，不是Jeoi的消息。不要思考，直接回复一个字母。",
+        "--", "[keepalive] 扣个1，测试",
     ]
     log.info(f"Keepalive → session {session.id} (cc={session.cc_session_id})")
 
@@ -690,6 +691,7 @@ async def run_cc_oneshot(
     cmd = [
         "claude", "--print",
         "--output-format", "stream-json",
+        "--verbose",
         "--model", session.model,
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
