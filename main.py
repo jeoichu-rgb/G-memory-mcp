@@ -176,49 +176,39 @@ async def serve_chat(request: Request):
     except FileNotFoundError:
         return HTMLResponse(content="<h1>chat.html not found</h1>", status_code=500)
 
-# ── iOS Shortcut pebbling event (shared JSON file with cc_ws_gateway) ──
+# ── iOS Shortcut pebbling event (proxy to cc_ws_gateway on host) ──
 import json as _json
 from pathlib import Path as _Path
 
-_EVENTS_PATH = _Path("/opt/G-memory-mcp/pebbling_events.json")
+# Docker 容器内 localhost ≠ 宿主机，用 Docker bridge gateway 访问宿主机
+_GATEWAY_BASE = os.getenv("GATEWAY_URL", "http://172.17.0.1:3000")
 
 
-def _add_pebbling_event(event_type: str, value: str):
-    events = []
-    if _EVENTS_PATH.exists():
-        try:
-            events = _json.loads(_EVENTS_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    now = time.time()
-    for e in reversed(events):
-        if e["type"] == event_type and now - e["ts"] < 300:
-            return
-    events.append({
-        "type": event_type, "value": value,
-        "ts": now, "time": datetime.now(SGT).strftime("%H:%M"),
-    })
-    events = [e for e in events if now - e["ts"] < 86400]
-    _EVENTS_PATH.write_text(_json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+async def _proxy_pebbling_event(payload: dict) -> dict:
+    """Forward pebbling event to cc_ws_gateway on the host machine."""
+    try:
+        async with _httpx.AsyncClient(timeout=5) as client:
+            r = await client.post(
+                f"{_GATEWAY_BASE}/api/pebbling/event",
+                json=payload,
+            )
+            return r.json()
+    except Exception as e:
+        # Fallback: 代理失败时返回错误但不crash
+        return {"ok": False, "error": f"gateway proxy failed: {e}"}
 
 
 @app.post("/api/pebbling/event")
 async def record_pebbling_event_post(request: Request):
     body = await request.json()
-    action = body.get("action", "")
-    app_name = body.get("app", "")
-    event_type = f"app_{action}" if action else "app_unknown"
-    value = app_name or action or "unknown"
-    _add_pebbling_event(event_type, value)
-    return {"ok": True, "type": event_type, "value": value}
+    return await _proxy_pebbling_event(body)
 
 
 @app.get("/api/pebbling/event")
 async def record_pebbling_event_get(type: str = "", value: str = ""):
     if not type:
         return JSONResponse({"error": "type required"}, status_code=400)
-    _add_pebbling_event(type, value or type)
-    return {"ok": True, "type": type, "value": value}
+    return await _proxy_pebbling_event({"action": type, "app": value or type})
 
 
 gemini_client = OpenAI(
