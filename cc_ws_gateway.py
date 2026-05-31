@@ -63,6 +63,7 @@ DENY_TOOLS = [
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
+INTERACTIVE_MODE = os.getenv("CC_INTERACTIVE_MODE", "1") == "1"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -1352,31 +1353,35 @@ async def websocket_endpoint(ws: WebSocket):
 # ══════════════════════════════════════════════
 
 async def run_claude(message: str, session: Session, ws: WebSocket):
-    """Spawn claude CLI in print mode and stream results back via WS."""
+    """Spawn claude CLI and stream results back via WS.
+    INTERACTIVE_MODE: omits --print so Anthropic classifies usage as interactive."""
 
     session.reset_accumulator()
 
-    cmd = [
-        "claude",
-        "--print",
+    cmd = ["claude"]
+    if not INTERACTIVE_MODE:
+        cmd.append("--print")
+    cmd.extend([
         "--output-format", "stream-json",
         "--model", session.model,
         "--verbose",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-    ]
+    ])
 
     if session.cc_session_id:
         cmd.extend(["--resume", session.cc_session_id])
 
     cmd.extend(["--", message])
 
-    log.info(f"Spawning: {' '.join(cmd[:6])}... (session={session.id}, cc={session.cc_session_id})")
+    mode = "interactive" if INTERACTIVE_MODE else "print"
+    log.info(f"Spawning ({mode}): {' '.join(cmd[:6])}... (session={session.id}, cc={session.cc_session_id})")
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if INTERACTIVE_MODE else None,
             limit=20 * 1024 * 1024,
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
@@ -1384,6 +1389,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         session._proc = proc
 
         buffer = ""
+        exit_sent = False
         async for chunk in proc.stdout:
             buffer += chunk.decode("utf-8", errors="replace")
             while "\n" in buffer:
@@ -1392,6 +1398,15 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 if not line:
                     continue
                 await handle_cli_line(line, session, ws)
+                # Interactive mode: CC won't auto-exit, send /exit after response
+                if INTERACTIVE_MODE and session._result_sent and not exit_sent:
+                    exit_sent = True
+                    try:
+                        proc.stdin.write(b"/exit\n")
+                        await proc.stdin.drain()
+                        proc.stdin.close()
+                    except Exception:
+                        pass
 
         if buffer.strip():
             await handle_cli_line(buffer.strip(), session, ws)
