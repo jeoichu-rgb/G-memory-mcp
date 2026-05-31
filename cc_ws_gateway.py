@@ -1079,6 +1079,12 @@ async def websocket_endpoint(ws: WebSocket):
                     "event": "session:list",
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
+                if peb_state.get("enabled"):
+                    peb_state["pebbling_session_id"] = sid
+                    peb_state["patrol_checks_done"] = []
+                    peb_state["pebbling_history"] = []
+                    save_peb_state()
+                    log.info(f"Pebbling auto-followed to new session {sid}")
                 log.info(f"Session created: {sid}")
 
             elif event == "session:switch":
@@ -1094,6 +1100,12 @@ async def websocket_endpoint(ws: WebSocket):
                         "model": current_session.model,
                         "effort": current_session.effort,
                     })
+                    if peb_state.get("enabled") and peb_state.get("pebbling_session_id") != sid:
+                        peb_state["pebbling_session_id"] = sid
+                        peb_state["patrol_checks_done"] = []
+                        peb_state["pebbling_history"] = []
+                        save_peb_state()
+                        log.info(f"Pebbling auto-followed to session {sid}")
                     log.info(f"Switched to session: {sid}")
 
             elif event == "session:delete":
@@ -1334,9 +1346,12 @@ async def websocket_endpoint(ws: WebSocket):
                 if enabled:
                     peb_state["patrol_checks_done"] = []
                     peb_state["pebbling_history"] = []
+                    sid = data.get("sessionId") or (current_session.id if current_session else None)
+                    if sid:
+                        peb_state["pebbling_session_id"] = sid
                 save_peb_state()
-                log.info(f"Pebbling {'enabled' if enabled else 'disabled'} (all layers)")
-                await ws.send_json({"event": "pebbling:status", "enabled": enabled})
+                log.info(f"Pebbling {'enabled' if enabled else 'disabled'} → session={peb_state.get('pebbling_session_id')}")
+                await ws.send_json({"event": "pebbling:status", "enabled": enabled, "session_id": peb_state.get("pebbling_session_id")})
 
             else:
                 log.info(f"Unhandled event: {event}")

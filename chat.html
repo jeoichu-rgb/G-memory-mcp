@@ -1032,6 +1032,7 @@ function handleWSMessage(data) {
       document.getElementById('pebbleToggle').checked = data.enabled;
       document.getElementById('pebbleIcon').textContent = data.enabled ? '🪨' : '🐧';
       showPebbleStatus(data.enabled ? 'ON' : '', data.enabled ? 'ok' : '');
+      localStorage.setItem('pebble-enabled', data.enabled ? '1' : '0');
       break;
     case 'pebbling:message':
       addPebblingMessage(data.content, data.source, data.time);
@@ -1978,7 +1979,8 @@ function showCtxStatus(msg, isError) {
 ══════════════════════════════════════ */
 function togglePebbling() {
   const enabled = document.getElementById('pebbleToggle').checked;
-  wsSend('pebbling:toggle', { enabled });
+  localStorage.setItem('pebble-enabled', enabled ? '1' : '0');
+  wsSend('pebbling:toggle', { enabled, sessionId: currentSessionId });
   document.getElementById('pebbleIcon').textContent = enabled ? '🪨' : '🐧';
   showPebbleStatus(enabled ? 'ON' : '', enabled ? 'ok' : '');
 }
@@ -2008,6 +2010,16 @@ function addPebblingMessage(content, source, time) {
 /* ══════════════════════════════════════
    INIT
 ══════════════════════════════════════ */
+// Restore 🐧 toggle from localStorage (instant UI, no flash before WS connects)
+(function() {
+  if (localStorage.getItem('pebble-enabled') === '1') {
+    document.getElementById('pebbleToggle').checked = true;
+    document.getElementById('pebbleIcon').textContent = '🪨';
+    document.getElementById('pebbleStatus').textContent = 'ON';
+    document.getElementById('pebbleStatus').className = 'keepalive-status ok';
+  }
+})();
+
 connectWS();
 </script>
 </body>
