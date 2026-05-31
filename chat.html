@@ -1936,7 +1936,7 @@ function renderContextItems(items) {
     <div class="ctx-item" data-id="${safeId}">
       <div class="ctx-item-date">${escapeHtml(item.date || '')} · ${escapeHtml(item.source_session || '')}</div>
       <div class="ctx-item-content" contenteditable="true"
-        onblur="editContext('${safeId}', this.textContent)">${escapeHtml(item.content || '')}</div>
+        oninput="debounceSaveCtx(this, '${safeId}')">${escapeHtml(item.content || '')}</div>
       <div class="ctx-item-actions">
         <button onclick="deleteContext('${safeId}')" title="删除">✕</button>
       </div>
@@ -1948,8 +1948,19 @@ function deleteContext(id) {
   wsSend('context:delete', { id });
 }
 
-function editContext(id, content) {
-  wsSend('context:edit', { id, content: content.trim() });
+const _ctxTimers = {};
+function debounceSaveCtx(el, id) {
+  clearTimeout(_ctxTimers[id]);
+  const dateEl = el.closest('.ctx-item').querySelector('.ctx-item-date');
+  _ctxTimers[id] = setTimeout(() => {
+    wsSend('context:edit', { id, content: el.textContent.trim() });
+    if (dateEl) {
+      const orig = dateEl.dataset.orig || dateEl.textContent;
+      dateEl.dataset.orig = orig;
+      dateEl.textContent = orig + ' · ✓';
+      setTimeout(() => { dateEl.textContent = orig; }, 1500);
+    }
+  }, 600);
 }
 
 function showCtxStatus(msg, isError) {
