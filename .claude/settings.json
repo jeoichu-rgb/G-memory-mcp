@@ -12,6 +12,8 @@
   },
   "permissions": {
     "allow": [
+      "Bash",
+      "Read",
       "mcp__claude_ai_Erik_tools",
       "mcp__claude_ai_coreading"
     ]
