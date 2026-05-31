@@ -1381,7 +1381,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE if INTERACTIVE_MODE else None,
+            stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
             limit=20 * 1024 * 1024,
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
@@ -1389,7 +1389,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         session._proc = proc
 
         buffer = ""
-        exit_sent = False
         async for chunk in proc.stdout:
             buffer += chunk.decode("utf-8", errors="replace")
             while "\n" in buffer:
@@ -1398,15 +1397,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 if not line:
                     continue
                 await handle_cli_line(line, session, ws)
-                # Interactive mode: CC won't auto-exit, send /exit after response
-                if INTERACTIVE_MODE and session._result_sent and not exit_sent:
-                    exit_sent = True
-                    try:
-                        proc.stdin.write(b"/exit\n")
-                        await proc.stdin.drain()
-                        proc.stdin.close()
-                    except Exception:
-                        pass
 
         if buffer.strip():
             await handle_cli_line(buffer.strip(), session, ws)
