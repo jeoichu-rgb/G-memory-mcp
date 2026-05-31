@@ -1016,6 +1016,11 @@ function handleWSMessage(data) {
     case 'context:list':
       renderContextItems(data.items || []);
       break;
+    case 'context:edit:ok': {
+      const el = document.querySelector(`.ctx-item[data-id="${data.id}"] .ctx-item-date`);
+      if (el) { el.dataset.origText = el.dataset.origText || el.textContent; el.textContent = el.dataset.origText + ' · ✓已保存'; setTimeout(() => { el.textContent = el.dataset.origText; }, 1500); }
+      break;
+    }
     case 'context:error':
       showCtxStatus('✗ ' + (data.message || '生成失败'), true);
       document.getElementById('ctxGenerateBtn').disabled = false;

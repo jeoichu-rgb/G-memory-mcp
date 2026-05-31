@@ -1324,7 +1324,7 @@ async def websocket_endpoint(ws: WebSocket):
                         item["content"] = new_content
                         break
                 save_context_store(store)
-                await ws.send_json({"event": "context:list", "items": store["items"]})
+                await ws.send_json({"event": "context:edit:ok", "id": ctx_id})
 
             # ── Keepalive ──
 
