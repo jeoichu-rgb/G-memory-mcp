@@ -937,6 +937,9 @@ class Session:
         self.total_cache_read = 0
         self.total_cache_create = 0
         self.total_cost = 0.0
+        # Compaction tracking
+        self.compaction_count = 0
+        self.last_context_size = 0
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -1373,8 +1376,17 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
     cmd.extend(["--", message])
 
+    # Progressive compaction: 30% → 40% → 50% (cap)
+    compact_pct = min(30 + session.compaction_count * 10, 50)
+    spawn_env = {
+        **os.environ,
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
+    }
+
     mode = "interactive" if INTERACTIVE_MODE else "print"
-    log.info(f"Spawning ({mode}): {' '.join(cmd[:6])}... (session={session.id}, cc={session.cc_session_id})")
+    log.info(f"Spawning ({mode}, compact@{compact_pct}%): {' '.join(cmd[:6])}... "
+             f"(session={session.id}, cc={session.cc_session_id})")
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1384,7 +1396,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
             limit=20 * 1024 * 1024,
             cwd=CC_CWD,
-            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+            env=spawn_env,
         )
         session._proc = proc
 
@@ -1566,11 +1578,27 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         session.total_cache_read += msg_cache_read
         session.total_cache_create += msg_cache_create
         session.total_cost += cost or 0
+
+        # Detect compaction: context dropped >30% from previous turn
+        du = display_usage
+        ctx_now = (du.get("input_tokens", 0)
+                   + du.get("cache_read_input_tokens", 0)
+                   + du.get("cache_creation_input_tokens", 0))
+        compacted = False
+        if session.last_context_size > 0 and ctx_now < session.last_context_size * 0.7:
+            session.compaction_count += 1
+            compacted = True
+            log.info(f"Compaction detected! {session.last_context_size} → {ctx_now} "
+                     f"(×{session.compaction_count})")
+        session.last_context_size = ctx_now
+
         await ws.send_json({
             "event": "message:complete",
             "context_size": display_usage,
             "turn_usage": usage,
             "cost": cost,
+            "compaction_count": session.compaction_count,
+            "compacted": compacted,
             "session_usage": {
                 "total_input": session.total_input,
                 "total_output": session.total_output,

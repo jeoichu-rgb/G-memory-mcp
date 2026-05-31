@@ -615,6 +615,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
    ANIMATIONS
 ══════════════════════════════════════ */
 @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fadeInOut { 0%{opacity:0;transform:translateX(-50%) translateY(-8px)} 15%{opacity:1;transform:translateX(-50%) translateY(0)} 80%{opacity:1} 100%{opacity:0} }
 .msg-row { animation:fadeIn .15s ease; }
 
 /* Session delete button */
@@ -874,6 +875,7 @@ let messageElements = {};  // msgId → DOM element
 let isStreaming = false;
 let contextUsed = 0;
 let contextTotal = 200000;
+let compactionCount = 0;
 
 /* ══════════════════════════════════════
    THEME
@@ -1238,8 +1240,12 @@ function finalizeMessage(data) {
 
   // Update context bar — use context_size (last API call's real window, not cumulative)
   const ctxUsage = data.context_size || turnUsage;
+  if (data.compaction_count !== undefined) compactionCount = data.compaction_count;
   if (data.session_usage || ctxUsage) {
     updateContextFromSession(data.session_usage, ctxUsage, data.cost);
+  }
+  if (data.compacted) {
+    showCompactionToast();
   }
 }
 
@@ -1453,6 +1459,7 @@ function updateContextFromSession(su, msgUsage, cost) {
   const totalCacheRead = su ? (su.total_cache_read || 0) : 0;
 
   let label = `${fmtTokens(contextUsed)} / ${fmtTokens(contextTotal)}`;
+  if (compactionCount > 0) label += ` · 压缩×${compactionCount}`;
   if (totalCacheRead) label += ` · cache ${fmtTokens(totalCacheRead)}`;
   if (sessionCost) label += ` · $${sessionCost.toFixed(4)}`;
 
@@ -1478,6 +1485,23 @@ function renderContextBar() {
   if (pct < 40) fill.style.background = 'var(--context-green)';
   else if (pct < 70) fill.style.background = 'var(--context-yellow)';
   else fill.style.background = 'var(--context-red)';
+}
+
+function showCompactionToast() {
+  const msg = compactionCount >= 3
+    ? `上下文已压缩 ×${compactionCount}，建议换个新窗口`
+    : `上下文已压缩 ×${compactionCount}`;
+  const toast = document.createElement('div');
+  toast.textContent = msg;
+  toast.style.cssText = `
+    position:fixed; top:60px; left:50%; transform:translateX(-50%);
+    background:var(--bg-out); color:var(--text-primary);
+    border:1px solid var(--context-yellow); border-radius:8px;
+    padding:8px 16px; font-size:13px; z-index:9999;
+    animation: fadeInOut 3s ease forwards;
+  `;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3200);
 }
 
 /* ══════════════════════════════════════
