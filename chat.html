@@ -1021,12 +1021,6 @@ function handleWSMessage(data) {
       break;
 
     // Pebbling system
-    case 'keepalive:ok':
-      showPebbleStatus('✓' + (data.time || ''), 'ok');
-      break;
-    case 'keepalive:fail':
-      showPebbleStatus('✗', 'fail');
-      break;
     case 'pebbling:status':
       document.getElementById('pebbleToggle').checked = data.enabled;
       document.getElementById('pebbleIcon').textContent = data.enabled ? '🪨' : '🐧';

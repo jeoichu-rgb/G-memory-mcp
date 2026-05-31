@@ -63,7 +63,6 @@ DENY_TOOLS = [
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
-KEEPALIVE_INTERVAL = 50 * 60  # 50 minutes
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -463,55 +462,6 @@ async def search_memory_for_injection(message: str) -> str:
         return ""
 
 
-# ══════════════════════════════════════════════
-#  KEEPALIVE (cache TTL refresh)
-# ══════════════════════════════════════════════
-
-async def run_keepalive(session: "Session") -> bool:
-    """Send minimal keepalive to CC CLI to refresh prompt cache."""
-    global active_ws
-    if not session.cc_session_id:
-        return False
-
-    cmd = [
-        "claude", "--print", "--output-format", "stream-json",
-        "--verbose",
-        "--model", session.model,
-        "--max-turns", "1",
-        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-        "--resume", session.cc_session_id,
-        "--", "[keepalive] 扣个1，测试",
-    ]
-    log.info(f"Keepalive → session {session.id} (cc={session.cc_session_id})")
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=1024 * 1024,
-            cwd=CC_CWD,
-            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=30)
-        log.info(f"Keepalive OK (exit={proc.returncode})")
-        if active_ws:
-            try:
-                await active_ws.send_json({
-                    "event": "keepalive:ok",
-                    "time": datetime.now(SGT).strftime("%H:%M"),
-                })
-            except Exception:
-                pass
-        return True
-    except Exception as e:
-        log.warning(f"Keepalive failed: {e}")
-        if active_ws:
-            try:
-                await active_ws.send_json({"event": "keepalive:fail", "message": str(e)})
-            except Exception:
-                pass
-        return False
 
 
 # ══════════════════════════════════════════════
@@ -894,7 +844,7 @@ async def run_pebbling_action(
 # ── Three-layer worker ──
 
 async def pebbling_worker():
-    """App-level background: keepalive (L0) + patrol (L1) + pebbling (L2).
+    """App-level background: patrol (L1) + pebbling (L2).
     Runs independently of WebSocket connections."""
     global peb_state
     try:
@@ -910,15 +860,6 @@ async def pebbling_worker():
                 continue
 
             now = time_mod.time()
-
-            # ── L0: Keepalive ──
-            elapsed_cache = now - peb_state.get("t_cache", now)
-            if elapsed_cache >= KEEPALIVE_INTERVAL:
-                ok = await run_keepalive(session)
-                if ok:
-                    peb_state["t_cache"] = time_mod.time()
-                    save_peb_state()
-
             elapsed_jeoi = now - peb_state.get("t_jeoi", now)
 
             # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
