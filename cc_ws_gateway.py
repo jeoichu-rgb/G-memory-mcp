@@ -51,12 +51,12 @@ CUSTOM_SYSTEM_PROMPT = (
 )
 
 DENY_TOOLS = [
-    "Edit", "Write", "Glob", "Grep", "Agent", "AskUserQuestion",
+    "Bash", "Edit", "Write", "Glob", "Grep", "Agent", "AskUserQuestion",
     "Skill", "ToolSearch", "ScheduleWakeup", "NotebookEdit", "WebFetch",
     "WebSearch", "Monitor", "CronCreate", "CronDelete", "CronList",
     "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree",
-    "PushNotification", "RemoteTrigger", "TaskCreate", "TaskGet",
-    "TaskList", "TaskStop", "TaskUpdate", "TaskOutput", "PowerShell",
+    "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate",
+    "TaskOutput", "PowerShell",
 ]
 
 # DeepSeek API for context summarization (same key as claude_memory.py)
@@ -959,6 +959,7 @@ class Session:
         self._result_sent = False
         self._last_usage: dict = {}
         self._proc: asyncio.subprocess.Process | None = None
+        self._stop_requested = False
         # Cumulative usage tracking
         self.total_input = 0
         self.total_output = 0
@@ -988,6 +989,7 @@ class Session:
         self._current_thinking = ""
         self._current_tools = []
         self._result_sent = False
+        self._stop_requested = False
 
 
 sessions: dict[str, Session] = {}
@@ -1005,8 +1007,20 @@ async def startup_load_sessions():
         settings = read_claude_settings()
         perms = settings.setdefault("permissions", {})
         perms["deny"] = DENY_TOOLS
-        if "Bash" not in perms.get("allow", []):
-            perms.setdefault("allow", []).insert(0, "Bash")
+        if "Read" not in perms.get("allow", []):
+            perms.setdefault("allow", []).insert(0, "Read")
+        # Remove Bash from allow if present (legacy)
+        allow_list = perms.get("allow", [])
+        if "Bash" in allow_list:
+            allow_list.remove("Bash")
+
+        # Purge any push/notify MCP servers CC may have added
+        servers = settings.get("mcpServers", {})
+        purged = [k for k in servers if "push" in k.lower() or "notify" in k.lower()]
+        for k in purged:
+            del servers[k]
+            allow_list[:] = [p for p in allow_list if not p.startswith(f"mcp__{k}")]
+            log.info(f"Purged rogue MCP: {k}")
 
         # Auto-detect internal palace URL (skip Traefik/nginx for SSE stability)
         palace_url = os.getenv("PALACE_MCP_URL", "")
@@ -1184,19 +1198,21 @@ async def websocket_endpoint(ws: WebSocket):
                 if content_blocks:
                     snap_path = save_snap(content_blocks)
 
-                # Injection logic: 📎 toggle controls both modes
-                cli_message = message
+                # Auto-inject current time (UTC+8) into every message
+                now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                time_tag = "[" + now_str + " UTC+8]"
+                cli_message = time_tag + "\n" + message
                 memory_on = data.get("memory_enabled", False)
                 if memory_on:
                     if not current_session.cc_session_id:
                         injection = await build_injection()
                         if injection:
-                            cli_message = injection + "\n\n" + message
+                            cli_message = injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected context for new session {current_session.id}")
                     else:
                         mem_injection = await search_memory_for_injection(message)
                         if mem_injection:
-                            cli_message = mem_injection + "\n\n" + message
+                            cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected memory for session {current_session.id}")
 
                 # Snap: prepend image instruction
@@ -1246,12 +1262,16 @@ async def websocket_endpoint(ws: WebSocket):
                 pass
 
             elif event == "chat:stop":
-                if current_session and current_session._proc:
-                    try:
-                        current_session._proc.terminate()
-                        log.info(f"Stopped generation for session {current_session.id}")
-                    except ProcessLookupError:
-                        pass
+                if current_session:
+                    current_session._stop_requested = True
+                    proc = current_session._proc
+                    if proc and proc.returncode is None:
+                        try:
+                            proc.terminate()
+                            log.info(f"SIGTERM sent to session {current_session.id}")
+                        except ProcessLookupError:
+                            pass
+                        asyncio.create_task(_force_kill_proc(current_session))
 
             elif event == "mcp:list":
                 try:
@@ -1398,6 +1418,18 @@ async def websocket_endpoint(ws: WebSocket):
 #  CLAUDE CLI
 # ══════════════════════════════════════════════
 
+async def _force_kill_proc(session: Session):
+    """Wait 1s then SIGKILL if process still alive."""
+    await asyncio.sleep(1)
+    proc = session._proc
+    if proc and proc.returncode is None:
+        try:
+            proc.kill()
+            log.info(f"SIGKILL sent to session {session.id}")
+        except ProcessLookupError:
+            pass
+
+
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Spawn claude CLI and stream results back via WS.
     INTERACTIVE_MODE: omits --print so Anthropic classifies usage as interactive."""
@@ -1445,6 +1477,9 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
         buffer = ""
         async for chunk in proc.stdout:
+            if session._stop_requested:
+                log.info(f"Stop requested, breaking stream for {session.id}")
+                break
             buffer += chunk.decode("utf-8", errors="replace")
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
@@ -1461,7 +1496,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if stderr_text:
             log.warning(f"CLI stderr: {stderr_text[:500]}")
 
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            log.warning(f"CLI force-killed after timeout for {session.id}")
         session._proc = None
         log.info(f"CLI exited with code {proc.returncode}")
 
