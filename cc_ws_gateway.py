@@ -1534,7 +1534,23 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
     except Exception as e:
         log.exception(f"run_claude error: {e}")
-        await ws.send_json({"event": "system:error", "message": str(e)})
+        # Save partial response even on error
+        if session._current_text:
+            append_message(
+                session.id, "assistant", session._current_text,
+                thinking=session._current_thinking,
+                tools=session._current_tools if session._current_tools else None,
+            )
+        ws_alive = True
+        try:
+            await ws.send_json({"event": "system:error", "message": str(e)})
+        except Exception:
+            ws_alive = False
+        # WS dead (user locked screen / switched away) — push fallback
+        if not ws_alive and session._current_text:
+            preview = session._current_text.replace(chr(10), " ")[:100]
+            await send_web_push("Erik", preview, url="/chat.html")
+            log.info(f"Push fallback sent: {preview[:60]}")
 
 
 async def handle_cli_line(line: str, session: Session, ws: WebSocket):
