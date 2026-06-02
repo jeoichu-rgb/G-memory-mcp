@@ -413,8 +413,7 @@ mcp = FastMCP(
         "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
         "zhihu          — 知乎操作，params={type:hot/question/recommend/search, id(可选), keyword(可选)}\n"
         "search_chronicle — 检索周历/月历总结，当Jeoi提到时间跨度词时主动调用，params={keyword}\n"
-        "push_notify     — 推送通知到Jeoi手机，params={title(可选), body(必填), url(可选), tag(可选)}\n"
-        "push_status     — 查看推送订阅状态，无需params\n"
+        "，params={title(可选), body(必填), url(可选), tag(可选)}\n"
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -854,45 +853,6 @@ def palace(action: str, params: dict = {}) -> str:
         return "\n".join(lines)
     
 
-# ── push_notify ──────────────────────────────────────────────
-    elif action == "push_notify":
-        title = params.get("title", "Erik")
-        body = params.get("body", "")
-        url = params.get("url", "/")
-        tag = params.get("tag", "erik-push")
-        if not body:
-            return "错误：push_notify 需要 body 参数（推送内容）。"
-        try:
-            import httpx as _hx
-            API_BASE = os.getenv("PUSH_API_BASE", "http://localhost:8000")
-            r = _hx.post(
-                f"{API_BASE}/api/push/send",
-                json={"title": title, "body": body, "url": url, "tag": tag},
-                headers={"x-secret": PALACE_SECRET},
-                timeout=10
-            )
-            data = r.json()
-            if data.get("ok"):
-                return f"✓ 推送已发送（{data.get('sent', 0)}个订阅）"
-            else:
-                return f"推送失败：{data.get('error', '未知错误')}"
-        except Exception as e:
-            return f"推送异常：{e}"
-
-    # ── push_status ──────────────────────────────────────────────
-    elif action == "push_status":
-        try:
-            import httpx as _hx
-            API_BASE = os.getenv("PUSH_API_BASE", "http://localhost:8000")
-            r = _hx.get(
-                f"{API_BASE}/api/push/status",
-                headers={"x-secret": PALACE_SECRET},
-                timeout=5
-            )
-            data = r.json()
-            return f"推送订阅数：{data.get('total', 0)} | VAPID配置：{'✓' if data.get('vapid_configured') else '✗'}"
-        except Exception as e:
-            return f"查询失败：{e}"
 
     # ── unknown ───────────────────────────────────────────────
     else:
@@ -904,7 +864,7 @@ def palace(action: str, params: dict = {}) -> str:
             "toy_status / toy_play / browser_open / browser_js / browser_click / "
             "bunny_status / bunny_play / bunny_deflate / "
             "read_health / "
-            "push_notify / push_status / "
+            ""
             "zhihu / send_email / read_email"
         )
 
