@@ -720,6 +720,30 @@ async def send_telegram(text: str):
         log.warning(f"Telegram send failed: {e}")
 
 
+# ── Web Push ──
+
+PUSH_API_BASE = os.getenv("PUSH_API_BASE", "https://erikssheep.uk")
+
+async def send_web_push(title: str, body: str, url: str = "/", tag: str = "erik-push"):
+    """Send Web Push notification via main.py API."""
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            r = await client.post(
+                f"{PUSH_API_BASE}/api/push/send",
+                json={"title": title, "body": body, "url": url, "tag": tag},
+                headers={"x-secret": PALACE_SECRET},
+            )
+            data = r.json()
+            if data.get("ok"):
+                log.info(f"Web Push sent: {body[:60]}")
+            elif data.get("error") == "没有活跃的订阅":
+                pass  # 静默：还没订阅
+            else:
+                log.warning(f"Web Push failed: {data}")
+    except Exception as e:
+        log.warning(f"Web Push error: {e}")
+
+
 async def push_system_error(source: str, error_text: str):
     """Push error notification via WS + Telegram. Not saved as chat message."""
     global active_ws
@@ -735,6 +759,7 @@ async def push_system_error(source: str, error_text: str):
         except Exception:
             pass
     await send_telegram(notice)
+    await send_web_push("⚠ 系统", notice)
 
 
 # ── Push helper (WS if available, else pending queue) ──
@@ -771,6 +796,9 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
 
     await send_telegram(content)
+    # WS 离线时才推 Web Push（在线时前端直接显示，不用推）
+    if not sent:
+        await send_web_push("Erik", content)
 
 
 async def replay_pending(ws: WebSocket):
