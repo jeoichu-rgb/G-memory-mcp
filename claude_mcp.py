@@ -40,6 +40,15 @@ from datetime import timezone, timedelta
 SGT = timezone(timedelta(hours=8))
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+
+# SSE keepalive: prevent Cloudflare/proxy 100s idle timeout
+import sse_starlette.sse as _sse
+_OrigESR = _sse.EventSourceResponse
+class _PatchedESR(_OrigESR):
+    def __init__(self, *a, **kw):
+        kw.setdefault("ping", 30)
+        super().__init__(*a, **kw)
+_sse.EventSourceResponse = _PatchedESR
 from claude_memory import (
     claude_search_memory,
     claude_add_core_memory,
