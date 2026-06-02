@@ -980,6 +980,11 @@ function handleWSMessage(data) {
       finalizeMessage(data);
       break;
 
+    case 'system:compacted':
+      if (data.compaction_count !== undefined) compactionCount = data.compaction_count;
+      showCompactionToast();
+      break;
+
     case 'control:permission':
       // Auto-approve (CLI_BYPASS_PERMISSIONS=true)
       wsSend('chat:respond', { response: 'approve' });

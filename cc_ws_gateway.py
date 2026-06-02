@@ -1476,6 +1476,13 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         event = json.loads(line)
     except json.JSONDecodeError:
         log.debug(f"Non-JSON line: {line[:200]}")
+        if "compact" in line.lower() or "压缩" in line:
+            log.info(f"Compaction text detected in non-JSON: {line[:200]}")
+            session.compaction_count += 1
+            await ws.send_json({
+                "event": "system:compacted",
+                "compaction_count": session.compaction_count,
+            })
         session._current_text += line + "\n"
         await ws.send_json({"event": "stream:text", "text": line + "\n"})
         return
@@ -1538,6 +1545,7 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
 
     elif etype == "system":
         subtype = event.get("subtype", "")
+        log.info(f"System event subtype={subtype}: {json.dumps(event, ensure_ascii=False)[:300]}")
         if subtype == "init":
             sid = event.get("session_id", "")
             if sid:
@@ -1599,6 +1607,9 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         ctx_now = (du.get("input_tokens", 0)
                    + du.get("cache_read_input_tokens", 0)
                    + du.get("cache_creation_input_tokens", 0))
+        log.info(f"Compaction check — _last_usage empty={not session._last_usage}, "
+                 f"ctx_now={ctx_now}, last_ctx={session.last_context_size}, "
+                 f"du_source={'_last_usage' if session._last_usage else 'result'}")
         compacted = False
         if session.last_context_size > 0 and ctx_now < session.last_context_size * 0.7:
             session.compaction_count += 1
