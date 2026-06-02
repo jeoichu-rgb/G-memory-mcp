@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Memory Palace</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a1612">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;1,400&family=DM+Mono:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
 <style>
@@ -236,6 +241,20 @@ textarea.inp{resize:vertical;line-height:1.7;}
 .modal-overlay.open{display:flex;}
 .modal-box{background:var(--surf);border:1px solid var(--border);border-radius:var(--r) var(--r) 0 0;padding:20px;width:100%;max-height:80vh;overflow-y:auto;animation:fadeUp .2s ease;}
 .modal-title{font-family:var(--serif);font-size:16px;margin-bottom:14px;}
+
+/* ════════════════════════════════════
+   PUSH NOTIFICATION
+════════════════════════════════════ */
+.push-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin:16px;display:flex;align-items:center;gap:12px;transition:all .2s;}
+.push-card.active{border-color:var(--green);background:#0a2e28;}
+.push-icon{font-size:24px;flex-shrink:0;opacity:.6;}
+.push-info{flex:1;}
+.push-title{font-size:12px;margin-bottom:3px;}
+.push-desc{font-size:10px;color:var(--dim);line-height:1.5;}
+.push-btn{background:var(--violet-d);border:1px solid var(--violet);color:var(--violet);font-family:var(--font);font-size:10px;padding:6px 14px;cursor:pointer;border-radius:var(--r-sm);transition:all .15s;white-space:nowrap;}
+.push-btn:hover{background:var(--violet);color:#1a1612;}
+.push-btn.off{background:var(--card);border-color:var(--border);color:var(--dim);}
+.push-btn:disabled{opacity:.4;cursor:not-allowed;}
 </style>
 </head>
 <body>
@@ -316,6 +335,15 @@ textarea.inp{resize:vertical;line-height:1.7;}
         </div>
         <div class="dc-arr">↗</div>
       </div>
+    </div>
+    <!-- Push Notification Card -->
+    <div class="push-card" id="push-card">
+      <div class="push-icon">🔔</div>
+      <div class="push-info">
+        <div class="push-title" id="push-title">推送通知</div>
+        <div class="push-desc" id="push-desc">开启后 Erik 可以主动找你</div>
+      </div>
+      <button class="push-btn" id="push-btn" onclick="togglePush()">开启推送</button>
     </div>
   </div>
 </div>
@@ -1243,6 +1271,142 @@ function openChat(){
 }
 
 init();
+
+
+// ══════════════════════════════════════════════════════════════════
+//  Web Push 推送
+// ══════════════════════════════════════════════════════════════════
+
+function isRunningAsPWA() {
+  return window.navigator.standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function checkPushState() {
+  const card = document.getElementById('push-card');
+  const btn = document.getElementById('push-btn');
+  const title = document.getElementById('push-title');
+  const desc = document.getElementById('push-desc');
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    title.textContent = '推送不可用';
+    desc.textContent = '当前浏览器不支持 Web Push';
+    btn.style.display = 'none';
+    return;
+  }
+
+  if (!isRunningAsPWA()) {
+    title.textContent = '推送通知';
+    desc.textContent = '需要先「添加到主屏幕」再从主屏幕打开 ↗';
+    btn.textContent = '非 PWA 模式';
+    btn.disabled = true;
+    btn.classList.add('off');
+    return;
+  }
+
+  // 注册 Service Worker
+  try {
+    await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+  } catch (e) {
+    desc.textContent = 'Service Worker 注册失败';
+    return;
+  }
+
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+
+  if (sub) {
+    card.classList.add('active');
+    title.textContent = '推送已开启 ✓';
+    desc.textContent = 'Erik 可以主动推通知到你手机';
+    btn.textContent = '关闭推送';
+    btn.classList.add('off');
+    btn.disabled = false;
+  } else {
+    card.classList.remove('active');
+    title.textContent = '推送通知';
+    desc.textContent = '开启后 Erik 可以主动找你';
+    btn.textContent = '开启推送';
+    btn.classList.remove('off');
+    btn.disabled = false;
+  }
+}
+
+async function togglePush() {
+  const btn = document.getElementById('push-btn');
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const existingSub = await reg.pushManager.getSubscription();
+
+    if (existingSub) {
+      // 取消订阅
+      await existingSub.unsubscribe();
+      await fetch(API_BASE + '/api/push/unsubscribe', {
+        method: 'POST', headers: hdr(),
+        body: JSON.stringify({ endpoint: existingSub.endpoint })
+      });
+      checkPushState();
+      return;
+    }
+
+    // iOS 只弹一次权限！
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      document.getElementById('push-desc').textContent = '权限被拒绝，需要到系统设置手动开启';
+      btn.textContent = '权限被拒';
+      btn.disabled = false;
+      return;
+    }
+
+    // 获取 VAPID 公钥
+    const keyResp = await fetch(API_BASE + '/api/push/vapid-key');
+    const { publicKey } = await keyResp.json();
+
+    if (!publicKey) {
+      document.getElementById('push-desc').textContent = '服务端 VAPID 未配置';
+      btn.disabled = false;
+      return;
+    }
+
+    // 注册推送订阅
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+
+    // 把订阅信息提交到服务端
+    const subJson = sub.toJSON();
+    await fetch(API_BASE + '/api/push/subscribe', {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({
+        endpoint: subJson.endpoint,
+        keys: subJson.keys
+      })
+    });
+
+    checkPushState();
+  } catch (e) {
+    console.error('Push toggle error:', e);
+    document.getElementById('push-desc').textContent = '出错了：' + e.message;
+    btn.disabled = false;
+    btn.textContent = '重试';
+  }
+}
+
+// 页面加载后检查推送状态
+setTimeout(checkPushState, 500);
 </script>
 </body>
 </html>

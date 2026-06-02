@@ -66,6 +66,10 @@ class CheckSecretMiddleware:
             or path == "/webhook/github"
             or path.startswith(mcp_path)
             or path == "/api/pebbling/event"
+            or path == "/sw.js"
+            or path == "/manifest.json"
+            or path.startswith("/icon-")
+            or path == "/api/push/vapid-key"
         ):
             await self.app(scope, receive, send)
             return
@@ -743,6 +747,153 @@ async def api_mcp_test(request: Request):
     except Exception as e:
         return {"name": name, "ok": False, "message": str(e)}
 
+
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Web Push 推送
+# ══════════════════════════════════════════════════════════════════
+from fastapi.responses import FileResponse
+
+VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_CLAIMS      = {"sub": "mailto:eriklamb@163.com"}
+PUSH_SUBS_FILE    = Path("/app/push_subscriptions.json")
+
+
+def _load_push_subs() -> list:
+    if PUSH_SUBS_FILE.exists():
+        try:
+            return _json.loads(PUSH_SUBS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def _save_push_subs(subs: list):
+    PUSH_SUBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PUSH_SUBS_FILE.write_text(
+        _json.dumps(subs, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+# ── PWA 静态文件 ──────────────────────────────────────────────────
+@app.get("/sw.js")
+async def serve_sw():
+    return FileResponse("sw.js", media_type="application/javascript",
+                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+@app.get("/manifest.json")
+async def serve_manifest():
+    return FileResponse("manifest.json", media_type="application/manifest+json")
+
+@app.get("/icon-192.png")
+async def serve_icon_192():
+    return FileResponse("icon-192.png", media_type="image/png")
+
+@app.get("/icon-512.png")
+async def serve_icon_512():
+    return FileResponse("icon-512.png", media_type="image/png")
+
+
+# ── 推送 API ─────────────────────────────────────────────────────
+@app.get("/api/push/vapid-key")
+async def push_vapid_key():
+    """返回 VAPID 公钥，前端订阅时需要。"""
+    return {"publicKey": VAPID_PUBLIC_KEY}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request):
+    """前端把 subscription 对象提交上来存库。"""
+    body = await request.json()
+    endpoint = body.get("endpoint", "")
+    keys = body.get("keys", {})
+    if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+        return JSONResponse(status_code=400, content={"error": "invalid subscription"})
+
+    subs = _load_push_subs()
+    # 去重（用 endpoint 做唯一键）
+    subs = [s for s in subs if s.get("endpoint") != endpoint]
+    subs.append({
+        "endpoint": endpoint,
+        "keys": keys,
+        "created_at": datetime.now(SGT).isoformat()
+    })
+    _save_push_subs(subs)
+    return {"ok": True, "total": len(subs)}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request):
+    """取消订阅。"""
+    body = await request.json()
+    endpoint = body.get("endpoint", "")
+    subs = _load_push_subs()
+    subs = [s for s in subs if s.get("endpoint") != endpoint]
+    _save_push_subs(subs)
+    return {"ok": True, "total": len(subs)}
+
+
+@app.post("/api/push/send")
+async def push_send(request: Request):
+    """
+    发送推送通知。Erik 通过 MCP 或管理面板调用。
+    body: { title, body, url?, tag? }
+    """
+    from pywebpush import webpush, WebPushException
+
+    if not VAPID_PRIVATE_KEY:
+        return JSONResponse(status_code=500, content={"error": "VAPID_PRIVATE_KEY not configured"})
+
+    payload = await request.json()
+    notification = _json.dumps({
+        "title": payload.get("title", "Erik"),
+        "body":  payload.get("body", ""),
+        "url":   payload.get("url", "/"),
+        "tag":   payload.get("tag", "erik-push"),
+    })
+
+    subs = _load_push_subs()
+    if not subs:
+        return {"ok": False, "error": "没有活跃的订阅", "sent": 0}
+
+    sent = 0
+    failed = 0
+    dead_endpoints = []
+
+    for s in subs:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": s["endpoint"],
+                    "keys": s["keys"]
+                },
+                data=notification,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS
+            )
+            sent += 1
+        except WebPushException as e:
+            if hasattr(e, 'response') and e.response is not None and e.response.status_code in (404, 410):
+                dead_endpoints.append(s["endpoint"])
+            failed += 1
+        except Exception:
+            failed += 1
+
+    # 清理死订阅
+    if dead_endpoints:
+        subs = [s for s in subs if s["endpoint"] not in dead_endpoints]
+        _save_push_subs(subs)
+
+    return {"ok": sent > 0, "sent": sent, "failed": failed, "cleaned": len(dead_endpoints)}
+
+
+@app.get("/api/push/status")
+async def push_status():
+    """查看推送订阅状态。"""
+    subs = _load_push_subs()
+    return {"total": len(subs), "vapid_configured": bool(VAPID_PRIVATE_KEY)}
 
 if __name__ == "__main__":
     import uvicorn
