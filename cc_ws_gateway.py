@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 import time as time_mod
 import random
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -203,6 +204,22 @@ def load_history(sid: str) -> dict:
         except Exception:
             pass
     return {"meta": {}, "messages": []}
+
+
+def set_reaction(sid: str, msg_index: int, who: str, emoji: str | None):
+    """Set or clear a reaction on a specific message in history."""
+    data = load_history(sid)
+    msgs = data.get("messages", [])
+    if 0 <= msg_index < len(msgs):
+        reactions = msgs[msg_index].setdefault("reactions", {})
+        if emoji:
+            reactions[who] = emoji
+        else:
+            reactions.pop(who, None)
+        path = history_path(sid)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    return False
 
 
 def load_all_sessions() -> list["Session"]:
@@ -969,6 +986,8 @@ class Session:
         # Compaction tracking
         self.compaction_count = 0
         self.last_context_size = 0
+        # Sticker reactions: pending Jeoi reactions Erik hasn't seen yet
+        self.pending_jeoi_reactions: list[dict] = []
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -1215,6 +1234,15 @@ async def websocket_endpoint(ws: WebSocket):
                             cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected memory for session {current_session.id}")
 
+                # Sticker reactions injection (one-shot, then cleared)
+                if current_session.pending_jeoi_reactions:
+                    parts = [f"#{r['msgIndex']+1}←{r['emoji']}"
+                             for r in current_session.pending_jeoi_reactions]
+                    sticker_line = "[stickers: " + ", ".join(parts) + "]"
+                    cli_message = sticker_line + "\n" + cli_message
+                    log.info(f"Injected stickers: {sticker_line}")
+                    current_session.pending_jeoi_reactions = []
+
                 # Snap: prepend image instruction
                 if snap_path:
                     snap_instruction = (
@@ -1260,6 +1288,28 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "chat:respond":
                 pass
+
+            elif event == "reaction:set":
+                if current_session:
+                    msg_idx = data.get("msgIndex")
+                    emoji = data.get("emoji")  # str or null
+                    if msg_idx is not None:
+                        ok = set_reaction(current_session.id, msg_idx, "jeoi", emoji)
+                        if ok:
+                            # Update pending list for injection
+                            current_session.pending_jeoi_reactions = [
+                                r for r in current_session.pending_jeoi_reactions
+                                if r["msgIndex"] != msg_idx
+                            ]
+                            if emoji:
+                                current_session.pending_jeoi_reactions.append(
+                                    {"msgIndex": msg_idx, "emoji": emoji}
+                                )
+                            await ws.send_json({
+                                "event": "reaction:saved",
+                                "msgIndex": msg_idx, "emoji": emoji, "from": "jeoi",
+                            })
+                            log.info(f"Reaction: jeoi {'set ' + emoji if emoji else 'removed'} on #{msg_idx + 1}")
 
             elif event == "chat:stop":
                 if current_session:
@@ -1505,6 +1555,15 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         session._proc = None
         log.info(f"CLI exited with code {proc.returncode}")
 
+        # Parse Erik's sticker reactions before saving
+        erik_reactions = []
+        if session._current_text:
+            react_pattern = re.compile(r'<!--react:(.+?):#(\d+)-->')
+            for m in react_pattern.finditer(session._current_text):
+                emoji, idx = m.group(1), int(m.group(2)) - 1
+                erik_reactions.append((idx, emoji))
+            session._current_text = react_pattern.sub('', session._current_text).rstrip()
+
         # Save assistant response to history
         if session._current_text or session._current_thinking:
             append_message(
@@ -1514,6 +1573,19 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
+
+            # Apply Erik's sticker reactions to target messages
+            for idx, emoji in erik_reactions:
+                ok = set_reaction(session.id, idx, "erik", emoji)
+                if ok:
+                    try:
+                        await ws.send_json({
+                            "event": "reaction:erik",
+                            "msgIndex": idx, "emoji": emoji,
+                        })
+                    except Exception:
+                        pass
+                    log.info(f"Erik reacted {emoji} on #{idx + 1}")
             # Preview = last message (truncated)
             if session._current_text:
                 txt = session._current_text.replace("\n", " ")[:30]
@@ -1542,10 +1614,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             except Exception:
                 pass
         session._proc = None
-        # Save partial response even on error
+        # Save partial response even on error (strip reaction markers)
         if session._current_text:
+            react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->')
+            cleaned = react_pat.sub('', session._current_text).rstrip()
             append_message(
-                session.id, "assistant", session._current_text,
+                session.id, "assistant", cleaned or session._current_text,
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )

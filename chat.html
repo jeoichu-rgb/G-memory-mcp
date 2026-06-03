@@ -336,27 +336,71 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .memory-item:last-child { border-bottom:none; }
 .memory-source { font-size:9px; letter-spacing:.1em; opacity:.7; }
 
-/* Emoji reactions */
+/* Sticker reactions */
 .reactions {
-  display:flex; gap:2px; flex-wrap:wrap; margin-top:4px;
+  display:flex; gap:4px; flex-wrap:wrap; margin-top:6px;
 }
 .reaction {
-  background:var(--reaction-bg); border:1px solid var(--reaction-border);
-  border-radius:12px; padding:1px 6px; font-size:15px; cursor:pointer;
-  transition:transform .1s;
+  border-radius:16px; padding:2px 8px; font-size:16px;
+  line-height:1.3; display:inline-flex; align-items:center;
+  transition:transform .15s, opacity .15s;
+  user-select:none;
 }
-.reaction:hover { transform:scale(1.2); }
-.reaction.mine { border-color:var(--accent); background:rgba(0,168,132,.08); }
-.emoji-trigger {
-  background:none; border:none; cursor:pointer;
-  font-size:12px; color:var(--text-secondary); padding:1px 4px;
-  opacity:0; transition:opacity .15s; margin-left:4px;
+.reaction.from-jeoi {
+  background:#ffffff; border:1px solid #e2e2e2; cursor:pointer;
 }
-.msg-row:hover .emoji-trigger { opacity:0.5; }
-.emoji-trigger:hover { opacity:1; }
-@media (max-width: 768px) {
-  .emoji-trigger { opacity:0.4; }
+.reaction.from-erik {
+  background:var(--bg-out); border:1px solid rgba(0,168,132,.25); cursor:default;
 }
+[data-theme="dark"] .reaction.from-jeoi {
+  background:var(--reaction-bg); border-color:var(--reaction-border);
+}
+[data-theme="dark"] .reaction.from-erik {
+  background:var(--bg-out); border-color:rgba(0,168,132,.35);
+}
+.reaction.from-jeoi:hover { transform:scale(1.15); }
+
+/* Bubble lift state */
+.bubble.lifted {
+  transform:scale(1.03) translateY(-8px);
+  box-shadow:0 12px 28px rgba(0,0,0,.18);
+  z-index:100; position:relative;
+  transition:transform .2s cubic-bezier(.2,.8,.3,1.1), box-shadow .2s ease;
+}
+.reaction-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,.35);
+  z-index:90; opacity:0; transition:opacity .2s ease;
+  pointer-events:auto;
+}
+.reaction-overlay.show { opacity:1; }
+
+/* WhatsApp-style emoji bar */
+.emoji-bar {
+  position:absolute; left:0; right:0; top:100%; margin-top:4px;
+  display:flex; align-items:center;
+  background:var(--emoji-panel-bg); border-radius:22px;
+  padding:6px 8px; box-shadow:0 4px 16px rgba(0,0,0,.15);
+  z-index:101; overflow:hidden;
+  opacity:0; transform:translateY(8px) scale(0.95);
+  transition:opacity .2s ease, transform .2s cubic-bezier(.2,.8,.3,1.1);
+}
+.emoji-bar.show {
+  opacity:1; transform:translateY(0) scale(1);
+}
+.emoji-bar-scroll {
+  display:flex; gap:2px; overflow-x:auto; flex:1;
+  scrollbar-width:none; -ms-overflow-style:none;
+  scroll-behavior:smooth; padding:2px 0;
+}
+.emoji-bar-scroll::-webkit-scrollbar { display:none; }
+.emoji-bar .emoji-opt {
+  font-size:28px; cursor:pointer; padding:4px 6px; border-radius:8px;
+  flex-shrink:0; transition:transform .1s, background .1s;
+  user-select:none; -webkit-user-select:none;
+}
+.emoji-bar .emoji-opt:hover { background:var(--border); transform:scale(1.15); }
+.emoji-bar .emoji-opt:active { transform:scale(0.9); }
+.emoji-bar .emoji-opt.text-emoji { font-size:14px; display:flex; align-items:center; white-space:nowrap; }
 
 /* Image preview */
 .img-preview-wrap {
@@ -442,19 +486,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   max-width:92vw; max-height:90vh; object-fit:contain; border-radius:4px;
 }
 
-/* Emoji picker */
-.emoji-picker {
-  display:none; position:absolute; bottom:calc(100% + 4px); right:0;
-  background:var(--emoji-panel-bg); border:1px solid var(--border);
-  border-radius:var(--r); padding:8px; box-shadow:0 4px 12px rgba(0,0,0,.15);
-  z-index:20;
-}
-.emoji-picker.show { display:flex; flex-wrap:wrap; gap:4px; max-width:260px; }
-.emoji-option {
-  font-size:22px; cursor:pointer; padding:4px; border-radius:4px;
-  transition:background .1s;
-}
-.emoji-option:hover { background:var(--border); }
+
 
 /* Input area */
 .input-area {
@@ -866,7 +898,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 // WS gateway: always connect to chat subdomain
 const WS_URL = 'wss://chat.erikssheep.uk/ws';
 const MCP_API = 'https://erikssheep.uk';
-const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','🔥','💀','🥺','(￣ω￣)','(*≧ω≦)','♥'];
+const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','👍🏿','🔥','💀','🥺','😈','😄','☺️','💦','🤯','🥵','😡','😰','🥰','🙀','🦾','🖕','(￣ω￣)','(*≧ω≦)','♥'];
 
 let ws = null;
 let currentSessionId = null;
@@ -1043,6 +1075,15 @@ function handleWSMessage(data) {
       addPebblingMessage(data.content, data.source, data.time);
       break;
 
+    case 'reaction:erik': {
+      const rows = document.getElementById('messages').querySelectorAll('.msg-row');
+      const idx = data.msgIndex;
+      if (idx >= 0 && idx < rows.length) {
+        renderReaction(rows[idx].querySelector('.bubble'), 'erik', data.emoji);
+      }
+      break;
+    }
+
     default:
       console.log('[ws] unhandled:', event, data);
   }
@@ -1068,11 +1109,11 @@ function sendMessage() {
   }
   row.innerHTML = `
     <button class="msg-edit" onclick="editMessage(this)" title="编辑">✎</button>
-    <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+    <div class="bubble">
       ${imgHtml}
       <span class="msg-time">${time}</span>
       ${text ? escapeHtml(text) : ''}
-      <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
+      <div class="reactions"></div>
     </div>
   `;
   const rawSpan = document.createElement('span');
@@ -1081,6 +1122,7 @@ function sendMessage() {
   rawSpan.textContent = text;
   row.appendChild(rawSpan);
   msgArea.appendChild(row);
+  initLongPress(row.querySelector('.bubble'));
   scrollToBottom();
 
   const payload = {
@@ -1118,13 +1160,14 @@ function addUserMessage(text) {
   row.className = 'msg-row out';
   const time = formatTime(new Date());
   row.innerHTML = `
-    <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+    <div class="bubble">
       <span class="msg-time">${time}</span>
       ${escapeHtml(text)}
-      <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
+      <div class="reactions"></div>
     </div>
   `;
   msgArea.appendChild(row);
+  initLongPress(row.querySelector('.bubble'));
   scrollToBottom();
 }
 
@@ -1143,11 +1186,11 @@ function ensureAssistantBubble() {
   row.className = 'msg-row in';
   const time = formatTime(new Date());
   row.innerHTML = `
-    <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+    <div class="bubble">
       <div class="msg-meta-blocks"></div>
       <span class="msg-text"></span>
       <span class="msg-time">${time}</span>
-      <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
+      <div class="reactions"></div>
     </div>
   `;
   msgArea.appendChild(row);
@@ -1155,6 +1198,7 @@ function ensureAssistantBubble() {
   currentBubble = row.querySelector('.bubble');
   currentTextNode = row.querySelector('.msg-text');
   streamedText = '';
+  initLongPress(currentBubble);
 }
 
 function appendStreamText(text) {
@@ -1286,10 +1330,10 @@ function renderHistory(messages) {
       row.className = 'msg-row out';
       row.innerHTML = `
         <button class="msg-edit" onclick="editMessage(this)" title="编辑">✎</button>
-        <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+        <div class="bubble">
           <span class="msg-time">${time}</span>
           ${escapeHtml(msg.content)}
-          <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
+          <div class="reactions"></div>
         </div>`;
       const rawSpan = document.createElement('span');
       rawSpan.hidden = true;
@@ -1318,67 +1362,172 @@ function renderHistory(messages) {
         });
       }
       row.innerHTML = `
-        <div class="bubble" oncontextmenu="showEmojiPicker(event, this)">
+        <div class="bubble">
           <div class="msg-meta-blocks">${metaHtml}</div>
           <span class="msg-text">${renderMarkdown(msg.content || '')}</span>
           <span class="msg-time">${time}</span>
-          <div class="reactions"><button class="emoji-trigger" onclick="event.stopPropagation();showEmojiPicker(event,this.closest('.bubble'))">☺</button></div>
+          <div class="reactions"></div>
         </div>`;
     }
     msgArea.appendChild(row);
+    const bubble = row.querySelector('.bubble');
+    initLongPress(bubble);
+    const rx = msg.reactions || {};
+    if (rx.jeoi) renderReaction(bubble, 'jeoi', rx.jeoi);
+    if (rx.erik) renderReaction(bubble, 'erik', rx.erik);
   });
   scrollToBottom();
 }
 
 /* ══════════════════════════════════════
-   EMOJI REACTIONS
+   STICKER REACTIONS (WhatsApp-style)
 ══════════════════════════════════════ */
-let activeEmojiPicker = null;
+let stickerOverlay = null;
+let stickerBar = null;
+let liftedBubble = null;
+let longPressTimer = null;
+const LONG_PRESS_MS = 500;
 
-function showEmojiPicker(e, bubbleEl) {
-  e.preventDefault();
-  closeEmojiPicker();
+function getMsgIndex(bubbleEl) {
+  const row = bubbleEl.closest('.msg-row');
+  if (!row) return -1;
+  const all = [...document.getElementById('messages').querySelectorAll('.msg-row')];
+  return all.indexOf(row);
+}
 
-  const picker = document.createElement('div');
-  picker.className = 'emoji-picker show';
+function initLongPress(bubbleEl) {
+  let startX = 0, startY = 0, moved = false;
+
+  bubbleEl.addEventListener('touchstart', (e) => {
+    moved = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    longPressTimer = setTimeout(() => {
+      if (!moved) openStickerBar(bubbleEl);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  bubbleEl.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      moved = true;
+      clearTimeout(longPressTimer);
+    }
+  }, { passive: true });
+
+  bubbleEl.addEventListener('touchend', () => clearTimeout(longPressTimer));
+  bubbleEl.addEventListener('touchcancel', () => clearTimeout(longPressTimer));
+
+  bubbleEl.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openStickerBar(bubbleEl);
+  });
+}
+
+function openStickerBar(bubbleEl) {
+  closeStickerBar();
+  if (navigator.vibrate) navigator.vibrate(30);
+
+  liftedBubble = bubbleEl;
+  bubbleEl.classList.add('lifted');
+
+  stickerOverlay = document.createElement('div');
+  stickerOverlay.className = 'reaction-overlay';
+  document.body.appendChild(stickerOverlay);
+  requestAnimationFrame(() => stickerOverlay.classList.add('show'));
+  stickerOverlay.onclick = closeStickerBar;
+
+  const bar = document.createElement('div');
+  bar.className = 'emoji-bar';
+  const scroll = document.createElement('div');
+  scroll.className = 'emoji-bar-scroll';
   EMOJIS.forEach(emoji => {
     const opt = document.createElement('span');
-    opt.className = 'emoji-option';
+    const isText = emoji.length > 2;
+    opt.className = 'emoji-opt' + (isText ? ' text-emoji' : '');
     opt.textContent = emoji;
-    opt.onclick = () => addReaction(bubbleEl, emoji);
-    picker.appendChild(opt);
+    opt.onclick = (e) => {
+      e.stopPropagation();
+      pickSticker(bubbleEl, emoji);
+    };
+    scroll.appendChild(opt);
   });
-  bubbleEl.style.position = 'relative';
-  bubbleEl.appendChild(picker);
-  activeEmojiPicker = picker;
+  bar.appendChild(scroll);
 
-  setTimeout(() => {
-    document.addEventListener('click', closeEmojiPicker, { once: true });
-  }, 10);
+  const row = bubbleEl.closest('.msg-row');
+  row.style.position = 'relative';
+  row.appendChild(bar);
+  stickerBar = bar;
+  requestAnimationFrame(() => bar.classList.add('show'));
 }
 
-function closeEmojiPicker() {
-  if (activeEmojiPicker) {
-    activeEmojiPicker.remove();
-    activeEmojiPicker = null;
+function closeStickerBar() {
+  if (liftedBubble) {
+    liftedBubble.classList.remove('lifted');
+    liftedBubble = null;
   }
+  if (stickerBar) {
+    stickerBar.remove();
+    stickerBar = null;
+  }
+  if (stickerOverlay) {
+    stickerOverlay.classList.remove('show');
+    setTimeout(() => { if (stickerOverlay) { stickerOverlay.remove(); stickerOverlay = null; } }, 200);
+  }
+  clearTimeout(longPressTimer);
 }
 
-function addReaction(bubbleEl, emoji) {
+function pickSticker(bubbleEl, emoji) {
+  const idx = getMsgIndex(bubbleEl);
+  if (idx < 0) return;
+
   const reactionsEl = bubbleEl.querySelector('.reactions');
-  // Check if reaction already exists
-  const existing = reactionsEl.querySelector(`[data-emoji="${emoji}"]`);
+  if (!reactionsEl) return;
+
+  const existing = reactionsEl.querySelector('.reaction.from-jeoi');
   if (existing) {
+    if (existing.dataset.emoji === emoji) {
+      existing.remove();
+      wsSend('reaction:set', { msgIndex: idx, emoji: null });
+      closeStickerBar();
+      return;
+    }
     existing.remove();
-  } else {
-    const r = document.createElement('span');
-    r.className = 'reaction mine';
-    r.dataset.emoji = emoji;
-    r.textContent = emoji;
-    r.onclick = () => r.remove();
-    reactionsEl.appendChild(r);
   }
-  closeEmojiPicker();
+
+  const r = document.createElement('span');
+  r.className = 'reaction from-jeoi';
+  r.dataset.emoji = emoji;
+  r.textContent = emoji;
+  r.onclick = () => {
+    r.remove();
+    wsSend('reaction:set', { msgIndex: getMsgIndex(bubbleEl), emoji: null });
+  };
+  reactionsEl.appendChild(r);
+  wsSend('reaction:set', { msgIndex: idx, emoji: emoji });
+  closeStickerBar();
+}
+
+function renderReaction(bubbleEl, who, emoji) {
+  const reactionsEl = bubbleEl.querySelector('.reactions');
+  if (!reactionsEl) return;
+  const cls = who === 'jeoi' ? 'from-jeoi' : 'from-erik';
+  const old = reactionsEl.querySelector(`.reaction.${cls}`);
+  if (old) old.remove();
+  if (!emoji) return;
+  const r = document.createElement('span');
+  r.className = `reaction ${cls}`;
+  r.dataset.emoji = emoji;
+  r.textContent = emoji;
+  if (who === 'jeoi') {
+    r.style.cursor = 'pointer';
+    r.onclick = () => {
+      const idx = getMsgIndex(bubbleEl);
+      r.remove();
+      wsSend('reaction:set', { msgIndex: idx, emoji: null });
+    };
+  }
+  reactionsEl.appendChild(r);
 }
 
 /* ══════════════════════════════════════
