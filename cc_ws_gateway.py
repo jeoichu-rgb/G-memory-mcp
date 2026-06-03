@@ -1140,12 +1140,6 @@ async def websocket_endpoint(ws: WebSocket):
                     "event": "session:list",
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
-                if peb_state.get("enabled"):
-                    peb_state["pebbling_session_id"] = sid
-                    peb_state["patrol_checks_done"] = []
-                    peb_state["pebbling_history"] = []
-                    save_peb_state()
-                    log.info(f"Pebbling auto-followed to new session {sid}")
                 log.info(f"Session created: {sid}")
 
             elif event == "session:switch":
@@ -1161,12 +1155,6 @@ async def websocket_endpoint(ws: WebSocket):
                         "model": current_session.model,
                         "effort": current_session.effort,
                     })
-                    if peb_state.get("enabled") and peb_state.get("pebbling_session_id") != sid:
-                        peb_state["pebbling_session_id"] = sid
-                        peb_state["patrol_checks_done"] = []
-                        peb_state["pebbling_history"] = []
-                        save_peb_state()
-                        log.info(f"Pebbling auto-followed to session {sid}")
                     log.info(f"Switched to session: {sid}")
 
             elif event == "session:delete":
@@ -1253,11 +1241,10 @@ async def websocket_endpoint(ws: WebSocket):
                     cli_message = snap_instruction + "\n\n" + cli_message
                     log.info(f"Snap: saved image to {snap_path}")
 
-                # Update global pebbling state
+                # Update global pebbling state (follow active chat, keep history count)
                 peb_state["t_cache"] = time_mod.time()
                 peb_state["t_jeoi"] = time_mod.time()
                 peb_state["patrol_checks_done"] = []
-                peb_state["pebbling_history"] = []
                 peb_state["pebbling_session_id"] = current_session.id
                 save_peb_state()
 
