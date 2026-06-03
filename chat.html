@@ -1719,8 +1719,7 @@ function copyMsg(btn) {
   const bubble = btn.closest('.bubble');
   const textEl = bubble.querySelector('.msg-text') || bubble;
   const raw = bubble.closest('.msg-row')?.querySelector('.msg-raw-text');
-  const text = raw ? raw.textContent : textEl.innerText.replace(/
-?\d{2}:\d{2}$/, '').trim();
+  const text = raw ? raw.textContent : (textEl.querySelector('.msg-text') || textEl).textContent.trim();
   navigator.clipboard.writeText(text).then(() => {
     btn.textContent = '✓';
     btn.style.opacity = '0.8';
