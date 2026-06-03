@@ -1468,8 +1468,12 @@ function openStickerBar(bubbleEl) {
     const opt = document.createElement('span');
     const isText = emoji.length > 2;
     const isHeart = emoji === '♥';
-    opt.className = 'emoji-opt' + (isText ? ' text-emoji' : '') + (isHeart ? ' heart-emoji' : '');
-    opt.textContent = emoji;
+    opt.className = 'emoji-opt' + (isText ? ' text-emoji' : '');
+    if (isHeart) {
+      opt.innerHTML = '<span style="color:#e25555;font-family:serif,Georgia;font-size:30px;line-height:1">♥</span>';
+    } else {
+      opt.textContent = emoji;
+    }
     opt.onclick = (e) => {
       e.stopPropagation();
       pickSticker(bubbleEl, emoji);
@@ -1523,7 +1527,7 @@ function pickSticker(bubbleEl, emoji) {
   r.className = 'reaction from-jeoi';
   r.dataset.emoji = emoji;
   if (emoji === '♥') {
-    r.innerHTML = '<span class="heart-char">' + emoji + '</span>';
+    r.innerHTML = '<span style="color:#e25555;font-family:serif,Georgia;font-size:18px">♥</span>';
   } else {
     r.textContent = emoji;
   }
@@ -1547,7 +1551,7 @@ function renderReaction(bubbleEl, who, emoji) {
   r.className = `reaction ${cls}`;
   r.dataset.emoji = emoji;
   if (emoji === '♥') {
-    r.innerHTML = '<span class="heart-char">' + emoji + '</span>';
+    r.innerHTML = '<span style="color:#e25555;font-family:serif,Georgia;font-size:18px">♥</span>';
   } else {
     r.textContent = emoji;
   }
