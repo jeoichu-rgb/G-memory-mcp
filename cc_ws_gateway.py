@@ -1533,7 +1533,15 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await ws.send_json({"event": "message:complete", "usage": {}})
 
     except Exception as e:
-        log.exception(f"run_claude error: {e}")
+        log.warning(f"run_claude interrupted: {type(e).__name__}: {e}")
+        # Kill orphaned CC process
+        if session._proc and session._proc.returncode is None:
+            try:
+                session._proc.kill()
+                await session._proc.wait()
+            except Exception:
+                pass
+        session._proc = None
         # Save partial response even on error
         if session._current_text:
             append_message(
