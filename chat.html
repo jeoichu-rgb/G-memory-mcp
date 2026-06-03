@@ -112,10 +112,11 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .sidebar-actions button:hover { opacity:1; }
 
 /* Session list */
-.session-list { flex:1; overflow-y:auto; }
+.session-list { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-y:contain; }
 .session-item {
   padding:12px 16px; display:flex; gap:12px; cursor:pointer;
   border-bottom:1px solid var(--border); transition:background .1s;
+  touch-action:pan-y;
   margin-bottom:2px;
 }
 .session-item:hover { background:var(--bg-chat); }
@@ -416,6 +417,8 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .emoji-bar .emoji-opt:hover { background:var(--border); transform:scale(1.15); }
 .emoji-bar .emoji-opt:active { transform:scale(0.9); }
 .emoji-bar .emoji-opt.text-emoji { font-size:13px; padding:4px 8px; display:flex; align-items:center; white-space:nowrap; }
+.emoji-bar .emoji-opt.heart-emoji { color:#e25555; font-family:serif; font-size:32px; line-height:1; }
+.reaction .heart-char { color:#e25555; font-family:serif; }
 
 /* Image preview */
 .img-preview-wrap {
@@ -1464,7 +1467,8 @@ function openStickerBar(bubbleEl) {
   EMOJIS.forEach(emoji => {
     const opt = document.createElement('span');
     const isText = emoji.length > 2;
-    opt.className = 'emoji-opt' + (isText ? ' text-emoji' : '');
+    const isHeart = emoji === '♥';
+    opt.className = 'emoji-opt' + (isText ? ' text-emoji' : '') + (isHeart ? ' heart-emoji' : '');
     opt.textContent = emoji;
     opt.onclick = (e) => {
       e.stopPropagation();
@@ -1518,7 +1522,11 @@ function pickSticker(bubbleEl, emoji) {
   const r = document.createElement('span');
   r.className = 'reaction from-jeoi';
   r.dataset.emoji = emoji;
-  r.textContent = emoji;
+  if (emoji === '♥') {
+    r.innerHTML = '<span class="heart-char">' + emoji + '</span>';
+  } else {
+    r.textContent = emoji;
+  }
   r.onclick = () => {
     r.remove();
     wsSend('reaction:set', { msgIndex: getMsgIndex(bubbleEl), emoji: null });
@@ -1538,7 +1546,11 @@ function renderReaction(bubbleEl, who, emoji) {
   const r = document.createElement('span');
   r.className = `reaction ${cls}`;
   r.dataset.emoji = emoji;
-  r.textContent = emoji;
+  if (emoji === '♥') {
+    r.innerHTML = '<span class="heart-char">' + emoji + '</span>';
+  } else {
+    r.textContent = emoji;
+  }
   if (who === 'jeoi') {
     r.style.cursor = 'pointer';
     r.onclick = () => {
