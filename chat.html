@@ -702,7 +702,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       </div>
       <label class="memory-toggle" title="记忆注入">
         <span>📎</span>
-        <input type="checkbox" id="memoryToggle" checked>
+        <input type="checkbox" id="memoryToggle" onchange="toggleMemory()">
         <div class="toggle-track"></div>
       </label>
       <label class="memory-toggle" title="Pebbling (keepalive + patrol + 自由活动)">
@@ -2013,6 +2013,14 @@ function addPebblingMessage(content, source, time) {
 }
 
 /* ══════════════════════════════════════
+   MEMORY TOGGLE
+══════════════════════════════════════ */
+function toggleMemory() {
+  const enabled = document.getElementById('memoryToggle').checked;
+  localStorage.setItem('memory-enabled', enabled ? '1' : '0');
+}
+
+/* ══════════════════════════════════════
    INIT
 ══════════════════════════════════════ */
 // Restore 🐧 toggle from localStorage (instant UI, no flash before WS connects)
@@ -2022,6 +2030,13 @@ function addPebblingMessage(content, source, time) {
     document.getElementById('pebbleIcon').textContent = '🪨';
     document.getElementById('pebbleStatus').textContent = 'ON';
     document.getElementById('pebbleStatus').className = 'keepalive-status ok';
+  }
+})();
+
+// Restore 📎 memory toggle from localStorage (default: OFF)
+(function() {
+  if (localStorage.getItem('memory-enabled') === '1') {
+    document.getElementById('memoryToggle').checked = true;
   }
 })();
 
