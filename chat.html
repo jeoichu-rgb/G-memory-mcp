@@ -254,12 +254,27 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   padding:6px 7px 8px 9px; border-radius:var(--r-bubble);
   position:relative; min-width:80px; line-height:1.6; font-size:13.5px;
   word-wrap:break-word; overflow-wrap:break-word;
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
 }
 .msg-row.out .bubble {
   background:var(--bg-out); border-top-right-radius:0;
 }
 .msg-row.in .bubble {
   background:var(--bg-in); border-top-left-radius:0;
+}
+
+/* Copy button */
+.msg-copy {
+  position:absolute; bottom:4px; right:4px;
+  background:none; border:none; cursor:pointer;
+  font-size:11px; color:var(--text-secondary); opacity:0;
+  transition:opacity .15s; padding:2px 4px; border-radius:4px;
+  line-height:1; z-index:5;
+}
+.msg-row:hover .msg-copy { opacity:0.35; }
+.msg-copy:hover { opacity:0.8 !important; background:rgba(0,0,0,.05); }
+@media (max-width: 768px) {
+  .msg-copy { opacity:0.25; }
 }
 
 /* Per-message usage */
@@ -374,13 +389,12 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 }
 .reaction-overlay.show { opacity:1; }
 
-/* WhatsApp-style emoji bar */
+/* WhatsApp-style emoji panel */
 .emoji-bar {
   position:absolute; left:0; right:0; top:100%; margin-top:4px;
-  display:flex; align-items:center;
-  background:var(--emoji-panel-bg); border-radius:22px;
-  padding:6px 8px; box-shadow:0 4px 16px rgba(0,0,0,.15);
-  z-index:101; overflow:hidden;
+  background:var(--emoji-panel-bg); border-radius:16px;
+  padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.15);
+  z-index:101;
   opacity:0; transform:translateY(8px) scale(0.95);
   transition:opacity .2s ease, transform .2s cubic-bezier(.2,.8,.3,1.1);
 }
@@ -388,19 +402,20 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   opacity:1; transform:translateY(0) scale(1);
 }
 .emoji-bar-scroll {
-  display:flex; gap:2px; overflow-x:auto; flex:1;
-  scrollbar-width:none; -ms-overflow-style:none;
-  scroll-behavior:smooth; padding:2px 0;
+  display:flex; flex-wrap:wrap; gap:2px; justify-content:center;
+  max-height:180px; overflow-y:auto; overflow-x:hidden;
+  scrollbar-width:thin; padding:2px;
 }
-.emoji-bar-scroll::-webkit-scrollbar { display:none; }
+.emoji-bar-scroll::-webkit-scrollbar { width:3px; }
+.emoji-bar-scroll::-webkit-scrollbar-thumb { background:rgba(0,0,0,.12); border-radius:2px; }
 .emoji-bar .emoji-opt {
   font-size:28px; cursor:pointer; padding:4px 6px; border-radius:8px;
-  flex-shrink:0; transition:transform .1s, background .1s;
+  transition:transform .1s, background .1s;
   user-select:none; -webkit-user-select:none;
 }
 .emoji-bar .emoji-opt:hover { background:var(--border); transform:scale(1.15); }
 .emoji-bar .emoji-opt:active { transform:scale(0.9); }
-.emoji-bar .emoji-opt.text-emoji { font-size:14px; display:flex; align-items:center; white-space:nowrap; }
+.emoji-bar .emoji-opt.text-emoji { font-size:13px; padding:4px 8px; display:flex; align-items:center; white-space:nowrap; }
 
 /* Image preview */
 .img-preview-wrap {
@@ -1113,6 +1128,7 @@ function sendMessage() {
       ${imgHtml}
       <span class="msg-time">${time}</span>
       ${text ? escapeHtml(text) : ''}
+      <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
       <div class="reactions"></div>
     </div>
   `;
@@ -1163,6 +1179,7 @@ function addUserMessage(text) {
     <div class="bubble">
       <span class="msg-time">${time}</span>
       ${escapeHtml(text)}
+      <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
       <div class="reactions"></div>
     </div>
   `;
@@ -1190,6 +1207,7 @@ function ensureAssistantBubble() {
       <div class="msg-meta-blocks"></div>
       <span class="msg-text"></span>
       <span class="msg-time">${time}</span>
+      <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
       <div class="reactions"></div>
     </div>
   `;
@@ -1333,7 +1351,8 @@ function renderHistory(messages) {
         <div class="bubble">
           <span class="msg-time">${time}</span>
           ${escapeHtml(msg.content)}
-          <div class="reactions"></div>
+          <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
+      <div class="reactions"></div>
         </div>`;
       const rawSpan = document.createElement('span');
       rawSpan.hidden = true;
@@ -1366,7 +1385,8 @@ function renderHistory(messages) {
           <div class="msg-meta-blocks">${metaHtml}</div>
           <span class="msg-text">${renderMarkdown(msg.content || '')}</span>
           <span class="msg-time">${time}</span>
-          <div class="reactions"></div>
+          <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
+      <div class="reactions"></div>
         </div>`;
     }
     msgArea.appendChild(row);
@@ -1693,6 +1713,19 @@ function autoResize(el) {
 
 function formatTime(d) {
   return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+}
+
+function copyMsg(btn) {
+  const bubble = btn.closest('.bubble');
+  const textEl = bubble.querySelector('.msg-text') || bubble;
+  const raw = bubble.closest('.msg-row')?.querySelector('.msg-raw-text');
+  const text = raw ? raw.textContent : textEl.innerText.replace(/
+?\d{2}:\d{2}$/, '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓';
+    btn.style.opacity = '0.8';
+    setTimeout(() => { btn.textContent = '⧉'; btn.style.opacity = ''; }, 800);
+  });
 }
 
 function escapeHtml(s) {
