@@ -339,11 +339,11 @@ ChromaDB 存储在 `/app/chroma_db/`（持久化卷挂载）。Voyage AI embeddi
 
 ## MCP 工具列表
 
-Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`：
+Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(cmd, data)`：
 
 ### 记忆
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `get_context` | 对话开始冷启动，读最近两次压缩总结；若检测到未处理 buffer 自动生成压缩草稿 | 无 |
 | `search` | 向量+keyword 混合检索（含 jieba 分词），搜核心库和动态库，日记一并返回，score > 0.7 的前 3 条 + 1 篇日记 | `keyword`, `mood`（可选） |
@@ -366,7 +366,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`
 
 ### 日记
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `write_diary` | 写新日记 MD 文件到 VPS | `title`, `content`, `mood`（可选） |
 | `append_diary` | 给某天日记追加内容 | `target_date`(YYYY-MM-DD), `extra_content`, `current_time`(HH:MM) |
@@ -374,7 +374,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`
 
 ### 邮件（163邮箱）
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `send_email` | 发邮件 | `to`, `subject`, `body` |
 | `read_email` | 读收件箱 | `count`（默认5）, `folder`（默认INBOX） |
@@ -385,7 +385,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`
 
 #### Satisfyer Curvy 2+（`toy_bridge.py` → VPS:7001）
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `toy_status` | 确认设备连接状态 | 无 |
 | `toy_play` | 震动+吸吮控制 | `vibrate`(0-100), `suck`(0-100), `duration`(秒), `pattern`(可选数组) |
@@ -396,7 +396,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(action, params)`
 
 MAC：`4C:E1:74:45:94:FD`
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `bunny_status` | 确认设备连接状态 | 无 |
 | `bunny_play` | 三通道独立控制 | `clit`(0-100), `internal`(0-100), `pump`(0-100), `duration`(秒), `pattern`(可选数组) |
@@ -412,7 +412,7 @@ MAC：`4C:E1:74:45:94:FD`
 
 智能路由：小红书（xiaohongshu.com / xhslink.com）走 Windows 本地 Chrome（有持久登录态），其他网站走 VPS headless Chromium。
 
-| action | 说明 | 主要参数 |
+| cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `browser_open` | 打开网页提取正文 | `url`, `wait_selector`（可选） |
 | `browser_js` | 执行 JS 提取数据 | `url`, `js_code` |
