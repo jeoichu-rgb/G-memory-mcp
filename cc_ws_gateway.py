@@ -642,23 +642,27 @@ async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns: int | None = None
 ) -> tuple[str, str]:
     """Returns (text, thinking)."""
-    cmd = [
-        "claude", "--print",
+    cmd = ["claude"]
+    if not INTERACTIVE_MODE:
+        cmd.append("--print")
+    cmd.extend([
         "--output-format", "stream-json",
         "--verbose",
         "--model", session.model,
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
-    ]
+    ])
     if max_turns is not None:
         cmd.extend(["--max-turns", str(max_turns)])
     cmd.extend(["--", prompt])
-    log.info(f"Pebbling CC call: max_turns={max_turns}, session={session.id}")
+    mode = "interactive" if INTERACTIVE_MODE else "print"
+    log.info(f"Pebbling CC call ({mode}): max_turns={max_turns}, session={session.id}")
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
             limit=2 * 1024 * 1024,
             cwd=CC_CWD,
             env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},

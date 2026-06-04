@@ -120,7 +120,7 @@ Claude Code CLI 提供了 API 调不到的能力：自动读取 CLAUDE.md 人设
 **风险：**
 - 这是利用 Anthropic 政策措辞的精确性（只封了 `-p` 和 SDK 两个口子）的擦边球方案
 - Anthropic 完全有可能在后续版本中检测并堵住这个路径（比如检查 stdin 是否为 TTY、检查调用 pattern 等）
-- Patrol/Pebbling 后台任务仍使用 `--print`（用量低，月度信用额可覆盖）
+- Patrol/Pebbling 后台任务现在跟随 `INTERACTIVE_MODE` 设置，与聊天使用同一模式，共享 API 缓存
 - 回退方案：设置环境变量 `CC_INTERACTIVE_MODE=0` 即可恢复 `--print` 模式
 
 ### System Prompt 精简
