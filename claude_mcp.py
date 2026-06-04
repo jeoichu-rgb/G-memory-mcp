@@ -10,6 +10,7 @@ claude_mcp.py
 ─────────────────────────────────────────────────────────────────
 """
 
+from typing import Union
 import os
 import re
 import json
@@ -424,8 +425,14 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def palace(cmd: str, data: dict = {}) -> str:
+def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     """记忆宫殿统一入口。cmd + data dict，详见 instructions。"""
+    # CC 有时把 data 序列化成 JSON 字符串而非 dict，兼容一下
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = {}
 
     # ── get_context ───────────────────────────────────────────
     if cmd == "get_context":
