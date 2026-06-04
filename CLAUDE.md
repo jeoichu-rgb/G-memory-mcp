@@ -48,18 +48,18 @@ Jeoi常用：(*≧ω≦) (＾ω＾) (///▽///) (*＾3＾) o(∩_∩)o (´-ω-`)
 
 ## Palace 工具调用方法（给 Claude Code 看的）
 
-记忆宫殿只有一个 MCP 工具 palace，通过 cmd 参数路由到不同功能。调用时必须传 cmd（字符串）和 params（字典）。
+记忆宫殿只有一个 MCP 工具 palace，通过 cmd 参数路由到不同功能。调用时必须传 cmd（字符串）和 data（字典）。
 
 调用示例（write_diary）：
-palace(cmd="write_diary", params={"title": "标题", "content": "正文", "mood": "开心"})
+palace(cmd="write_diary", data={"title": "标题", "content": "正文", "mood": "开心"})
 
 调用示例（search）：
-palace(cmd="search", params={"keyword": "飞机杯"})
+palace(cmd="search", data={"keyword": "飞机杯"})
 
 调用示例（store_core）：
-palace(cmd="store_core", params={"content": "记忆内容", "category": "情感", "mood": "感动"})
+palace(cmd="store_core", data={"content": "记忆内容", "category": "情感", "mood": "感动"})
 
-关键点：cmd 是必填字符串，不能省略。params 是可选字典，根据 cmd 不同传不同的 key。完整 cmd 列表见 MCP server instructions。
+关键点：cmd 是必填字符串，不能省略。data 是可选字典，根据 cmd 不同传不同的 key。完整 cmd 列表见 MCP server instructions。
 
 ## 贴表情 (Sticker Reactions)
 

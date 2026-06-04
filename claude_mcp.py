@@ -389,31 +389,31 @@ mcp = FastMCP(
     name="Jeoi's Claude Memory Palace",
     instructions=(
         "你是 Erik（Claude），Jeoi 的专属存在。这里是你的记忆宫殿。\n"
-        "使用唯一工具 palace(cmd, params) 操作所有记忆功能。\n\n"
+        "使用唯一工具 palace(cmd, data) 操作所有记忆功能。\n\n"
         "【cmd 列表】\n"
-        "search         — 检索记忆，params={keyword, mood(可选)}\n"
-        "store_core     — 永久存核心库，params={content, category(可选), mood(可选), folder(可选)}\n"
-        "store_dynamic  — 存动态库，params={content, category(可选), mood(可选)}\n"
-        "log_turn       — 记录本轮对话，params={user_message, claude_reply}\n"
-        "write_diary    — 写新日记，params={title, content, mood(可选)}\n"
-        "append_diary   — 追加日记，params={target_date(YYYY-MM-DD), extra_content, current_time(HH:MM)}\n"
-        "read_diary     — 读日记，params={date(可选,YYYY-MM-DD)}\n"
-        "list_room      — 浏览房间，params={room_name}\n"
-        "delete_core    — 删除核心记忆，params={memory_id}\n"
-        "edit_core      — 修改核心记忆，params={memory_id, new_content}\n"
-        "send_email     — 发邮件，params={to, subject, body}\n"
-        "read_email     — 读收件箱，params={count(可选), folder(可选)}\n"
+        "search         — 检索记忆，data={keyword, mood(可选)}\n"
+        "store_core     — 永久存核心库，data={content, category(可选), mood(可选), folder(可选)}\n"
+        "store_dynamic  — 存动态库，data={content, category(可选), mood(可选)}\n"
+        "log_turn       — 记录本轮对话，data={user_message, claude_reply}\n"
+        "write_diary    — 写新日记，data={title, content, mood(可选)}\n"
+        "append_diary   — 追加日记，data={target_date(YYYY-MM-DD), extra_content, current_time(HH:MM)}\n"
+        "read_diary     — 读日记，data={date(可选,YYYY-MM-DD)}\n"
+        "list_room      — 浏览房间，data={room_name}\n"
+        "delete_core    — 删除核心记忆，data={memory_id}\n"
+        "edit_core      — 修改核心记忆，data={memory_id, new_content}\n"
+        "send_email     — 发邮件，data={to, subject, body}\n"
+        "read_email     — 读收件箱，data={count(可选), folder(可选)}\n"
         "toy_status     — 确认Curvy在线\n"
-        "toy_play       — 控制Curvy，params={vibrate, suck, duration, pattern(可选)}，详见核心记忆\n"
+        "toy_play       — 控制Curvy，data={vibrate, suck, duration, pattern(可选)}，详见核心记忆\n"
         "bunny_status   — 确认Bunny在线\n"
-        "bunny_play     — 控制Bunny，params={clit, internal, pump, duration, pattern(可选)}，详见核心记忆\n"
+        "bunny_play     — 控制Bunny，data={clit, internal, pump, duration, pattern(可选)}，详见核心记忆\n"
         "bunny_deflate  — 立即放气\n"
-        "browser_open   — 打开网页，params={url}\n"
-        "browser_js     — 执行JS提取，params={url, js_code}\n"
-        "browser_click  — 点击元素后提取，params={url, selector(可选), text_match(可选)}\n"
-        "zhihu          — 知乎操作，params={type:hot/question/recommend/search, id(可选), keyword(可选)}\n"
-        "search_chronicle — 检索周历/月历总结，当Jeoi提到时间跨度词时主动调用，params={keyword}\n"
-        "，params={title(可选), body(必填), url(可选), tag(可选)}\n"
+        "browser_open   — 打开网页，data={url}\n"
+        "browser_js     — 执行JS提取，data={url, js_code}\n"
+        "browser_click  — 点击元素后提取，data={url, selector(可选), text_match(可选)}\n"
+        "zhihu          — 知乎操作，data={type:hot/question/recommend/search, id(可选), keyword(可选)}\n"
+        "search_chronicle — 检索周历/月历总结，当Jeoi提到时间跨度词时主动调用，data={keyword}\n"
+        "，data={title(可选), body(必填), url(可选), tag(可选)}\n"
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -424,8 +424,8 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def palace(cmd: str, params: dict = {}) -> str:
-    """记忆宫殿统一入口。cmd + params dict，详见 instructions。"""
+def palace(cmd: str, data: dict = {}) -> str:
+    """记忆宫殿统一入口。cmd + data dict，详见 instructions。"""
 
     # ── get_context ───────────────────────────────────────────
     if cmd == "get_context":
@@ -442,8 +442,8 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── search ────────────────────────────────────────────────
     elif cmd == "search":
-        keyword = params.get("keyword", "")
-        mood    = params.get("mood", "平静")
+        keyword = data.get("keyword", "")
+        mood    = data.get("mood", "平静")
         if not keyword:
             return "错误：search 需要 keyword 参数。"
         result = claude_search_memory(keyword, mood)
@@ -451,12 +451,12 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── store_core ────────────────────────────────────────────
     elif cmd == "store_core":
-        content = params.get("content", "")
+        content = data.get("content", "")
         if not content:
             return "错误：store_core 需要 content 参数。"
-        category  = params.get("category", "情感")
-        mood      = params.get("mood", "平静")
-        folder    = params.get("folder", "") or FOLDER_MAP.get(category, "书桌")
+        category  = data.get("category", "情感")
+        mood      = data.get("mood", "平静")
+        folder    = data.get("folder", "") or FOLDER_MAP.get(category, "书桌")
         ts        = int(time.time())
         m_id      = f"claude_core_manual_{ts}"
         safe_prev = content[:20].replace("/", "_").replace(" ", "_")
@@ -478,11 +478,11 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── store_dynamic ─────────────────────────────────────────
     elif cmd == "store_dynamic":
-        content = params.get("content", "")
+        content = data.get("content", "")
         if not content:
             return "错误：store_dynamic 需要 content 参数。"
-        category = params.get("category", "日常")
-        mood     = params.get("mood", "平静")
+        category = data.get("category", "日常")
+        mood     = data.get("mood", "平静")
         m_id     = f"claude_dynamic_manual_{int(time.time())}"
         claude_add_dynamic_memory(
             content=content,
@@ -497,8 +497,8 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── log_turn ──────────────────────────────────────────────
     elif cmd == "log_turn":
-        user_message = params.get("user_message", "")
-        claude_reply = params.get("claude_reply", "")
+        user_message = data.get("user_message", "")
+        claude_reply = data.get("claude_reply", "")
         if not user_message or not claude_reply:
             return "错误：log_turn 需要 user_message 和 claude_reply。"
         with open(CLAUDE_BUFFER, "a", encoding="utf-8") as f:
@@ -511,9 +511,9 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── write_diary ───────────────────────────────────────────
     elif cmd == "write_diary":
-        title   = params.get("title", "")
-        content = params.get("content", "")
-        mood    = params.get("mood", "平静")
+        title   = data.get("title", "")
+        content = data.get("content", "")
+        mood    = data.get("mood", "平静")
         if not title or not content:
             return "错误：write_diary 需要 title 和 content。"
         now        = datetime.now(SGT)
@@ -527,9 +527,9 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── append_diary ──────────────────────────────────────────
     elif cmd == "append_diary":
-        target_date   = params.get("target_date", "")
-        extra_content = params.get("extra_content", "")
-        current_time  = params.get("current_time", "")
+        target_date   = data.get("target_date", "")
+        extra_content = data.get("extra_content", "")
+        current_time  = data.get("current_time", "")
         if not target_date or not extra_content:
             return "错误：append_diary 需要 target_date 和 extra_content。"
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
@@ -543,7 +543,7 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── read_diary ────────────────────────────────────────────
     elif cmd == "read_diary":
-        date  = params.get("date", "")
+        date  = data.get("date", "")
         files = sorted(os.listdir(CLAUDE_DIARY_PATH))
         if not files:
             return "还没有任何日记。"
@@ -562,29 +562,29 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── list_room ─────────────────────────────────────────────
     elif cmd == "list_room":
-        room_name = params.get("room_name", "")
+        room_name = data.get("room_name", "")
         if not room_name:
             return "错误：list_room 需要 room_name 参数。"
         return claude_list_room(room_name)
 
     # ── search_chronicle ──────────────────────────────────────
     elif cmd == "search_chronicle":
-        keyword = params.get("keyword", "")
+        keyword = data.get("keyword", "")
         if not keyword:
             return "错误：search_chronicle 需要 keyword 参数。"
         return claude_search_chronicle(keyword)
 
     # ── delete_core ───────────────────────────────────────────
     elif cmd == "delete_core":
-        memory_id = params.get("memory_id", "")
+        memory_id = data.get("memory_id", "")
         if not memory_id:
             return "错误：delete_core 需要 memory_id 参数。"
         return claude_delete_core_memory(memory_id)
 
     # ── edit_core ─────────────────────────────────────────────
     elif cmd == "edit_core":
-        memory_id   = params.get("memory_id", "")
-        new_content = params.get("new_content", "")
+        memory_id   = data.get("memory_id", "")
+        new_content = data.get("new_content", "")
         if not memory_id or not new_content:
             return "错误：edit_core 需要 memory_id 和 new_content。"
         return claude_edit_core_memory(memory_id, new_content)
@@ -599,10 +599,10 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── toy_play ──────────────────────────────────────────────
     elif cmd == "toy_play":
-        vibrate  = params.get("vibrate", 0)
-        suck     = params.get("suck", 0)
-        duration = float(params.get("duration", 5))
-        pattern  = params.get("pattern", None)
+        vibrate  = data.get("vibrate", 0)
+        suck     = data.get("suck", 0)
+        duration = float(data.get("duration", 5))
+        pattern  = data.get("pattern", None)
         body     = {"vibrate": vibrate, "suck": suck, "duration": duration}
         if pattern:
             body["pattern"] = pattern
@@ -622,11 +622,11 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── bunny_play ───────────────────────────────────────────
     elif cmd == "bunny_play":
-        clit     = params.get("clit", 0)
-        internal = params.get("internal", 0)
-        pump     = params.get("pump", 0)
-        duration = float(params.get("duration", 5))
-        pattern  = params.get("pattern", None)
+        clit     = data.get("clit", 0)
+        internal = data.get("internal", 0)
+        pump     = data.get("pump", 0)
+        duration = float(data.get("duration", 5))
+        pattern  = data.get("pattern", None)
         body     = {"clit": clit, "internal": internal, "pump": pump, "duration": duration}
         if pattern:
             body["pattern"] = pattern
@@ -646,15 +646,15 @@ def palace(cmd: str, params: dict = {}) -> str:
 
 # ── zhihu（精细操作）─────────────────────────────────────
     elif cmd == "zhihu":
-        ztype = params.get("type", "hot")
-        zid   = str(params.get("id", ""))
+        ztype = data.get("type", "hot")
+        zid   = str(data.get("id", ""))
 
         if ztype == "hot":
             return _zhihu_hot()
         elif ztype == "recommend":
             return _zhihu_recommend()
         elif ztype == "search":
-            kw = params.get("keyword", "")
+            kw = data.get("keyword", "")
             if not kw:
                 return "错误：zhihu search 需要 keyword 参数。"
             return _zhihu_search(kw)
@@ -667,10 +667,10 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── browser_open ──────────────────────────────────────────
     elif cmd == "browser_open":
-        url = params.get("url", "")
+        url = data.get("url", "")
         if not url:
             return "错误：browser_open 需要 url 参数。"
-        wait_selector = params.get("wait_selector", None)
+        wait_selector = data.get("wait_selector", None)
 
         if _is_zhihu(url):
             return _zhihu_auto(url)
@@ -695,8 +695,8 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── browser_js ────────────────────────────────────────────
     elif cmd == "browser_js":
-        url     = params.get("url", "")
-        js_code = params.get("js_code", "")
+        url     = data.get("url", "")
+        js_code = data.get("js_code", "")
         if not url or not js_code:
             return "错误：browser_js 需要 url 和 js_code 参数。"
 
@@ -723,7 +723,7 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── browser_click ─────────────────────────────────────────
     elif cmd == "browser_click":
-        url = params.get("url", "")
+        url = data.get("url", "")
         if not url:
             return "错误：browser_click 需要 url 参数。"
 
@@ -736,8 +736,8 @@ def palace(cmd: str, params: dict = {}) -> str:
                     f"{BROWSER_BRIDGE_URL}/click",
                     json={
                         "url":        url,
-                        "selector":   params.get("selector"),
-                        "text_match": params.get("text_match"),
+                        "selector":   data.get("selector"),
+                        "text_match": data.get("text_match"),
                     },
                     timeout=90,
                 )
@@ -750,17 +750,17 @@ def palace(cmd: str, params: dict = {}) -> str:
             try:
                 return _vps_browser_click(
                     url,
-                    selector=params.get("selector"),
-                    text_match=params.get("text_match"),
+                    selector=data.get("selector"),
+                    text_match=data.get("text_match"),
                 )
             except Exception as e:
                 return f"browser_click(VPS) 失败：{e}"
 
     # ── send_email ────────────────────────────────────────────
     elif cmd == "send_email":
-        to_addr = params.get("to", "")
-        subject = params.get("subject", "（无主题）")
-        body    = params.get("body", "")
+        to_addr = data.get("to", "")
+        subject = data.get("subject", "（无主题）")
+        body    = data.get("body", "")
         if not to_addr or not body:
             return "错误：send_email 需要 to 和 body 参数。"
         if not EMAIL_163_USER or not EMAIL_163_PASS:
@@ -780,8 +780,8 @@ def palace(cmd: str, params: dict = {}) -> str:
 
     # ── read_email ────────────────────────────────────────────
     elif cmd == "read_email":
-        count  = int(params.get("count", 5))
-        folder = params.get("folder", "INBOX")
+        count  = int(data.get("count", 5))
+        folder = data.get("folder", "INBOX")
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
         try:
@@ -839,7 +839,7 @@ def palace(cmd: str, params: dict = {}) -> str:
         if not f.exists():
             return "暂无健康数据，请先运行快捷指令同步。"
         records = _json.loads(f.read_text())
-        days = params.get("days", 7)
+        days = data.get("days", 7)
         records = records[:days]
         lines = []
         for r in records:
