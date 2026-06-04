@@ -429,10 +429,20 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     """记忆宫殿统一入口。cmd + data dict，详见 instructions。"""
     # CC 有时把 data 序列化成 JSON 字符串而非 dict，兼容一下
     if isinstance(data, str):
+        raw_data = data
         try:
             data = json.loads(data)
-        except Exception:
-            data = {}
+        except Exception as e:
+            return (
+                f"json.loads 解析 data 失败：{e}
+"
+                f"收到的原始字符串（前200字符）：{raw_data[:200]}
+"
+                f"提示：data 中如果包含中文引号（“”）或未转义的特殊字符，"
+                f"请去掉或替换后重试。"
+            )
+    if not isinstance(data, dict):
+        return f"data 类型错误：期望 dict，收到 {type(data).__name__}。值：{str(data)[:200]}"
 
     # ── get_context ───────────────────────────────────────────
     if cmd == "get_context":
@@ -452,7 +462,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         keyword = data.get("keyword", "")
         mood    = data.get("mood", "平静")
         if not keyword:
-            return "错误：search 需要 keyword 参数。"
+            return f"错误：search 需要 keyword 参数。收到的 data: {data}"
         result = claude_search_memory(keyword, mood)
         return result if result else "没有找到相关记忆，这可能是你们第一次聊这个话题。"
 
@@ -460,7 +470,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "store_core":
         content = data.get("content", "")
         if not content:
-            return "错误：store_core 需要 content 参数。"
+            return f"错误：store_core 需要 content 参数。收到的 data: {data}"
         category  = data.get("category", "情感")
         mood      = data.get("mood", "平静")
         folder    = data.get("folder", "") or FOLDER_MAP.get(category, "书桌")
@@ -487,7 +497,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "store_dynamic":
         content = data.get("content", "")
         if not content:
-            return "错误：store_dynamic 需要 content 参数。"
+            return f"错误：store_dynamic 需要 content 参数。收到的 data: {data}"
         category = data.get("category", "日常")
         mood     = data.get("mood", "平静")
         m_id     = f"claude_dynamic_manual_{int(time.time())}"
@@ -507,7 +517,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         user_message = data.get("user_message", "")
         claude_reply = data.get("claude_reply", "")
         if not user_message or not claude_reply:
-            return "错误：log_turn 需要 user_message 和 claude_reply。"
+            return f"错误：log_turn 需要 user_message 和 claude_reply。收到的 data: {data}"
         with open(CLAUDE_BUFFER, "a", encoding="utf-8") as f:
             f.write(f"User: {user_message}\nClaude: {claude_reply}\n---\n")
         return "已记录。"
@@ -522,7 +532,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         content = data.get("content", "")
         mood    = data.get("mood", "平静")
         if not title or not content:
-            return "错误：write_diary 需要 title 和 content。"
+            return f"错误：write_diary 需要 title 和 content。收到的 data: {data}"
         now        = datetime.now(SGT)
         today      = now.strftime("%Y-%m-%d")
         time_str   = now.strftime("%H-%M")
@@ -538,7 +548,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         extra_content = data.get("extra_content", "")
         current_time  = data.get("current_time", "")
         if not target_date or not extra_content:
-            return "错误：append_diary 需要 target_date 和 extra_content。"
+            return f"错误：append_diary 需要 target_date 和 extra_content。收到的 data: {data}"
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
         if matched:
             filepath = os.path.join(CLAUDE_DIARY_PATH, matched[-1])
@@ -571,21 +581,21 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "list_room":
         room_name = data.get("room_name", "")
         if not room_name:
-            return "错误：list_room 需要 room_name 参数。"
+            return f"错误：list_room 需要 room_name 参数。收到的 data: {data}"
         return claude_list_room(room_name)
 
     # ── search_chronicle ──────────────────────────────────────
     elif cmd == "search_chronicle":
         keyword = data.get("keyword", "")
         if not keyword:
-            return "错误：search_chronicle 需要 keyword 参数。"
+            return f"错误：search_chronicle 需要 keyword 参数。收到的 data: {data}"
         return claude_search_chronicle(keyword)
 
     # ── delete_core ───────────────────────────────────────────
     elif cmd == "delete_core":
         memory_id = data.get("memory_id", "")
         if not memory_id:
-            return "错误：delete_core 需要 memory_id 参数。"
+            return f"错误：delete_core 需要 memory_id 参数。收到的 data: {data}"
         return claude_delete_core_memory(memory_id)
 
     # ── edit_core ─────────────────────────────────────────────
@@ -593,7 +603,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         memory_id   = data.get("memory_id", "")
         new_content = data.get("new_content", "")
         if not memory_id or not new_content:
-            return "错误：edit_core 需要 memory_id 和 new_content。"
+            return f"错误：edit_core 需要 memory_id 和 new_content。收到的 data: {data}"
         return claude_edit_core_memory(memory_id, new_content)
 
     # ── toy_status ────────────────────────────────────────────
@@ -676,7 +686,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "browser_open":
         url = data.get("url", "")
         if not url:
-            return "错误：browser_open 需要 url 参数。"
+            return f"错误：browser_open 需要 url 参数。收到的 data: {data}"
         wait_selector = data.get("wait_selector", None)
 
         if _is_zhihu(url):
@@ -705,7 +715,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         url     = data.get("url", "")
         js_code = data.get("js_code", "")
         if not url or not js_code:
-            return "错误：browser_js 需要 url 和 js_code 参数。"
+            return f"错误：browser_js 需要 url 和 js_code 参数。收到的 data: {data}"
 
         if _is_zhihu(url):
             return _zhihu_auto(url)
@@ -732,7 +742,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "browser_click":
         url = data.get("url", "")
         if not url:
-            return "错误：browser_click 需要 url 参数。"
+            return f"错误：browser_click 需要 url 参数。收到的 data: {data}"
 
         if _is_zhihu(url):
             return _zhihu_auto(url)
@@ -769,7 +779,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         subject = data.get("subject", "（无主题）")
         body    = data.get("body", "")
         if not to_addr or not body:
-            return "错误：send_email 需要 to 和 body 参数。"
+            return f"错误：send_email 需要 to 和 body 参数。收到的 data: {data}"
         if not EMAIL_163_USER or not EMAIL_163_PASS:
             return "错误：未配置 EMAIL_163_USER / EMAIL_163_PASS 环境变量。"
         try:
