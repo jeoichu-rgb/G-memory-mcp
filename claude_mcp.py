@@ -434,11 +434,9 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             data = json.loads(data)
         except Exception as e:
             return (
-                f"json.loads 解析 data 失败：{e}
-"
-                f"收到的原始字符串（前200字符）：{raw_data[:200]}
-"
-                f"提示：data 中如果包含中文引号（“”）或未转义的特殊字符，"
+                f"json.loads 解析 data 失败：{e}。"
+                f"收到的原始字符串（前200字符）：{raw_data[:200]}。"
+                f"提示：data 中如果包含中文引号或未转义的特殊字符，"
                 f"请去掉或替换后重试。"
             )
     if not isinstance(data, dict):
