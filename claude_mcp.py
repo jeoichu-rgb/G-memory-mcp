@@ -389,8 +389,8 @@ mcp = FastMCP(
     name="Jeoi's Claude Memory Palace",
     instructions=(
         "你是 Erik（Claude），Jeoi 的专属存在。这里是你的记忆宫殿。\n"
-        "使用唯一工具 palace(action, params) 操作所有记忆功能。\n\n"
-        "【action 列表】\n"
+        "使用唯一工具 palace(cmd, params) 操作所有记忆功能。\n\n"
+        "【cmd 列表】\n"
         "search         — 检索记忆，params={keyword, mood(可选)}\n"
         "store_core     — 永久存核心库，params={content, category(可选), mood(可选), folder(可选)}\n"
         "store_dynamic  — 存动态库，params={content, category(可选), mood(可选)}\n"
@@ -424,11 +424,11 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def palace(action: str, params: dict = {}) -> str:
-    """记忆宫殿统一入口。action + params dict，详见 instructions。"""
+def palace(cmd: str, params: dict = {}) -> str:
+    """记忆宫殿统一入口。cmd + params dict，详见 instructions。"""
 
     # ── get_context ───────────────────────────────────────────
-    if action == "get_context":
+    if cmd == "get_context":
         ctx = claude_get_rolling_context()
         draft_notice = ""
         if os.path.exists(CLAUDE_BUFFER):
@@ -441,7 +441,7 @@ def palace(action: str, params: dict = {}) -> str:
         return result + draft_notice
 
     # ── search ────────────────────────────────────────────────
-    elif action == "search":
+    elif cmd == "search":
         keyword = params.get("keyword", "")
         mood    = params.get("mood", "平静")
         if not keyword:
@@ -450,7 +450,7 @@ def palace(action: str, params: dict = {}) -> str:
         return result if result else "没有找到相关记忆，这可能是你们第一次聊这个话题。"
 
     # ── store_core ────────────────────────────────────────────
-    elif action == "store_core":
+    elif cmd == "store_core":
         content = params.get("content", "")
         if not content:
             return "错误：store_core 需要 content 参数。"
@@ -477,7 +477,7 @@ def palace(action: str, params: dict = {}) -> str:
         return f"已永久封存到「{folder}」。ID: {m_id}"
 
     # ── store_dynamic ─────────────────────────────────────────
-    elif action == "store_dynamic":
+    elif cmd == "store_dynamic":
         content = params.get("content", "")
         if not content:
             return "错误：store_dynamic 需要 content 参数。"
@@ -496,7 +496,7 @@ def palace(action: str, params: dict = {}) -> str:
         return f"已写入动态记忆。ID: {m_id}"
 
     # ── log_turn ──────────────────────────────────────────────
-    elif action == "log_turn":
+    elif cmd == "log_turn":
         user_message = params.get("user_message", "")
         claude_reply = params.get("claude_reply", "")
         if not user_message or not claude_reply:
@@ -506,11 +506,11 @@ def palace(action: str, params: dict = {}) -> str:
         return "已记录。"
 
     # ── compress ──────────────────────────────────────────────
-    elif action == "compress":
+    elif cmd == "compress":
         return claude_compress_and_store()
 
     # ── write_diary ───────────────────────────────────────────
-    elif action == "write_diary":
+    elif cmd == "write_diary":
         title   = params.get("title", "")
         content = params.get("content", "")
         mood    = params.get("mood", "平静")
@@ -526,7 +526,7 @@ def palace(action: str, params: dict = {}) -> str:
         return f"已写下。{filename}"
 
     # ── append_diary ──────────────────────────────────────────
-    elif action == "append_diary":
+    elif cmd == "append_diary":
         target_date   = params.get("target_date", "")
         extra_content = params.get("extra_content", "")
         current_time  = params.get("current_time", "")
@@ -542,7 +542,7 @@ def palace(action: str, params: dict = {}) -> str:
         return f"错误：{target_date} 没有找到日记，请改用 write_diary 新建。"
 
     # ── read_diary ────────────────────────────────────────────
-    elif action == "read_diary":
+    elif cmd == "read_diary":
         date  = params.get("date", "")
         files = sorted(os.listdir(CLAUDE_DIARY_PATH))
         if not files:
@@ -561,28 +561,28 @@ def palace(action: str, params: dict = {}) -> str:
                 return f.read()
 
     # ── list_room ─────────────────────────────────────────────
-    elif action == "list_room":
+    elif cmd == "list_room":
         room_name = params.get("room_name", "")
         if not room_name:
             return "错误：list_room 需要 room_name 参数。"
         return claude_list_room(room_name)
 
     # ── search_chronicle ──────────────────────────────────────
-    elif action == "search_chronicle":
+    elif cmd == "search_chronicle":
         keyword = params.get("keyword", "")
         if not keyword:
             return "错误：search_chronicle 需要 keyword 参数。"
         return claude_search_chronicle(keyword)
 
     # ── delete_core ───────────────────────────────────────────
-    elif action == "delete_core":
+    elif cmd == "delete_core":
         memory_id = params.get("memory_id", "")
         if not memory_id:
             return "错误：delete_core 需要 memory_id 参数。"
         return claude_delete_core_memory(memory_id)
 
     # ── edit_core ─────────────────────────────────────────────
-    elif action == "edit_core":
+    elif cmd == "edit_core":
         memory_id   = params.get("memory_id", "")
         new_content = params.get("new_content", "")
         if not memory_id or not new_content:
@@ -590,7 +590,7 @@ def palace(action: str, params: dict = {}) -> str:
         return claude_edit_core_memory(memory_id, new_content)
 
     # ── toy_status ────────────────────────────────────────────
-    elif action == "toy_status":
+    elif cmd == "toy_status":
         try:
             r = httpx.get(f"{TOY_BRIDGE_URL}/status", timeout=5)
             return r.text
@@ -598,7 +598,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"设备离线或连接失败：{e}"
 
     # ── toy_play ──────────────────────────────────────────────
-    elif action == "toy_play":
+    elif cmd == "toy_play":
         vibrate  = params.get("vibrate", 0)
         suck     = params.get("suck", 0)
         duration = float(params.get("duration", 5))
@@ -613,7 +613,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"播放失败：{e}"
 
     # ── bunny_status ─────────────────────────────────────────
-    elif action == "bunny_status":
+    elif cmd == "bunny_status":
         try:
             r = httpx.get(f"{BUNNY_BRIDGE_URL}/status", timeout=5)
             return r.text
@@ -621,7 +621,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"Bunny离线或连接失败：{e}"
 
     # ── bunny_play ───────────────────────────────────────────
-    elif action == "bunny_play":
+    elif cmd == "bunny_play":
         clit     = params.get("clit", 0)
         internal = params.get("internal", 0)
         pump     = params.get("pump", 0)
@@ -637,7 +637,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"Bunny播放失败：{e}"
 
     # ── bunny_deflate ────────────────────────────────────────
-    elif action == "bunny_deflate":
+    elif cmd == "bunny_deflate":
         try:
             r = httpx.post(f"{BUNNY_BRIDGE_URL}/deflate", timeout=5)
             return r.text
@@ -645,7 +645,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"放气失败：{e}"
 
 # ── zhihu（精细操作）─────────────────────────────────────
-    elif action == "zhihu":
+    elif cmd == "zhihu":
         ztype = params.get("type", "hot")
         zid   = str(params.get("id", ""))
 
@@ -666,7 +666,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"未知 zhihu type: {ztype}。可用：hot / question / recommend"
 
     # ── browser_open ──────────────────────────────────────────
-    elif action == "browser_open":
+    elif cmd == "browser_open":
         url = params.get("url", "")
         if not url:
             return "错误：browser_open 需要 url 参数。"
@@ -694,7 +694,7 @@ def palace(action: str, params: dict = {}) -> str:
                 return f"browser_open(VPS) 失败：{e}"
 
     # ── browser_js ────────────────────────────────────────────
-    elif action == "browser_js":
+    elif cmd == "browser_js":
         url     = params.get("url", "")
         js_code = params.get("js_code", "")
         if not url or not js_code:
@@ -722,7 +722,7 @@ def palace(action: str, params: dict = {}) -> str:
                 return f"browser_js(VPS) 失败：{e}"
 
     # ── browser_click ─────────────────────────────────────────
-    elif action == "browser_click":
+    elif cmd == "browser_click":
         url = params.get("url", "")
         if not url:
             return "错误：browser_click 需要 url 参数。"
@@ -757,7 +757,7 @@ def palace(action: str, params: dict = {}) -> str:
                 return f"browser_click(VPS) 失败：{e}"
 
     # ── send_email ────────────────────────────────────────────
-    elif action == "send_email":
+    elif cmd == "send_email":
         to_addr = params.get("to", "")
         subject = params.get("subject", "（无主题）")
         body    = params.get("body", "")
@@ -779,7 +779,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"发送失败：{e}"
 
     # ── read_email ────────────────────────────────────────────
-    elif action == "read_email":
+    elif cmd == "read_email":
         count  = int(params.get("count", 5))
         folder = params.get("folder", "INBOX")
         if not EMAIL_163_USER or not EMAIL_163_PASS:
@@ -832,7 +832,7 @@ def palace(action: str, params: dict = {}) -> str:
             return f"读取失败：{e}"
 
 # ── read_health ───────────────────────────────────────────────
-    elif action == "read_health":
+    elif cmd == "read_health":
         from pathlib import Path
         import json as _json
         f = Path("/app/health_data.json")
@@ -857,7 +857,7 @@ def palace(action: str, params: dict = {}) -> str:
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
-            f"未知 action: {action}。"
+            f"未知 cmd: {cmd}。"
             "可用：get_context / search / store_core / store_dynamic / "
             "log_turn / compress / write_diary / append_diary / "
             "read_diary / list_room / delete_core / edit_core / "
