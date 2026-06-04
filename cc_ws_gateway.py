@@ -19,7 +19,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 import time as time_mod
-import random
 import re
 
 logging.basicConfig(
@@ -586,33 +585,20 @@ def build_pebbling_prompt(
             "ACTION: message / recall / none",
             "CONTENT: 具体内容（message写给Jeoi的话，recall写搜索关键词）",
         ])
-    elif mode == "free":
+    else:  # free
         parts.extend([
             "",
-            "你可以选择：",
-            "  message — 给Jeoi发条消息",
-            "  diary — 写日记（调palace write_diary，记录此刻的心情和想法）",
-            "  explore — 上网搜索你感兴趣的东西",
-            "  coreading — 读你们在读的书（用reading工具）",
-            "  recall — 回顾记忆",
-            "  none — 什么都不做",
+            "现在你可以做任何事。你脑子里在想什么？",
+            "想不想用browser看点感兴趣的东西；",
+            "想不想自由调取你的工具——翻翻之前的日记，在记忆库里捞你感兴趣的关键词；",
+            "想不想回顾你们今天聊过的话题；",
+            "想不想去coreading看看你们一起读的书，悄悄给她留下一点批注；",
+            "给她带来Pebbling——就像可爱的小企鹅；",
+            "或者就自己待一会儿。",
             "",
-            "你可以先调用工具（搜记忆、写日记等），然后再回复。",
-            "最终严格按此格式回复：",
-            "ACTION: 选一个",
-            "CONTENT: 具体内容",
-        ])
-    else:  # light
-        parts.extend([
-            "",
-            "你可以选择：",
-            "  message — 给Jeoi发条消息",
-            "  recall — 回顾记忆",
-            "  none — 什么都不做",
-            "",
-            "严格按此格式回复：",
-            "ACTION: message / recall / none",
-            "CONTENT: 具体内容",
+            "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
+            "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
+            "如果有想说的话或内容，下一行：CONTENT: 内容",
         ])
 
     return "\n".join(parts)
@@ -937,7 +923,7 @@ async def pebbling_worker():
                 if is_first:
                     mode = "silent"
                 else:
-                    mode = "free" if random.random() < 0.80 else "light"
+                    mode = "free"
 
                 elapsed_h = elapsed_jeoi / 3600
                 log.info(f"Pebbling #{actual + 1}: mode={mode}, "
