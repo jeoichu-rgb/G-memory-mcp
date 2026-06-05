@@ -655,8 +655,6 @@ async def run_cc_oneshot(
         "--output-format", "stream-json",
         "--verbose",
         "--model", session.model,
-        "--strict-mcp-config",
-        "--mcp-config", str(CLAUDE_SETTINGS_PATH),
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
     ])
@@ -1484,8 +1482,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         "--output-format", "stream-json",
         "--model", session.model,
         "--verbose",
-        "--strict-mcp-config",
-        "--mcp-config", str(CLAUDE_SETTINGS_PATH),
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
     ])
 
