@@ -885,3 +885,4 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
 
 
 mcp_app = mcp.sse_app()
+mcp_http_app = mcp.streamable_http_app()

@@ -1044,13 +1044,13 @@ async def startup_load_sessions():
                 try:
                     r = httpx.get(f"{base}/health", timeout=3)
                     if r.status_code == 200:
-                        palace_url = f"{base}/mcp/{PALACE_SECRET}/sse"
+                        palace_url = f"{base}/mcp/{PALACE_SECRET}/http/mcp"
                         log.info(f"Palace internal URL auto-detected: {palace_url}")
                         break
                 except Exception:
                     continue
         if not palace_url:
-            palace_url = f"http://localhost:8000/mcp/{PALACE_SECRET}/sse"
+            palace_url = f"http://localhost:8000/mcp/{PALACE_SECRET}/http/mcp"
             log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
         servers = settings.setdefault("mcpServers", {})
         old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")

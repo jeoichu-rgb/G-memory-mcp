@@ -7,7 +7,7 @@ from openai import OpenAI
 from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
 from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
-from claude_mcp import mcp_app
+from claude_mcp import mcp_app, mcp_http_app
 import hmac
 import hashlib
 from claude_memory import claude_add_core_memory, claude_search_memory
@@ -41,7 +41,9 @@ PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
 
 # 2. 用声明好的密码拼接路径，并挂载 MCP 服务
 mcp_path = f"/mcp/{PALACE_SECRET}"
-app.mount(mcp_path, mcp_app)
+mcp_http_path = f"/mcp/{PALACE_SECRET}/http"
+app.mount(mcp_http_path, mcp_http_app)  # Streamable HTTP for CC CLI
+app.mount(mcp_path, mcp_app)  # SSE for Claude.ai web
 
 # 3. 最后才是门卫中间件（原生 ASGI，兼容 SSE 流式响应）
 class CheckSecretMiddleware:
