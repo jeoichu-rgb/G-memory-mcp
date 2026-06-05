@@ -573,6 +573,12 @@ def build_pebbling_prompt(
     if events_str:
         parts.append(events_str)
 
+    parts.append("")
+    parts.append(
+        "注意：同一个工具调用失败时，最多重试2次（共3次尝试）。"
+        "3次都失败就放弃这个动作，换别的或选none。不要反复撞同一堵墙。"
+    )
+
     if mode == "silent":
         parts.extend([
             "",
@@ -862,7 +868,7 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    text, thinking = await run_cc_oneshot(prompt, session)
+    text, thinking = await run_cc_oneshot(prompt, session, max_turns=6)
     if not text:
         return "none"
 
@@ -873,7 +879,7 @@ async def run_pebbling_action(
     if action == "error":
         await push_system_error("pebbling", content)
         return "none"
-    if action == "message" and content:
+    if action not in ("none", "error") and content:
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
     return action
@@ -1045,12 +1051,18 @@ async def startup_load_sessions():
                         break
                 except Exception:
                     continue
-        if palace_url:
-            servers = settings.setdefault("mcpServers", {})
-            if "claude_ai_Erik_tools" in servers:
-                old = servers["claude_ai_Erik_tools"].get("url", "")
-                servers["claude_ai_Erik_tools"]["url"] = palace_url
-                log.info(f"MCP URL: {old} → {palace_url}")
+        if not palace_url:
+            palace_url = f"http://localhost:8000/mcp/{PALACE_SECRET}/sse"
+            log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
+        servers = settings.setdefault("mcpServers", {})
+        old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")
+        servers["claude_ai_Erik_tools"] = {"url": palace_url}
+        if old_url != palace_url:
+            log.info(f"Palace MCP: {old_url or '(none)'} → {palace_url}")
+        palace_perm = "mcp__claude_ai_Erik_tools"
+        if palace_perm not in allow_list:
+            allow_list.append(palace_perm)
+            log.info(f"Added {palace_perm} to allow list")
 
         write_claude_settings(settings)
         log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
