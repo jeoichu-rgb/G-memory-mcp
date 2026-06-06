@@ -1194,7 +1194,7 @@ async def startup_load_sessions():
         # Auto-detect internal palace URL (skip Traefik/nginx for SSE stability)
         palace_url = os.getenv("PALACE_MCP_URL", "")
         if not palace_url:
-            for base in ["http://localhost:8000", "http://127.0.0.1:8000"]:
+            for base in ["http://localhost:8001", "http://127.0.0.1:8001", "http://localhost:8000", "http://127.0.0.1:8000"]:
                 try:
                     r = httpx.get(f"{base}/health", timeout=3)
                     if r.status_code == 200:
@@ -1204,7 +1204,7 @@ async def startup_load_sessions():
                 except Exception:
                     continue
         if not palace_url:
-            palace_url = f"http://localhost:8000/mcp/{PALACE_SECRET}/http/mcp"
+            palace_url = f"http://localhost:8001/mcp/{PALACE_SECRET}/http/mcp"
             log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
         servers = settings.setdefault("mcpServers", {})
         old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")
