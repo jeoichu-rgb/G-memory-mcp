@@ -561,12 +561,11 @@ async def admin_create_diary(payload: AdminDiaryCreate):
     filename = f"{today}_{time_str}_{safe_title}.md"
     import os
     os.makedirs("./claude_diary", exist_ok=True)
+    mood = payload.mood or chr(8212)
+    nl = chr(10)
+    text = f"# {payload.title}{nl}> 日期：{today} {time_str.replace(chr(45), chr(58))} | 心情：{mood}{nl}{nl}{payload.content}{nl}"
     with open(f"./claude_diary/{filename}", "w", encoding="utf-8") as f:
-        f.write(f"# {payload.title}
-> 日期：{today} {time_str.replace('-', ':')} | 心情：{payload.mood or '—'}
-
-{payload.content}
-")
+        f.write(text)
     return {"status": "ok", "filename": filename}
 
     
