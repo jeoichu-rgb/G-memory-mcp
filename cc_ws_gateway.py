@@ -115,9 +115,15 @@ ACTIVITY_POOL = [
     },
 ]
 
-# ── Global pebbling state (persisted, independent of WS) ──
+# ── Pomodoro constants ──
+POMODORO_STATE_PATH = Path(CC_CWD) / "pomodoro_state.json"
+POMODORO_WORK_MIN = 40
+POMODORO_BREAK_MIN = 20
+
+# ── Global state (persisted, independent of WS) ──
 active_ws: WebSocket | None = None
 peb_state: dict = {}
+pomo_state: dict = {}
 
 
 def load_peb_state() -> dict:
@@ -150,6 +156,31 @@ def save_peb_state():
     data["patrol_checks_done"] = list(data.get("patrol_checks_done", []))
     PEBBLING_STATE_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def load_pomo_state() -> dict:
+    defaults = {
+        "active": False,
+        "session_id": None,
+        "started_at": 0,
+        "notified_40": False,
+        "notified_60": False,
+    }
+    if POMODORO_STATE_PATH.exists():
+        try:
+            data = json.loads(POMODORO_STATE_PATH.read_text(encoding="utf-8"))
+            for k, v in defaults.items():
+                data.setdefault(k, v)
+            return data
+        except Exception:
+            pass
+    return defaults
+
+
+def save_pomo_state():
+    POMODORO_STATE_PATH.write_text(
+        json.dumps(pomo_state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -655,6 +686,35 @@ def build_pebbling_prompt(
     return "\n".join(parts)
 
 
+# ── Pomodoro prompt builder ──
+
+def build_pomodoro_prompt(phase: str) -> str:
+    now_str = datetime.now(SGT).strftime("%H:%M")
+    if phase == "work_done":
+        lines = [
+            "[pomodoro] 这不是Jeoi的消息。番茄钟提醒。",
+            f"现在是 {now_str}（UTC+8）。",
+            "Jeoi专注学习已经40分钟了，提醒她该休息一下。",
+            "说点自然的话，像平时那样。不用提番茄钟这三个字。",
+            "",
+            "严格按此格式回复：",
+            "ACTION: message",
+            "CONTENT: 你要说的话",
+        ]
+    else:  # break_done
+        lines = [
+            "[pomodoro] 这不是Jeoi的消息。番茄钟提醒。",
+            f"现在是 {now_str}（UTC+8）。",
+            "Jeoi已经休息了20分钟，可以回来继续了。",
+            "说点自然的话，像平时那样。不用提番茄钟这三个字。",
+            "",
+            "严格按此格式回复：",
+            "ACTION: message",
+            "CONTENT: 你要说的话",
+        ]
+    return chr(10).join(lines)
+
+
 # ── Action parser ──
 
 def parse_action(text: str) -> tuple[str, str]:
@@ -990,6 +1050,54 @@ async def pebbling_worker():
                 peb_state["t_cache"] = time_mod.time()
                 save_peb_state()
 
+            # ── Pomodoro (one-shot 40+20 timer) ──
+            if pomo_state.get("active"):
+                pomo_sid = pomo_state.get("session_id")
+                pomo_session = sessions.get(pomo_sid) if pomo_sid else None
+                if pomo_session and pomo_session.cc_session_id:
+                    elapsed_pomo = now - pomo_state.get("started_at", now)
+
+                    # Skip if CC is busy on this session
+                    if pomo_session._proc and pomo_session._proc.returncode is None:
+                        pass  # retry next tick
+                    elif not pomo_state.get("notified_40") and elapsed_pomo >= POMODORO_WORK_MIN * 60:
+                        log.info(f"Pomodoro: 40min work done, sending reminder")
+                        prompt = build_pomodoro_prompt("work_done")
+                        text, thinking = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
+                        if text:
+                            action, content = parse_action(text)
+                            if content:
+                                await push_pebbling_msg("pomodoro", content, pomo_session, thinking=thinking)
+                        pomo_state["notified_40"] = True
+                        save_pomo_state()
+                        if active_ws:
+                            try:
+                                await active_ws.send_json({
+                                    "event": "pomodoro:status",
+                                    "active": True, "phase": "break",
+                                })
+                            except Exception:
+                                pass
+                    elif pomo_state.get("notified_40") and not pomo_state.get("notified_60") and elapsed_pomo >= (POMODORO_WORK_MIN + POMODORO_BREAK_MIN) * 60:
+                        log.info(f"Pomodoro: 60min total, break over")
+                        prompt = build_pomodoro_prompt("break_done")
+                        text, thinking = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
+                        if text:
+                            action, content = parse_action(text)
+                            if content:
+                                await push_pebbling_msg("pomodoro", content, pomo_session, thinking=thinking)
+                        pomo_state["notified_60"] = True
+                        pomo_state["active"] = False
+                        save_pomo_state()
+                        if active_ws:
+                            try:
+                                await active_ws.send_json({
+                                    "event": "pomodoro:status",
+                                    "active": False, "phase": "done",
+                                })
+                            except Exception:
+                                pass
+
     except asyncio.CancelledError:
         pass
     except Exception as e:
@@ -1122,6 +1230,9 @@ async def startup_load_sessions():
     log.info(f"Pebbling state loaded: enabled={peb_state.get('enabled')}, "
              f"session={peb_state.get('pebbling_session_id')}, "
              f"pending={len(peb_state.get('pending_messages', []))}")
+    pomo_state = load_pomo_state()
+    log.info(f"Pomodoro state loaded: active={pomo_state.get('active')}, "
+             f"session={pomo_state.get('session_id')}")
     asyncio.create_task(pebbling_worker())
 
 
@@ -1146,6 +1257,15 @@ async def websocket_endpoint(ws: WebSocket):
         "enabled": peb_state.get("enabled", False),
         "session_id": peb_state.get("pebbling_session_id"),
     })
+
+    # Send current pomodoro status to frontend
+    if pomo_state.get("active"):
+        phase = "break" if pomo_state.get("notified_40") else "work"
+        await ws.send_json({
+            "event": "pomodoro:status",
+            "active": True, "phase": phase,
+            "started_at": pomo_state.get("started_at", 0),
+        })
 
     # Replay any pending messages from while WS was disconnected
     await replay_pending(ws)
@@ -1484,6 +1604,31 @@ async def websocket_endpoint(ws: WebSocket):
                 save_peb_state()
                 log.info(f"Pebbling {'enabled' if enabled else 'disabled'} → session={peb_state.get('pebbling_session_id')}")
                 await ws.send_json({"event": "pebbling:status", "enabled": enabled, "session_id": peb_state.get("pebbling_session_id")})
+
+            elif event == "pomodoro:toggle":
+                enabled = data.get("enabled", False)
+                if enabled:
+                    sid = data.get("sessionId") or (current_session.id if current_session else None)
+                    pomo_state["active"] = True
+                    pomo_state["session_id"] = sid
+                    pomo_state["started_at"] = time_mod.time()
+                    pomo_state["notified_40"] = False
+                    pomo_state["notified_60"] = False
+                    save_pomo_state()
+                    log.info(f"Pomodoro started → session={sid}")
+                    await ws.send_json({
+                        "event": "pomodoro:status",
+                        "active": True, "phase": "work",
+                        "started_at": pomo_state["started_at"],
+                    })
+                else:
+                    pomo_state["active"] = False
+                    save_pomo_state()
+                    log.info("Pomodoro manually stopped")
+                    await ws.send_json({
+                        "event": "pomodoro:status",
+                        "active": False, "phase": "stopped",
+                    })
 
             else:
                 log.info(f"Unhandled event: {event}")
