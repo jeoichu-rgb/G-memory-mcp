@@ -400,6 +400,14 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <span class="pager-info" id="e-dyn-info"></span>
         <button class="pager-btn" id="e-dyn-next" onclick="erikDynPage(1)">下一页 →</button>
       </div>
+      <div class="sep" style="margin:12px 0;"></div>
+      <div class="lbl">+ 新增动态记忆</div>
+      <textarea class="inp" id="new-dyn-content" placeholder="记忆内容…" style="min-height:60px;font-size:11px;"></textarea>
+      <div class="row" style="gap:6px;">
+        <input class="inp" id="new-dyn-cat" placeholder="分类（可选）" style="flex:1;font-size:11px;padding:6px 8px;">
+        <button class="btn btn-v btn-sm" onclick="erikAddMemory('dynamic')">存入</button>
+      </div>
+      <div class="st" id="new-dyn-st"></div>
     </div>
   </div>
 
@@ -418,6 +426,15 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <span class="pager-info" id="e-core-info"></span>
         <button class="pager-btn" id="e-core-next" onclick="erikCorePage(1)">下一页 →</button>
       </div>
+      <div class="sep" style="margin:12px 0;"></div>
+      <div class="lbl">+ 新增核心记忆</div>
+      <textarea class="inp" id="new-core-content" placeholder="记忆内容…" style="min-height:60px;font-size:11px;"></textarea>
+      <div class="row" style="gap:6px;">
+        <input class="inp" id="new-core-cat" placeholder="分类（可选）" style="flex:1;font-size:11px;padding:6px 8px;">
+        <input class="inp" id="new-core-folder" placeholder="文件夹（可选）" style="flex:1;font-size:11px;padding:6px 8px;">
+        <button class="btn btn-v btn-sm" onclick="erikAddMemory('core')">存入</button>
+      </div>
+      <div class="st" id="new-core-st"></div>
     </div>
   </div>
 
@@ -432,6 +449,15 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <span class="pager-info" id="e-diary-info"></span>
         <button class="pager-btn" id="e-diary-next" onclick="erikDiaryPage(1)">下一页 →</button>
       </div>
+      <div class="sep" style="margin:12px 0;"></div>
+      <div class="lbl">+ 新建日记</div>
+      <input class="inp" id="new-diary-title" placeholder="标题" style="font-size:11px;padding:6px 8px;">
+      <input class="inp" id="new-diary-mood" placeholder="心情（可选）" style="font-size:11px;padding:6px 8px;margin-top:4px;">
+      <textarea class="inp" id="new-diary-content" placeholder="日记内容…" style="min-height:100px;font-size:11px;line-height:1.8;margin-top:4px;"></textarea>
+      <div class="row" style="margin-top:4px;">
+        <button class="btn btn-v btn-sm" onclick="erikCreateDiary()">写下</button>
+      </div>
+      <div class="st" id="new-diary-st"></div>
       <!-- diary editor inline -->
       <div id="e-diary-editor" style="display:none;" class="col">
         <div style="font-size:10px;color:var(--violet);" id="e-diary-name"></div>
@@ -1165,6 +1191,45 @@ async function erikSaveDiary() {
   const st = document.getElementById('e-diary-st');
   st.textContent = d.status === 'ok' ? '已保存 ✓' : '保存失败';
   st.className = d.status === 'ok' ? 'st ok' : 'st err';
+}
+
+async function erikAddMemory(collection) {
+  const content = document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-content').value.trim();
+  const cat = document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-cat').value.trim();
+  const st = document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-st');
+  if (!content) { st.textContent = '内容不能为空'; st.className = 'st err'; return; }
+  const body = { content, category: cat || '手动录入' };
+  if (collection === 'core') { const folder = document.getElementById('new-core-folder').value.trim(); if (folder) body.folder = folder; }
+  try {
+    const r = await fetch(API_BASE + '/admin/memories?collection=' + collection, { method: 'POST', headers: hdr(), body: JSON.stringify(body) });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      st.textContent = '已存入 ✓ ' + d.id; st.className = 'st ok';
+      document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-content').value = '';
+      document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-cat').value = '';
+      if (collection === 'core') document.getElementById('new-core-folder').value = '';
+      if (collection === 'dynamic') erikLoadDynamic(); else erikLoadCore(coreFilter);
+    } else { st.textContent = '失败'; st.className = 'st err'; }
+  } catch(e) { st.textContent = e.message; st.className = 'st err'; }
+}
+
+async function erikCreateDiary() {
+  const title = document.getElementById('new-diary-title').value.trim();
+  const content = document.getElementById('new-diary-content').value.trim();
+  const mood = document.getElementById('new-diary-mood').value.trim();
+  const st = document.getElementById('new-diary-st');
+  if (!title || !content) { st.textContent = '标题和内容不能为空'; st.className = 'st err'; return; }
+  try {
+    const r = await fetch(API_BASE + '/admin/diary', { method: 'POST', headers: hdr(), body: JSON.stringify({ title, content, mood }) });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      st.textContent = '已写下 ✓ ' + d.filename; st.className = 'st ok';
+      document.getElementById('new-diary-title').value = '';
+      document.getElementById('new-diary-content').value = '';
+      document.getElementById('new-diary-mood').value = '';
+      erikLoadDiaries();
+    } else { st.textContent = '失败'; st.className = 'st err'; }
+  } catch(e) { st.textContent = e.message; st.className = 'st err'; }
 }
 
 // CHRONICLE

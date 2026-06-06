@@ -11,7 +11,7 @@ from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app, mcp_http_app
 import hmac
 import hashlib
-from claude_memory import claude_add_core_memory, claude_search_memory
+from claude_memory import claude_add_core_memory, claude_add_dynamic_memory, claude_search_memory
 from datetime import datetime, timezone, timedelta
 SGT = timezone(timedelta(hours=8))
 
@@ -519,6 +519,56 @@ async def admin_delete_memory(memory_id: str, collection: str = "dynamic"):
     else:
         result = claude_delete_dynamic_memory(memory_id)
     return {"result": result}
+
+
+class AdminMemoryCreate(BaseModel):
+    content: str
+    category: str = "手动录入"
+    mood: str = ""
+    folder: str = ""
+
+
+@app.post("/admin/memories")
+async def admin_create_memory(payload: AdminMemoryCreate, collection: str = "dynamic"):
+    mid = f"manual_{int(time.time())}"
+    metadata = {
+        "category": payload.category,
+        "mood": payload.mood,
+        "source": "manual",
+        "date": datetime.now(SGT).strftime("%Y-%m-%d"),
+    }
+    if payload.folder:
+        metadata["folder"] = payload.folder
+    if collection == "core":
+        claude_add_core_memory(payload.content, metadata, mid)
+    else:
+        claude_add_dynamic_memory(payload.content, metadata, mid)
+    return {"status": "ok", "id": mid}
+
+
+class AdminDiaryCreate(BaseModel):
+    title: str
+    content: str
+    mood: str = ""
+
+
+@app.post("/admin/diary")
+async def admin_create_diary(payload: AdminDiaryCreate):
+    now = datetime.now(SGT)
+    today = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M")
+    safe_title = payload.title.replace("/", "_").replace(" ", "_")
+    filename = f"{today}_{time_str}_{safe_title}.md"
+    import os
+    os.makedirs("./claude_diary", exist_ok=True)
+    with open(f"./claude_diary/{filename}", "w", encoding="utf-8") as f:
+        f.write(f"# {payload.title}
+> 日期：{today} {time_str.replace('-', ':')} | 心情：{payload.mood or '—'}
+
+{payload.content}
+")
+    return {"status": "ok", "filename": filename}
+
     
 # 压缩草稿：触发DS生成
 @app.post("/admin/compress-preview")
