@@ -991,66 +991,15 @@ async def run_pebbling_action(
 # ── Three-layer worker ──
 
 async def pebbling_worker():
-    """App-level background: patrol (L1) + pebbling (L2).
+    """App-level background: patrol (L1) + pebbling (L2) + pomodoro.
     Runs independently of WebSocket connections."""
-    global peb_state
+    global peb_state, pomo_state
     try:
         while True:
             await asyncio.sleep(30)
-
-            if not peb_state.get("enabled"):
-                continue
-
-            sid = peb_state.get("pebbling_session_id")
-            session = sessions.get(sid) if sid else None
-            if not session or not session.cc_session_id:
-                continue
-
             now = time_mod.time()
-            elapsed_jeoi = now - peb_state.get("t_jeoi", now)
 
-            # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
-            checks_done = set(peb_state.get("patrol_checks_done", []))
-            for check_min in PATROL_SCHEDULE:
-                if check_min in checks_done:
-                    continue
-                if elapsed_jeoi >= check_min * 60:
-                    checks_done.add(check_min)
-                    peb_state["patrol_checks_done"] = list(checks_done)
-                    save_peb_state()
-                    log.info(f"Patrol triggered: {check_min}min")
-                    action = await run_patrol(session, elapsed_jeoi, check_min)
-                    if action == "message":
-                        peb_state["t_cache"] = time_mod.time()
-                        save_peb_state()
-                    break
-
-            # ── L2: Pebbling (every 3h, max 8/24h) ──
-            history = peb_state.get("pebbling_history", [])
-            history = [t for t in history if now - t < 86400]
-            peb_state["pebbling_history"] = history
-
-            actual = len(history)
-            expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
-
-            if expected > actual:
-                is_first = actual == 0
-                if is_first:
-                    mode = "silent"
-                else:
-                    mode = "free"
-
-                elapsed_h = elapsed_jeoi / 3600
-                log.info(f"Pebbling #{actual + 1}: mode={mode}, "
-                         f"elapsed={elapsed_h:.1f}h")
-                await run_pebbling_action(
-                    session, elapsed_h, actual, mode
-                )
-                peb_state["pebbling_history"].append(time_mod.time())
-                peb_state["t_cache"] = time_mod.time()
-                save_peb_state()
-
-            # ── Pomodoro (one-shot 40+20 timer) ──
+            # ── Pomodoro (independent of pebbling) ──
             if pomo_state.get("active"):
                 pomo_sid = pomo_state.get("session_id")
                 pomo_session = sessions.get(pomo_sid) if pomo_sid else None
@@ -1097,6 +1046,58 @@ async def pebbling_worker():
                                 })
                             except Exception:
                                 pass
+
+            # ── Pebbling (requires pebbling enabled) ──
+            if not peb_state.get("enabled"):
+                continue
+
+            sid = peb_state.get("pebbling_session_id")
+            session = sessions.get(sid) if sid else None
+            if not session or not session.cc_session_id:
+                continue
+
+            elapsed_jeoi = now - peb_state.get("t_jeoi", now)
+
+            # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
+            checks_done = set(peb_state.get("patrol_checks_done", []))
+            for check_min in PATROL_SCHEDULE:
+                if check_min in checks_done:
+                    continue
+                if elapsed_jeoi >= check_min * 60:
+                    checks_done.add(check_min)
+                    peb_state["patrol_checks_done"] = list(checks_done)
+                    save_peb_state()
+                    log.info(f"Patrol triggered: {check_min}min")
+                    action = await run_patrol(session, elapsed_jeoi, check_min)
+                    if action == "message":
+                        peb_state["t_cache"] = time_mod.time()
+                        save_peb_state()
+                    break
+
+            # ── L2: Pebbling (every 3h, max 8/24h) ──
+            history = peb_state.get("pebbling_history", [])
+            history = [t for t in history if now - t < 86400]
+            peb_state["pebbling_history"] = history
+
+            actual = len(history)
+            expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
+
+            if expected > actual:
+                is_first = actual == 0
+                if is_first:
+                    mode = "silent"
+                else:
+                    mode = "free"
+
+                elapsed_h = elapsed_jeoi / 3600
+                log.info(f"Pebbling #{actual + 1}: mode={mode}, "
+                         f"elapsed={elapsed_h:.1f}h")
+                await run_pebbling_action(
+                    session, elapsed_h, actual, mode
+                )
+                peb_state["pebbling_history"].append(time_mod.time())
+                peb_state["t_cache"] = time_mod.time()
+                save_peb_state()
 
     except asyncio.CancelledError:
         pass
@@ -1169,7 +1170,7 @@ sessions: dict[str, Session] = {}
 
 @app.on_event("startup")
 async def startup_load_sessions():
-    global peb_state
+    global peb_state, pomo_state
     # 动态注入deny列表到settings.json（只在VPS上跑gateway时生效，不污染git）
     try:
         settings = read_claude_settings()
