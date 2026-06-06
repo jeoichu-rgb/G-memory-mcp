@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -20,7 +21,16 @@ from fastapi.responses import JSONResponse
 
 os.makedirs("logs", exist_ok=True)
 
-app = FastAPI(title="G's Memory Palace")
+
+@asynccontextmanager
+async def _lifespan(app_instance):
+    # FastAPI.mount() 不传递 lifespan 给子应用，
+    # 手动启动 MCP Streamable HTTP 的 task group
+    async with mcp_http_app.router.lifespan_context(mcp_http_app):
+        yield
+
+
+app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 class ProxySchemeMiddleware:
