@@ -761,6 +761,12 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="toggle-track"></div>
       </label>
       <span class="keepalive-status" id="pebbleStatus"></span>
+      <label class="memory-toggle" title="番茄钟 (40min学习 + 20min休息)">
+        <span id="pomoIcon">🍅</span>
+        <input type="checkbox" id="pomoToggle" onchange="togglePomodoro()">
+        <div class="toggle-track"></div>
+      </label>
+      <span class="keepalive-status" id="pomoStatus"></span>
     </div>
 
     <!-- Messages -->
@@ -1080,6 +1086,11 @@ function handleWSMessage(data) {
       showCtxStatus('✗ ' + (data.message || '生成失败'), true);
       document.getElementById('ctxGenerateBtn').disabled = false;
       document.getElementById('ctxGenerateBtn').textContent = '生成摘要';
+      break;
+
+    // Pomodoro
+    case 'pomodoro:status':
+      handlePomoStatus(data);
       break;
 
     // Pebbling system
@@ -2198,7 +2209,7 @@ function addPebblingMessage(content, source, time) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'message assistant';
-  const label = source === 'patrol' ? '巡查' : '送石头';
+  const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : '送石头';
   div.innerHTML =
     '<div class="msg-header">' +
       '<span class="msg-role">Erik</span>' +
@@ -2207,6 +2218,94 @@ function addPebblingMessage(content, source, time) {
     '<div class="msg-content">' + markdownToHtml(content) + '</div>';
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+/* ══════════════════════════════════════
+   POMODORO
+══════════════════════════════════════ */
+let pomoStartedAt = 0;
+let pomoTimerInterval = null;
+
+function togglePomodoro() {
+  const enabled = document.getElementById('pomoToggle').checked;
+  localStorage.setItem('pomo-enabled', enabled ? '1' : '0');
+  wsSend('pomodoro:toggle', { enabled, sessionId: currentSessionId });
+  if (enabled) {
+    pomoStartedAt = Date.now() / 1000;
+    document.getElementById('pomoIcon').textContent = '⏱️';
+    showPomoStatus('40:00', 'ok');
+    startPomoTimer();
+  } else {
+    document.getElementById('pomoIcon').textContent = '🍅';
+    showPomoStatus('', '');
+    stopPomoTimer();
+  }
+}
+
+function handlePomoStatus(data) {
+  const toggle = document.getElementById('pomoToggle');
+  if (data.active) {
+    toggle.checked = true;
+    localStorage.setItem('pomo-enabled', '1');
+    pomoStartedAt = data.started_at || (Date.now() / 1000);
+    document.getElementById('pomoIcon').textContent = data.phase === 'break' ? '☕' : '⏱️';
+    startPomoTimer();
+  } else {
+    toggle.checked = false;
+    localStorage.setItem('pomo-enabled', '0');
+    document.getElementById('pomoIcon').textContent = '🍅';
+    showPomoStatus('', '');
+    stopPomoTimer();
+  }
+}
+
+function startPomoTimer() {
+  stopPomoTimer();
+  updatePomoDisplay();
+  pomoTimerInterval = setInterval(updatePomoDisplay, 1000);
+}
+
+function stopPomoTimer() {
+  if (pomoTimerInterval) {
+    clearInterval(pomoTimerInterval);
+    pomoTimerInterval = null;
+  }
+}
+
+function updatePomoDisplay() {
+  if (!pomoStartedAt) return;
+  const elapsed = Math.floor(Date.now() / 1000 - pomoStartedAt);
+  const workSec = 40 * 60;
+  const totalSec = 60 * 60;
+
+  if (elapsed >= totalSec) {
+    document.getElementById('pomoToggle').checked = false;
+    document.getElementById('pomoIcon').textContent = '🍅';
+    showPomoStatus('', '');
+    stopPomoTimer();
+    localStorage.setItem('pomo-enabled', '0');
+    return;
+  }
+
+  let remaining, cls;
+  if (elapsed < workSec) {
+    remaining = workSec - elapsed;
+    cls = 'ok';
+    document.getElementById('pomoIcon').textContent = '⏱️';
+  } else {
+    remaining = totalSec - elapsed;
+    cls = 'fail';
+    document.getElementById('pomoIcon').textContent = '☕';
+  }
+  const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
+  const ss = String(remaining % 60).padStart(2, '0');
+  showPomoStatus(mm + ':' + ss, cls);
+}
+
+function showPomoStatus(text, cls) {
+  const el = document.getElementById('pomoStatus');
+  el.textContent = text;
+  el.className = 'keepalive-status' + (cls ? ' ' + cls : '');
 }
 
 /* ══════════════════════════════════════
@@ -2234,6 +2333,13 @@ function toggleMemory() {
 (function() {
   if (localStorage.getItem('memory-enabled') === '1') {
     document.getElementById('memoryToggle').checked = true;
+  }
+})();
+
+// Restore 🍅 pomodoro toggle from localStorage
+(function() {
+  if (localStorage.getItem('pomo-enabled') === '1') {
+    document.getElementById('pomoToggle').checked = true;
   }
 })();
 
