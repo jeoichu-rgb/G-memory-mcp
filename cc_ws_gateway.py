@@ -1,4 +1,4 @@
-"""
+﻿"""
 Claude Code CLI WebSocket Gateway
 Translates between chat.html's WS protocol and Claude Code CLI's stream-json output.
 Chat history persisted to /opt/G-memory-mcp/chat_history/<session_id>.json
@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 import time as time_mod
 import re
+import random
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +74,46 @@ PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
+
+# ── Activity pool for pebbling lottery ──
+ACTIVITY_POOL = [
+    {
+        "id": "coreading",
+        "label": "共读批注",
+        "desc": "去coreading看看你们一起读的书，留下一点批注或读后感",
+        "action": "coreading",
+    },
+    {
+        "id": "diary",
+        "label": "写日记/翻日记",
+        "desc": "写一篇今天的日记，或者翻翻之前写过的日记",
+        "action": "diary",
+    },
+    {
+        "id": "yahoo",
+        "label": "上网冲浪",
+        "desc": "用browser去Yahoo看看有什么有趣的新闻或话题",
+        "action": "explore",
+    },
+    {
+        "id": "recall",
+        "label": "记忆漫游",
+        "desc": "在记忆库里搜索一个你突然想到的关键词，看看能捞到什么",
+        "action": "recall",
+    },
+    # {  # 知乎API key待续期，暂时移出
+    #     "id": "zhihu",
+    #     "label": "逛知乎",
+    #     "desc": "去知乎看看热榜或者搜一个你感兴趣的话题",
+    #     "action": "explore",
+    # },
+    {
+        "id": "message",
+        "label": "给Jeoi带块小石头",
+        "desc": "想一句话发给Jeoi——像企鹅叼石头一样",
+        "action": "message",
+    },
+]
 
 # ── Global pebbling state (persisted, independent of WS) ──
 active_ws: WebSocket | None = None
@@ -592,6 +633,7 @@ def build_pebbling_prompt(
             "CONTENT: 具体内容（message写给Jeoi的话，recall写搜索关键词）",
         ])
     else:  # free
+        pick = random.choice(ACTIVITY_POOL)
         parts.extend([
             "",
             "现在你可以做任何事。你脑子里在想什么？",
@@ -601,6 +643,9 @@ def build_pebbling_prompt(
             "想不想去coreading看看你们一起读的书，悄悄给她留下一点批注；",
             "给她带来Pebbling——就像可爱的小企鹅；",
             "或者就自己待一会儿。",
+            "",
+            f"🎲 今日事项抽签 → 【{pick['label']}】：{pick['desc']}",
+            "这是随机抽到的建议，你可以选择跟着做，也可以做自己想做的事。",
             "",
             "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
