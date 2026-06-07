@@ -1767,8 +1767,6 @@ function updateContextFromSession(su, msgUsage, cost) {
   const totalCacheRead = su ? (su.total_cache_read || 0) : 0;
 
   let label = `${fmtTokens(contextUsed)} / ${fmtTokens(contextTotal)}`;
-  if (compactionCount > 0) label += ` · 压缩×${compactionCount}`;
-  if (totalCacheRead) label += ` · cache ${fmtTokens(totalCacheRead)}`;
   if (sessionCost) label += ` · $${sessionCost.toFixed(4)}`;
 
   document.getElementById('contextText').textContent = label;
@@ -1796,9 +1794,7 @@ function renderContextBar() {
 }
 
 function showCompactionToast() {
-  const msg = compactionCount >= 3
-    ? `上下文已压缩 ×${compactionCount}，建议换个新窗口`
-    : `上下文已压缩 ×${compactionCount}`;
+  const msg = '上下文已压缩';
   const toast = document.createElement('div');
   toast.textContent = msg;
   toast.style.cssText = `

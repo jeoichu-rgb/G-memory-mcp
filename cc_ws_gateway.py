@@ -802,7 +802,7 @@ class PersistentCLI:
         ])
         if session.cc_session_id:
             cmd.extend(["--resume", session.cc_session_id])
-        compact_pct = min(30 + session.compaction_count * 10, 50)
+        compact_pct = 80
         env = {
             **os.environ,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -2046,8 +2046,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
             cmd.extend(["--", message])
 
-            # Progressive compaction: 30% -> 40% -> 50% (cap)
-            compact_pct = min(30 + session.compaction_count * 10, 50)
+            # Compaction at 80% (160k), matching CLI defaults
+            compact_pct = 80
             spawn_env = {
                 **os.environ,
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -2185,13 +2185,8 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         event = json.loads(line)
     except json.JSONDecodeError:
         log.debug(f"Non-JSON line: {line[:200]}")
-        if "compact" in line.lower() or "压缩" in line:
-            log.info(f"Compaction text detected in non-JSON: {line[:200]}")
-            session.compaction_count += 1
-            await ws.send_json({
-                "event": "system:compacted",
-                "compaction_count": session.compaction_count,
-            })
+        if "compact" in line.lower():
+            log.info(f"Compaction text in non-JSON: {line[:200]}")
         session._current_text += line + "\n"
         await ws.send_json({"event": "stream:text", "text": line + "\n"})
         return
