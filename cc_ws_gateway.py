@@ -1473,6 +1473,20 @@ async def startup_load_sessions():
 
         write_claude_settings(settings)
         log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
+
+        # CC CLI treats project settings.json MCP servers as untrusted (needs
+        # interactive approval). Write MCP config to settings.local.json which
+        # CC CLI trusts without confirmation — critical for stdin=DEVNULL spawn.
+        local = read_claude_local_settings()
+        local["mcpServers"] = settings.get("mcpServers", {})
+        local_perms = local.setdefault("permissions", {})
+        local_perms["allow"] = list(set(
+            local_perms.get("allow", []) + perms.get("allow", [])
+        ))
+        local_perms["deny"] = perms["deny"]
+        write_claude_local_settings(local)
+        log.info(f"MCP config written to settings.local.json: "
+                 f"{list(local.get('mcpServers', {}).keys())}")
     except Exception as e:
         log.warning(f"Failed to inject deny list: {e}")
 
@@ -2344,6 +2358,7 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
 # ══════════════════════════════════════════════
 
 CLAUDE_SETTINGS_PATH = Path(CC_CWD) / ".claude" / "settings.json"
+CLAUDE_LOCAL_SETTINGS_PATH = Path(CC_CWD) / ".claude" / "settings.local.json"
 
 
 def read_claude_settings() -> dict:
@@ -2362,10 +2377,29 @@ def write_claude_settings(data: dict):
     )
 
 
+def read_claude_local_settings() -> dict:
+    if CLAUDE_LOCAL_SETTINGS_PATH.exists():
+        try:
+            return json.loads(CLAUDE_LOCAL_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def write_claude_local_settings(data: dict):
+    CLAUDE_LOCAL_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CLAUDE_LOCAL_SETTINGS_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def _mcp_server_list() -> list:
     settings = read_claude_settings()
-    servers = settings.get("mcpServers", {})
-    permissions = settings.get("permissions", {}).get("allow", [])
+    local = read_claude_local_settings()
+    # MCP servers can be in either file; local takes precedence
+    servers = {**settings.get("mcpServers", {}), **local.get("mcpServers", {})}
+    all_perms = settings.get("permissions", {}).get("allow", []) + local.get("permissions", {}).get("allow", [])
+    permissions = list(set(all_perms))
     result = []
     for sname, cfg in servers.items():
         result.append({
