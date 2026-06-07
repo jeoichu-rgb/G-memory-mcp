@@ -1832,7 +1832,18 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "cli:reconnect":
                 try:
-                    if current_session:
+                    if not PERSISTENT_CLI_ENABLED:
+                        # Spawn mode: just return current status, no persistent process to reconnect
+                        status = persistent_cli.get_status()
+                        if current_session:
+                            status["session_id"] = status["session_id"] or current_session.id
+                            status["cc_session_id"] = status["cc_session_id"] or current_session.cc_session_id
+                            status["model"] = status["model"] or current_session.model
+                        status["mcp_status"] = "spawn_mode"
+                        status["persistent_enabled"] = False
+                        await ws.send_json({"event": "cli:status", **status})
+                        log.info("cli:reconnect ignored (spawn mode)")
+                    elif current_session:
                         await persistent_cli.reconnect(current_session)
                         status = persistent_cli.get_status()
                         await ws.send_json({"event": "cli:status", **status})
