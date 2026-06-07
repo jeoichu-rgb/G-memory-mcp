@@ -123,7 +123,7 @@ POMODORO_WORK_MIN = 40
 POMODORO_BREAK_MIN = 20
 
 # ── Global state (persisted, independent of WS) ──
-active_ws: WebSocket | None = None
+active_ws = None  # WebSocket | None
 peb_state: dict = {}
 pomo_state: dict = {}
 
@@ -189,7 +189,7 @@ def save_pomo_state():
 import base64 as b64mod
 
 
-def save_snap(content_blocks: list) -> str | None:
+def save_snap(content_blocks: list):
     """Save base64 image from content blocks to temp file. Returns path or None."""
     for block in content_blocks:
         if block.get("type") == "image":
@@ -279,7 +279,7 @@ def load_history(sid: str) -> dict:
     return {"meta": {}, "messages": []}
 
 
-def set_reaction(sid: str, msg_index: int, who: str, emoji: str | None):
+def set_reaction(sid: str, msg_index: int, who: str, emoji=None):
     """Set or clear a reaction on a specific message in history."""
     data = load_history(sid)
     msgs = data.get("messages", [])
@@ -756,20 +756,20 @@ class PersistentCLI:
     """Long-lived CC CLI process. MCP connects once, cache prefix stays stable."""
 
     def __init__(self):
-        self.proc: asyncio.subprocess.Process | None = None
-        self.session_id: str | None = None
-        self.cc_session_id: str | None = None
-        self.model: str | None = None
-        self.mcp_status: str = "disconnected"
-        self.mcp_servers: list = []
+        self.proc = None  # asyncio.subprocess.Process | None
+        self.session_id = None
+        self.cc_session_id = None
+        self.model = None
+        self.mcp_status = "disconnected"
+        self.mcp_servers = []
         self._lock = asyncio.Lock()
-        self._reader_task: asyncio.Task | None = None
-        self._stderr_task: asyncio.Task | None = None
+        self._reader_task = None
+        self._stderr_task = None
         self._line_handler = None
-        self._result_event: asyncio.Event | None = None
-        self._init_event: asyncio.Event | None = None
+        self._result_event = None
+        self._init_event = None
         self._stdout_buf = ""
-        self._master_fd: int | None = None
+        self._master_fd = None
 
     @property
     def is_running(self) -> bool:
@@ -968,8 +968,8 @@ persistent_cli = PersistentCLI()
 # ── CC oneshot call (non-streaming, for patrol/pebbling) ──
 
 async def run_cc_oneshot(
-    prompt: str, session: "Session", max_turns: int | None = None
-) -> tuple[str, str]:
+    prompt: str, session: "Session", max_turns=None
+) -> tuple:
     """Returns (text, thinking). Uses persistent CLI if available."""
 
     # ── Persistent CLI path ──
@@ -1367,7 +1367,7 @@ class Session:
     def __init__(self, sid: str):
         self.id = sid
         self.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')}"
-        self.cc_session_id: str | None = None
+        self.cc_session_id = None
         self.created_at = datetime.now(SGT)
         self.last_active = datetime.now(SGT)
         self.preview = ""
@@ -1379,7 +1379,7 @@ class Session:
         self._current_tools: list = []
         self._result_sent = False
         self._last_usage: dict = {}
-        self._proc: asyncio.subprocess.Process | None = None
+        self._proc = None
         self._stop_requested = False
         # Cumulative usage tracking
         self.total_input = 0
@@ -1502,7 +1502,7 @@ async def websocket_endpoint(ws: WebSocket):
     active_ws = ws
     log.info("WS client connected")
 
-    current_session: Session | None = None
+    current_session = None
     pending_model = "claude-sonnet-4-6"
     pending_effort = "medium"
 
