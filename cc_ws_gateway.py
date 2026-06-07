@@ -8,6 +8,7 @@ Port: 8081
 """
 
 import asyncio
+import pty
 import json
 import uuid
 import os
@@ -768,6 +769,7 @@ class PersistentCLI:
         self._result_event: asyncio.Event | None = None
         self._init_event: asyncio.Event | None = None
         self._stdout_buf = ""
+        self._master_fd: int | None = None
 
     @property
     def is_running(self) -> bool:
@@ -810,14 +812,17 @@ class PersistentCLI:
         mode = "interactive" if INTERACTIVE_MODE else "print"
         log.info(f"PersistentCLI starting ({mode}): session={session.id}, "
                  f"cc={session.cc_session_id}, model={session.model}")
+        master_fd, slave_fd = pty.openpty()
         self.proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.PIPE,
+            stdin=slave_fd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=20 * 1024 * 1024,
             cwd=CC_CWD, env=env,
         )
+        os.close(slave_fd)
+        self._master_fd = master_fd
         self.session_id = session.id
         self.cc_session_id = session.cc_session_id
         self.model = session.model
@@ -826,12 +831,7 @@ class PersistentCLI:
         self._stdout_buf = ""
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
-        # Prevent CC CLI 3s stdin timeout — send keepalive immediately
-        try:
-            self.proc.stdin.write(bytes([10]))
-            await self.proc.stdin.drain()
-        except Exception:
-            pass
+
         try:
             await asyncio.wait_for(self._init_event.wait(), timeout=30)
             self.mcp_status = "connected"
@@ -909,8 +909,8 @@ class PersistentCLI:
             self._line_handler = line_handler
             self._result_event = asyncio.Event()
             flat = message.replace("\n", " ") + "\n"
-            self.proc.stdin.write(flat.encode("utf-8"))
-            await self.proc.stdin.drain()
+            os.write(self._master_fd, flat.encode("utf-8"))
+
             try:
                 await asyncio.wait_for(self._result_event.wait(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -939,6 +939,12 @@ class PersistentCLI:
                 await self.proc.wait()
             except ProcessLookupError:
                 pass
+        if self._master_fd is not None:
+            try:
+                os.close(self._master_fd)
+            except OSError:
+                pass
+            self._master_fd = None
         self.proc = None
         self.mcp_status = "disconnected"
         self._line_handler = None
@@ -1720,8 +1726,8 @@ async def websocket_endpoint(ws: WebSocket):
                     if PERSISTENT_CLI_ENABLED and persistent_cli.is_running:
                         # Send Ctrl+C to interrupt current generation
                         try:
-                            persistent_cli.proc.stdin.write(b"")
-                            await persistent_cli.proc.stdin.drain()
+                            os.write(persistent_cli._master_fd, bytes([3]))
+
                             log.info("Sent interrupt to PersistentCLI")
                         except Exception:
                             await persistent_cli.stop()
