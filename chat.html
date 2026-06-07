@@ -992,7 +992,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
             重新连接 MCP
           </button>
           <div class="cli-hint">
-            重新连接会重启 CLI 进程。如果 MCP 工具定义未变更，缓存不受影响。
+            刷新会在下次消息时重新连接 MCP。工具定义不变则缓存不受影响。
           </div>
         </div>
       </div>
@@ -2077,15 +2077,17 @@ function updateCliPanel(data) {
   const mcp = data.mcp_status || 'disconnected';
 
   const runEl = document.getElementById('cliRunning');
-  if (running) {
-    runEl.innerHTML = '<span class="cli-dot green"></span>运行中';
+  if (!data.persistent_enabled) {
+    runEl.innerHTML = '<span class="cli-dot green"></span>按需启动模式';
+  } else if (running) {
+    runEl.innerHTML = '<span class="cli-dot green"></span>常驻运行中';
   } else {
     runEl.innerHTML = '<span class="cli-dot gray"></span>未运行';
   }
 
   const mcpEl = document.getElementById('cliMcpStatus');
-  const mcpColors = { connected: 'green', connecting: 'yellow', failed: 'red', disconnected: 'gray' };
-  const mcpLabels = { connected: '已连接', connecting: '连接中…', failed: '连接失败', disconnected: '未连接' };
+  const mcpColors = { connected: 'green', connecting: 'yellow', failed: 'red', disconnected: 'gray', spawn_mode: 'green' };
+  const mcpLabels = { connected: '已连接', connecting: '连接中…', failed: '连接失败', disconnected: '未连接', spawn_mode: '按需连接' };
   mcpEl.innerHTML = '<span class="cli-dot ' + (mcpColors[mcp] || 'gray') + '"></span>' + (mcpLabels[mcp] || mcp);
 
   document.getElementById('cliPid').textContent = data.pid || '—';
@@ -2110,7 +2112,7 @@ function updateCliPanel(data) {
 
   const btn = document.getElementById('cliReconnectBtn');
   btn.disabled = false;
-  btn.textContent = '重新连接 MCP';
+  btn.textContent = data.persistent_enabled ? '重新连接 MCP' : '刷新 MCP 配置';
 }
 
 function reconnectCli() {

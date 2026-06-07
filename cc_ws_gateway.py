@@ -66,7 +66,7 @@ DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 INTERACTIVE_MODE = os.getenv("CC_INTERACTIVE_MODE", "1") == "1"
-PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "1") == "1"
+PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "0") == "1"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -959,6 +959,7 @@ class PersistentCLI:
             "model": self.model,
             "mcp_servers": self.mcp_servers,
             "pid": self.proc.pid if self.proc else None,
+            "persistent_enabled": PERSISTENT_CLI_ENABLED,
         }
 
 
@@ -1818,6 +1819,13 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "cli:status":
                 try:
                     status = persistent_cli.get_status()
+                    # Add spawn-mode info from current session
+                    if current_session:
+                        status["session_id"] = status["session_id"] or current_session.id
+                        status["cc_session_id"] = status["cc_session_id"] or current_session.cc_session_id
+                        status["model"] = status["model"] or current_session.model
+                    if not PERSISTENT_CLI_ENABLED:
+                        status["mcp_status"] = "spawn_mode"
                     await ws.send_json({"event": "cli:status", **status})
                 except Exception as e:
                     await ws.send_json({"event": "cli:error", "message": str(e)})
