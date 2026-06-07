@@ -760,6 +760,7 @@ async def run_cc_oneshot(
         "--output-format", "stream-json",
         "--verbose",
         "--model", session.model,
+        "--strict-mcp-config",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         "--resume", session.cc_session_id,
     ])
@@ -776,7 +777,9 @@ async def run_cc_oneshot(
             stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
             limit=2 * 1024 * 1024,
             cwd=CC_CWD,
-            env={**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+            env={**os.environ,
+                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                 "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "99"},
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         raw = stdout.decode("utf-8", errors="replace").strip()
@@ -1673,6 +1676,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         "--output-format", "stream-json",
         "--model", session.model,
         "--verbose",
+        "--strict-mcp-config",
         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
     ])
 

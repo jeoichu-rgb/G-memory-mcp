@@ -1,7 +1,4 @@
 {
-  "env": {
-    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30"
-  },
   "mcpServers": {
     "claude_ai_Erik_tools": {
       "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
