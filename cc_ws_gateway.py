@@ -826,6 +826,12 @@ class PersistentCLI:
         self._stdout_buf = ""
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
+        # Prevent CC CLI 3s stdin timeout — send keepalive immediately
+        try:
+            self.proc.stdin.write(bytes([10]))
+            await self.proc.stdin.drain()
+        except Exception:
+            pass
         try:
             await asyncio.wait_for(self._init_event.wait(), timeout=30)
             self.mcp_status = "connected"
@@ -836,6 +842,13 @@ class PersistentCLI:
             else:
                 self.mcp_status = "failed"
                 log.error(f"PersistentCLI exited (code={self.proc.returncode})")
+                # Capture stderr for debugging
+                if self.proc.stderr:
+                    try:
+                        err = await asyncio.wait_for(self.proc.stderr.read(), timeout=2)
+                        log.error(f"PersistentCLI stderr: {err.decode('utf-8', errors='replace')[:500]}")
+                    except Exception:
+                        pass
                 return
         log.info(f"PersistentCLI ready: mcp={self.mcp_status}, "
                  f"cc_session={self.cc_session_id}, servers={len(self.mcp_servers)}")
