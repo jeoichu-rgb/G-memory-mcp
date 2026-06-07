@@ -613,6 +613,46 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   display:flex; align-items:center; justify-content:space-between; gap:8px;
 }
 .mcp-server-name { font-size:13px; font-weight:500; }
+/* ── CLI status panel ── */
+.cli-status-body { flex:1; overflow-y:auto; padding:16px; }
+.cli-status-card {
+  background:var(--bg-input); border-radius:8px; padding:12px 16px;
+  border:1px solid var(--border);
+}
+.cli-status-row {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:8px 0; border-bottom:1px solid var(--border);
+}
+.cli-status-row:last-child { border-bottom:none; }
+.cli-label { font-size:12px; color:var(--text-secondary); }
+.cli-value { font-size:12px; font-weight:500; }
+.cli-value-mono { font-family:monospace; font-size:11px; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+.cli-dot {
+  display:inline-block; width:8px; height:8px; border-radius:50%;
+  margin-right:6px; vertical-align:middle;
+}
+.cli-dot.green { background:#22c55e; box-shadow:0 0 4px #22c55e88; }
+.cli-dot.yellow { background:#eab308; box-shadow:0 0 4px #eab30888; }
+.cli-dot.red { background:#ef4444; box-shadow:0 0 4px #ef444488; }
+.cli-dot.gray { background:#6b7280; }
+.cli-servers-section { margin-top:16px; }
+.cli-section-title { font-size:11px; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px; }
+.cli-server-list { display:flex; flex-direction:column; gap:4px; }
+.cli-server-tag {
+  font-size:11px; padding:4px 10px; border-radius:12px;
+  background:var(--bg-input); border:1px solid var(--border);
+  color:var(--text-primary);
+}
+.cli-actions { margin-top:20px; text-align:center; }
+.cli-reconnect-btn {
+  background:var(--accent); color:#fff; border:none; border-radius:6px;
+  padding:10px 24px; font-size:13px; cursor:pointer; font-family:var(--serif);
+  transition:opacity .15s;
+}
+.cli-reconnect-btn:hover { opacity:.85; }
+.cli-reconnect-btn:disabled { opacity:.5; cursor:not-allowed; }
+.cli-hint { font-size:10px; color:var(--text-secondary); margin-top:8px; line-height:1.5; }
+
 .mcp-server-url { font-size:10px; color:var(--text-secondary); margin-top:2px; word-break:break-all; }
 .mcp-server-actions { display:flex; align-items:center; gap:8px; }
 .mcp-toggle {
@@ -862,6 +902,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">MCP 工具</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('cli')">
+          <span class="panel-menu-label">MCP 连接状态</span>
+          <span class="panel-menu-arrow">›</span>
+        </div>
       </div>
     </div>
 
@@ -907,6 +951,53 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         </div>
       </div>
     </div>
+    <!-- View: MCP 连接状态 -->
+    <div class="panel-view" id="panelCli">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">MCP 连接状态</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="cli-status-body">
+        <div class="cli-status-card">
+          <div class="cli-status-row">
+            <span class="cli-label">进程状态</span>
+            <span class="cli-value" id="cliRunning">—</span>
+          </div>
+          <div class="cli-status-row">
+            <span class="cli-label">MCP 连接</span>
+            <span class="cli-value" id="cliMcpStatus">—</span>
+          </div>
+          <div class="cli-status-row">
+            <span class="cli-label">PID</span>
+            <span class="cli-value" id="cliPid">—</span>
+          </div>
+          <div class="cli-status-row">
+            <span class="cli-label">模型</span>
+            <span class="cli-value" id="cliModel">—</span>
+          </div>
+          <div class="cli-status-row">
+            <span class="cli-label">CC Session</span>
+            <span class="cli-value cli-value-mono" id="cliCcSession">—</span>
+          </div>
+        </div>
+
+        <div class="cli-servers-section" id="cliServersSection" style="display:none;">
+          <div class="cli-section-title">已连接的 MCP 服务器</div>
+          <div class="cli-server-list" id="cliServerList"></div>
+        </div>
+
+        <div class="cli-actions">
+          <button class="cli-reconnect-btn" id="cliReconnectBtn" onclick="reconnectCli()">
+            重新连接 MCP
+          </button>
+          <div class="cli-hint">
+            重新连接会重启 CLI 进程。如果 MCP 工具定义未变更，缓存不受影响。
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1110,6 +1201,16 @@ function handleWSMessage(data) {
       if (idx >= 0 && idx < rows.length) {
         renderReaction(rows[idx].querySelector('.bubble'), 'erik', data.emoji);
       }
+      break;
+    }
+
+    case 'cli:status':
+      updateCliPanel(data);
+      break;
+    case 'cli:error': {
+      const btn2 = document.getElementById('cliReconnectBtn');
+      if (btn2) { btn2.disabled = false; btn2.textContent = '重新连接 MCP'; }
+      showError(data.message || 'CLI error');
       break;
     }
 
@@ -1945,8 +2046,10 @@ function openPanelView(view) {
   document.getElementById('panelMenu').classList.toggle('active', view === 'menu');
   document.getElementById('panelCtx').classList.toggle('active', view === 'ctx');
   document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
+  document.getElementById('panelCli').classList.toggle('active', view === 'cli');
   if (view === 'ctx') wsSend('context:list', {});
   if (view === 'mcp') loadMcpServers();
+  if (view === 'cli') loadCliStatus();
 }
 
 async function loadMcpServers() {
@@ -1963,6 +2066,58 @@ async function loadMcpServers() {
       <span style="color:var(--text-secondary);font-size:10px;">请确认已从 Dashboard 进入（需要登录态）</span>
     </div>`;
   }
+}
+
+function loadCliStatus() {
+  wsSend('cli:status', {});
+}
+
+function updateCliPanel(data) {
+  const running = data.running;
+  const mcp = data.mcp_status || 'disconnected';
+
+  const runEl = document.getElementById('cliRunning');
+  if (running) {
+    runEl.innerHTML = '<span class="cli-dot green"></span>运行中';
+  } else {
+    runEl.innerHTML = '<span class="cli-dot gray"></span>未运行';
+  }
+
+  const mcpEl = document.getElementById('cliMcpStatus');
+  const mcpColors = { connected: 'green', connecting: 'yellow', failed: 'red', disconnected: 'gray' };
+  const mcpLabels = { connected: '已连接', connecting: '连接中…', failed: '连接失败', disconnected: '未连接' };
+  mcpEl.innerHTML = '<span class="cli-dot ' + (mcpColors[mcp] || 'gray') + '"></span>' + (mcpLabels[mcp] || mcp);
+
+  document.getElementById('cliPid').textContent = data.pid || '—';
+  document.getElementById('cliModel').textContent = data.model || '—';
+
+  const ccEl = document.getElementById('cliCcSession');
+  ccEl.textContent = data.cc_session_id ? data.cc_session_id.slice(0, 16) + '…' : '—';
+  if (data.cc_session_id) ccEl.title = data.cc_session_id;
+
+  const servers = data.mcp_servers || [];
+  const section = document.getElementById('cliServersSection');
+  const list = document.getElementById('cliServerList');
+  if (servers.length > 0) {
+    section.style.display = '';
+    list.innerHTML = servers.map(function(s) {
+      var name = typeof s === 'string' ? s : (s.name || s.url || JSON.stringify(s));
+      return '<span class="cli-server-tag">' + name + '</span>';
+    }).join('');
+  } else {
+    section.style.display = 'none';
+  }
+
+  const btn = document.getElementById('cliReconnectBtn');
+  btn.disabled = false;
+  btn.textContent = '重新连接 MCP';
+}
+
+function reconnectCli() {
+  const btn = document.getElementById('cliReconnectBtn');
+  btn.disabled = true;
+  btn.textContent = '重连中…';
+  wsSend('cli:reconnect', {});
 }
 
 function closeMcpPanel() {

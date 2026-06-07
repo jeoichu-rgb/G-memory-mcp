@@ -65,6 +65,7 @@ DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 INTERACTIVE_MODE = os.getenv("CC_INTERACTIVE_MODE", "1") == "1"
+PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "1") == "1"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -747,12 +748,245 @@ def parse_action(text: str) -> tuple[str, str]:
     return action, content
 
 
+
+# ── Persistent CLI process (stable MCP + cache) ──
+
+class PersistentCLI:
+    """Long-lived CC CLI process. MCP connects once, cache prefix stays stable."""
+
+    def __init__(self):
+        self.proc: asyncio.subprocess.Process | None = None
+        self.session_id: str | None = None
+        self.cc_session_id: str | None = None
+        self.model: str | None = None
+        self.mcp_status: str = "disconnected"
+        self.mcp_servers: list = []
+        self._lock = asyncio.Lock()
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._line_handler = None
+        self._result_event: asyncio.Event | None = None
+        self._init_event: asyncio.Event | None = None
+        self._stdout_buf = ""
+
+    @property
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
+
+    async def ensure_running(self, session) -> bool:
+        need_restart = (
+            not self.is_running
+            or self.session_id != session.id
+            or self.model != session.model
+        )
+        if need_restart:
+            await self.start(session)
+        if self.cc_session_id and not session.cc_session_id:
+            session.cc_session_id = self.cc_session_id
+        elif session.cc_session_id and not self.cc_session_id:
+            self.cc_session_id = session.cc_session_id
+        return self.is_running
+
+    async def start(self, session):
+        await self.stop()
+        cmd = ["claude"]
+        if not INTERACTIVE_MODE:
+            cmd.append("--print")
+        cmd.extend([
+            "--output-format", "stream-json",
+            "--verbose",
+            "--model", session.model,
+            "--strict-mcp-config",
+            "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+        ])
+        if session.cc_session_id:
+            cmd.extend(["--resume", session.cc_session_id])
+        compact_pct = min(30 + session.compaction_count * 10, 50)
+        env = {
+            **os.environ,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
+        }
+        mode = "interactive" if INTERACTIVE_MODE else "print"
+        log.info(f"PersistentCLI starting ({mode}): session={session.id}, "
+                 f"cc={session.cc_session_id}, model={session.model}")
+        self.proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=20 * 1024 * 1024,
+            cwd=CC_CWD, env=env,
+        )
+        self.session_id = session.id
+        self.cc_session_id = session.cc_session_id
+        self.model = session.model
+        self.mcp_status = "connecting"
+        self._init_event = asyncio.Event()
+        self._stdout_buf = ""
+        self._reader_task = asyncio.create_task(self._read_stdout())
+        self._stderr_task = asyncio.create_task(self._read_stderr())
+        try:
+            await asyncio.wait_for(self._init_event.wait(), timeout=30)
+            self.mcp_status = "connected"
+        except asyncio.TimeoutError:
+            if self.is_running:
+                self.mcp_status = "connected"
+                log.warning("PersistentCLI: no init event but process alive")
+            else:
+                self.mcp_status = "failed"
+                log.error(f"PersistentCLI exited (code={self.proc.returncode})")
+                return
+        log.info(f"PersistentCLI ready: mcp={self.mcp_status}, "
+                 f"cc_session={self.cc_session_id}, servers={len(self.mcp_servers)}")
+
+    async def _read_stdout(self):
+        try:
+            async for chunk in self.proc.stdout:
+                self._stdout_buf += chunk.decode("utf-8", errors="replace")
+                while "\n" in self._stdout_buf:
+                    line, self._stdout_buf = self._stdout_buf.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    await self._dispatch(line)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error(f"PersistentCLI reader error: {e}")
+        finally:
+            self.mcp_status = "disconnected"
+            log.info("PersistentCLI stdout reader exited")
+
+    async def _read_stderr(self):
+        try:
+            async for chunk in self.proc.stderr:
+                text = chunk.decode("utf-8", errors="replace").strip()
+                if text:
+                    log.debug(f"PersistentCLI stderr: {text[:300]}")
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _dispatch(self, line: str):
+        is_result = False
+        try:
+            ev = json.loads(line)
+            etype = ev.get("type", "")
+            if etype == "system" and ev.get("subtype") == "init":
+                sid = ev.get("session_id", "")
+                if sid:
+                    self.cc_session_id = sid
+                self.mcp_servers = ev.get("mcp_servers", [])
+                if self._init_event:
+                    self._init_event.set()
+                log.info(f"PersistentCLI init: cc={sid}, mcp={len(self.mcp_servers)}")
+            if etype == "result":
+                is_result = True
+        except json.JSONDecodeError:
+            pass
+        if self._line_handler:
+            await self._line_handler(line)
+        if is_result and self._result_event:
+            self._result_event.set()
+
+    async def send_message(self, message: str, line_handler, timeout: float = 300):
+        async with self._lock:
+            if not self.is_running:
+                raise RuntimeError("PersistentCLI not running")
+            self._line_handler = line_handler
+            self._result_event = asyncio.Event()
+            flat = message.replace("\n", " ") + "\n"
+            self.proc.stdin.write(flat.encode("utf-8"))
+            await self.proc.stdin.drain()
+            try:
+                await asyncio.wait_for(self._result_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                log.warning("PersistentCLI send_message timeout")
+            finally:
+                self._line_handler = None
+                self._result_event = None
+
+    async def reconnect(self, session):
+        log.info("PersistentCLI reconnecting...")
+        await self.stop()
+        await self.start(session)
+
+    async def stop(self):
+        for task in [self._reader_task, self._stderr_task]:
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._reader_task = self._stderr_task = None
+        if self.proc and self.proc.returncode is None:
+            try:
+                self.proc.kill()
+                await self.proc.wait()
+            except ProcessLookupError:
+                pass
+        self.proc = None
+        self.mcp_status = "disconnected"
+        self._line_handler = None
+        self._result_event = None
+
+    def get_status(self) -> dict:
+        return {
+            "running": self.is_running,
+            "mcp_status": self.mcp_status,
+            "session_id": self.session_id,
+            "cc_session_id": self.cc_session_id,
+            "model": self.model,
+            "mcp_servers": self.mcp_servers,
+            "pid": self.proc.pid if self.proc else None,
+        }
+
+
+persistent_cli = PersistentCLI()
+
+
 # ── CC oneshot call (non-streaming, for patrol/pebbling) ──
 
 async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns: int | None = None
 ) -> tuple[str, str]:
-    """Returns (text, thinking)."""
+    """Returns (text, thinking). Uses persistent CLI if available."""
+
+    # ── Persistent CLI path ──
+    if PERSISTENT_CLI_ENABLED:
+        try:
+            if await persistent_cli.ensure_running(session):
+                text_parts, thinking_parts = [], []
+
+                async def _collector(ln):
+                    try:
+                        ev = json.loads(ln)
+                        etype = ev.get("type", "")
+                        if etype == "assistant":
+                            for block in ev.get("message", {}).get("content", []):
+                                if block.get("type") == "thinking":
+                                    thinking_parts.append(block.get("thinking", ""))
+                                elif block.get("type") == "text":
+                                    text_parts.append(block.get("text", ""))
+                        elif etype == "content_block_delta":
+                            delta = ev.get("delta", {})
+                            if delta.get("type") == "thinking_delta":
+                                thinking_parts.append(delta.get("thinking", ""))
+                            elif delta.get("type") == "text_delta":
+                                text_parts.append(delta.get("text", ""))
+                    except json.JSONDecodeError:
+                        text_parts.append(ln)
+
+                await persistent_cli.send_message(prompt, _collector, timeout=120)
+                text = "".join(text_parts).strip()
+                thinking = "".join(thinking_parts).strip()
+                log.info(f"PersistentCLI oneshot (text={len(text)}, thinking={len(thinking)}): {text[:200]}")
+                return text, thinking
+        except Exception as e:
+            log.warning(f"PersistentCLI oneshot error: {e}, falling back to spawn")
+
+    # ── Spawn path (fallback) ──
     cmd = ["claude"]
     if not INTERACTIVE_MODE:
         cmd.append("--print")
@@ -824,8 +1058,6 @@ async def run_cc_oneshot(
     except Exception as e:
         log.error(f"Pebbling CC call error: {e}")
         return "", ""
-
-
 # ── Telegram push ──
 
 async def send_telegram(text: str):
@@ -1472,14 +1704,24 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "chat:stop":
                 if current_session:
                     current_session._stop_requested = True
-                    proc = current_session._proc
-                    if proc and proc.returncode is None:
+                    if PERSISTENT_CLI_ENABLED and persistent_cli.is_running:
+                        # Send Ctrl+C to interrupt current generation
                         try:
-                            proc.terminate()
-                            log.info(f"SIGTERM sent to session {current_session.id}")
-                        except ProcessLookupError:
-                            pass
-                        asyncio.create_task(_force_kill_proc(current_session))
+                            persistent_cli.proc.stdin.write(b"")
+                            await persistent_cli.proc.stdin.drain()
+                            log.info("Sent interrupt to PersistentCLI")
+                        except Exception:
+                            await persistent_cli.stop()
+                            log.info("PersistentCLI stopped (interrupt failed)")
+                    else:
+                        proc = current_session._proc
+                        if proc and proc.returncode is None:
+                            try:
+                                proc.terminate()
+                                log.info(f"SIGTERM sent to session {current_session.id}")
+                            except ProcessLookupError:
+                                pass
+                            asyncio.create_task(_force_kill_proc(current_session))
 
             elif event == "mcp:list":
                 try:
@@ -1552,6 +1794,27 @@ async def websocket_endpoint(ws: WebSocket):
                 await _mcp_test_connection(mcp_name, ws)
 
             # ── Context management ──
+
+
+            elif event == "cli:status":
+                try:
+                    status = persistent_cli.get_status()
+                    await ws.send_json({"event": "cli:status", **status})
+                except Exception as e:
+                    await ws.send_json({"event": "cli:error", "message": str(e)})
+
+            elif event == "cli:reconnect":
+                try:
+                    if current_session:
+                        await persistent_cli.reconnect(current_session)
+                        status = persistent_cli.get_status()
+                        await ws.send_json({"event": "cli:status", **status})
+                        log.info("PersistentCLI reconnected via frontend")
+                    else:
+                        await ws.send_json({"event": "cli:error", "message": "no active session"})
+                except Exception as e:
+                    log.exception(f"cli:reconnect error: {e}")
+                    await ws.send_json({"event": "cli:error", "message": str(e)})
 
             elif event == "context:generate":
                 if current_session:
@@ -1663,82 +1926,109 @@ async def _force_kill_proc(session: Session):
             pass
 
 
+
+
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Spawn claude CLI and stream results back via WS.
+    PERSISTENT_CLI_ENABLED: reuse long-lived CLI process for stable MCP cache.
     INTERACTIVE_MODE: omits --print so Anthropic classifies usage as interactive."""
 
     session.reset_accumulator()
 
-    cmd = ["claude"]
-    if not INTERACTIVE_MODE:
-        cmd.append("--print")
-    cmd.extend([
-        "--output-format", "stream-json",
-        "--model", session.model,
-        "--verbose",
-        "--strict-mcp-config",
-        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-    ])
-
-    if session.cc_session_id:
-        cmd.extend(["--resume", session.cc_session_id])
-
-    cmd.extend(["--", message])
-
-    # Progressive compaction: 30% → 40% → 50% (cap)
-    compact_pct = min(30 + session.compaction_count * 10, 50)
-    spawn_env = {
-        **os.environ,
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
-    }
-
-    mode = "interactive" if INTERACTIVE_MODE else "print"
-    log.info(f"Spawning ({mode}, compact@{compact_pct}%): {' '.join(cmd[:6])}... "
-             f"(session={session.id}, cc={session.cc_session_id})")
-
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
-            limit=20 * 1024 * 1024,
-            cwd=CC_CWD,
-            env=spawn_env,
-        )
-        session._proc = proc
+        # ── Determine execution path ──
+        use_pcli = PERSISTENT_CLI_ENABLED
+        if use_pcli:
+            try:
+                use_pcli = await persistent_cli.ensure_running(session)
+                if not use_pcli:
+                    log.warning("PersistentCLI not ready, falling back to spawn")
+            except Exception as e:
+                log.warning(f"PersistentCLI init error: {e}, falling back to spawn")
+                use_pcli = False
 
-        buffer = ""
-        async for chunk in proc.stdout:
-            if session._stop_requested:
-                log.info(f"Stop requested, breaking stream for {session.id}")
-                break
-            buffer += chunk.decode("utf-8", errors="replace")
-            while "\n" in buffer:
-                line, buffer = buffer.split("\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                await handle_cli_line(line, session, ws)
+        if use_pcli:
+            # ── Persistent CLI path ──
+            async def _pcli_handler(ln):
+                if not session._stop_requested:
+                    await handle_cli_line(ln, session, ws)
 
-        if buffer.strip():
-            await handle_cli_line(buffer.strip(), session, ws)
+            session._proc = persistent_cli.proc
+            await persistent_cli.send_message(message, _pcli_handler)
+            session._proc = None
+            log.info("PersistentCLI message completed")
+        else:
+            # ── Spawn path (fallback) ──
+            cmd = ["claude"]
+            if not INTERACTIVE_MODE:
+                cmd.append("--print")
+            cmd.extend([
+                "--output-format", "stream-json",
+                "--model", session.model,
+                "--verbose",
+                "--strict-mcp-config",
+                "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+            ])
 
-        stderr_bytes = await proc.stderr.read()
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-        if stderr_text:
-            log.warning(f"CLI stderr: {stderr_text[:500]}")
+            if session.cc_session_id:
+                cmd.extend(["--resume", session.cc_session_id])
 
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            log.warning(f"CLI force-killed after timeout for {session.id}")
-        session._proc = None
-        log.info(f"CLI exited with code {proc.returncode}")
+            cmd.extend(["--", message])
 
+            # Progressive compaction: 30% -> 40% -> 50% (cap)
+            compact_pct = min(30 + session.compaction_count * 10, 50)
+            spawn_env = {
+                **os.environ,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
+            }
+
+            mode = "interactive" if INTERACTIVE_MODE else "print"
+            log.info(f"Spawning ({mode}, compact@{compact_pct}%): {' '.join(cmd[:6])}... "
+                     f"(session={session.id}, cc={session.cc_session_id})")
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
+                limit=20 * 1024 * 1024,
+                cwd=CC_CWD,
+                env=spawn_env,
+            )
+            session._proc = proc
+
+            buffer = ""
+            async for chunk in proc.stdout:
+                if session._stop_requested:
+                    log.info(f"Stop requested, breaking stream for {session.id}")
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    await handle_cli_line(line, session, ws)
+
+            if buffer.strip():
+                await handle_cli_line(buffer.strip(), session, ws)
+
+            stderr_bytes = await proc.stderr.read()
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            if stderr_text:
+                log.warning(f"CLI stderr: {stderr_text[:500]}")
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                log.warning(f"CLI force-killed after timeout for {session.id}")
+            session._proc = None
+            log.info(f"CLI exited with code {proc.returncode}")
+
+        # ── Post-processing (shared by both paths) ──
         # Parse Erik's sticker reactions before saving
         erik_reactions = []
         if session._current_text:
@@ -1774,7 +2064,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             if session._current_text:
                 txt = session._current_text.replace("\n", " ")[:30]
                 if len(session._current_text) > 30:
-                    txt += "…"
+                    txt += "..."
                 session.preview = txt
             session.last_active = datetime.now(SGT)
             save_session_meta(session)
@@ -1812,13 +2102,11 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await ws.send_json({"event": "system:error", "message": str(e)})
         except Exception:
             ws_alive = False
-        # WS dead (user locked screen / switched away) — push fallback
+        # WS dead (user locked screen / switched away) - push fallback
         if not ws_alive and session._current_text:
             preview = session._current_text.replace(chr(10), " ")[:100]
             await send_web_push("Erik", preview, url="/chat.html")
             log.info(f"Push fallback sent: {preview[:60]}")
-
-
 async def handle_cli_line(line: str, session: Session, ws: WebSocket):
     """Parse one line of CLI stream-json output and relay to chat.html."""
 
