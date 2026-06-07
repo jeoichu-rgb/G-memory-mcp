@@ -2306,29 +2306,12 @@ async def handle_cli_line(line: str, session: Session, ws: WebSocket):
         session.total_cache_create += msg_cache_create
         session.total_cost += cost or 0
 
-        # Detect compaction: context dropped >30% from previous turn
-        du = display_usage
-        ctx_now = (du.get("input_tokens", 0)
-                   + du.get("cache_read_input_tokens", 0)
-                   + du.get("cache_creation_input_tokens", 0))
-        log.info(f"Compaction check — _last_usage empty={not session._last_usage}, "
-                 f"ctx_now={ctx_now}, last_ctx={session.last_context_size}, "
-                 f"du_source={'_last_usage' if session._last_usage else 'result'}")
-        compacted = False
-        if session.last_context_size > 0 and ctx_now < session.last_context_size * 0.7:
-            session.compaction_count += 1
-            compacted = True
-            log.info(f"Compaction detected! {session.last_context_size} → {ctx_now} "
-                     f"(×{session.compaction_count})")
-        session.last_context_size = ctx_now
 
         await ws.send_json({
             "event": "message:complete",
             "context_size": display_usage,
             "turn_usage": usage,
             "cost": cost,
-            "compaction_count": session.compaction_count,
-            "compacted": compacted,
             "session_usage": {
                 "total_input": session.total_input,
                 "total_output": session.total_output,
