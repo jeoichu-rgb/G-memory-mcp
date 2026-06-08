@@ -14,23 +14,28 @@ except ImportError:
 def classify_and_pulse(state, message_text):
     """Classify a message, pulse the drive, add thought, tick.
     Returns (injection_text, satisfied_key) or ("", None).
+    Only injects when intent is NEWLY formed (flit -> fixation transition).
     """
     if not DESIRE_AVAILABLE or not state:
         return "", None
 
     tags = dc.classify(message_text)
-    if tags:
-        top = tags[0]["drive"]
-        de.pulse(state, top, source=message_text[:35])
-        de.add_thought(state, message_text[:60], top, now=state.tick_count)
-        de.tick(state, separation_secs=0)
-        de.save_state(state)
+    if not tags:
+        return "", None
 
-    # Build injection if intent is present
-    if state.intent:
+    old_intent_key = state.intent.get("drive_key") if state.intent else None
+
+    top = tags[0]["drive"]
+    de.pulse(state, top, source=message_text[:35])
+    de.add_thought(state, message_text[:60], top, now=state.tick_count)
+    de.tick(state, separation_secs=0)
+    de.save_state(state)
+
+    new_intent_key = state.intent.get("drive_key") if state.intent else None
+
+    if state.intent and new_intent_key != old_intent_key:
         inj = build_desire_injection(state)
-        drive_key = state.intent.get("drive_key", "")
-        return inj, drive_key
+        return inj, new_intent_key
 
     return "", None
 
@@ -44,8 +49,8 @@ def satisfy_after_response(state, drive_key):
 
 
 def build_desire_injection(state) -> str:
-    """Build one-shot context injection for CLI when intent is active.
-    Contains full trail so the session knows WHY this desire arose.
+    """Build one-shot context injection for CLI when intent is newly triggered.
+    Shows only the triggered drive, percentage, and trail.
     """
     if not DESIRE_AVAILABLE:
         return ""
@@ -54,7 +59,6 @@ def build_desire_injection(state) -> str:
         return ""
 
     dk = intent.get("drive_key", "")
-    action = intent.get("want_action", "")
     score = intent.get("score", 0)
     reason = intent.get("reason", "")
     trail = intent.get("trail", [])
@@ -62,21 +66,13 @@ def build_desire_injection(state) -> str:
 
     NL = chr(10)
     parts = []
-    parts.append(f"[desire] intent: {action} ({label} {score:.0%})")
+    parts.append(f"[desire] {label} ({score:.0%})")
     parts.append(f"  {reason}")
 
     if trail:
         parts.append("  trail:")
         for t in trail[-6:]:
             parts.append(f"    {t}")
-
-    # Show fixation thoughts that fed this drive
-    fixs = [t for t in state.thoughts
-            if isinstance(t, de.Thought) and t.kind == "fixation" and t.drive == dk]
-    for fix in fixs:
-        parts.append(f"  fixation: {fix.text} (strength={fix.strength:.0%}, fed={fix.fed_count})")
-        for tr in fix.trail[-3:]:
-            parts.append(f"    {tr}")
 
     return NL.join(parts)
 

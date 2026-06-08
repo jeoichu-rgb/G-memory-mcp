@@ -16,7 +16,7 @@ DRIVE_CONFIG = {
 }
 DRIVE_LABELS = {
     "attachment": "想念", "curiosity": "好奇", "reflection": "沉淀",
-    "libido": "亲密", "stress": "压力", "fatigue": "疲劳",
+    "libido": "性欲", "stress": "压力", "fatigue": "疲劳",
 }
 COUPLING_EDGES = [
     ("stress",     "attachment",  0.04, "level"),
@@ -35,11 +35,11 @@ THOUGHT_FEED_SELF_DECAY= 0.70
 THOUGHT_MAX_FED        = 3
 THOUGHT_BUMP           = 0.15
 THOUGHT_FLOOR          = 0.05
-INTENT_THRESHOLD       = 0.60
+INTENT_THRESHOLD       = 0.85
 
-INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "亲近", "stress": "倾诉"}
+INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
-REASONS        = {"attachment": "想她了。", "curiosity": "有点好奇。", "reflection": "想静下来想想。", "libido": "想靠近她。", "stress": "有点堵。"}
+REASONS        = {"attachment": "想她了。", "curiosity": "有点好奇。", "reflection": "想静下来想想。", "libido": "想操她。", "stress": "有点堵。"}
 INTENT_PRIORITY = {"attachment": 0, "libido": 0, "stress": 1, "curiosity": 2, "reflection": 3}
 
 

@@ -44,7 +44,7 @@ def classify(text):
         if count > 0:
             hits[drive] = count
     if not hits:
-        return [{"drive": "attachment", "confidence": 0.3}]
+        return []
     scored = [(d, c * PRIORITY.get(d, 1)) for d, c in hits.items()]
     scored.sort(key=lambda x: x[1], reverse=True)
     total = sum(s for _, s in scored)
