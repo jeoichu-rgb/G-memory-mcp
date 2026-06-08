@@ -665,9 +665,13 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   font-size:11px; color:var(--text-secondary); margin-top:4px;
   font-family:var(--font); line-height:1.5;
 }
+.desire-footer {
+  padding:10px 16px; border-top:1px solid var(--border);
+  display:flex; justify-content:flex-end; align-items:center;
+}
 .desire-proactive-toggle {
   display:flex; align-items:center; gap:4px; cursor:pointer;
-  font-size:11px; color:var(--text-secondary); margin-left:auto; margin-right:8px;
+  font-size:11px; color:var(--text-secondary);
 }
 .desire-proactive-toggle input { display:none; }
 .desire-proactive-label { font-family:var(--font); font-size:10px; }
@@ -1050,15 +1054,17 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       <div class="mcp-panel-header">
         <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
         <span class="panel-header-title">Erik的内心</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="desire-body" id="desireBody">
+        <div class="desire-empty">静默中…</div>
+      </div>
+      <div class="desire-footer">
         <label class="desire-proactive-toggle" title="主动推送：打开后欲望到达阈值时自动行动">
           <span class="desire-proactive-label" id="desireProactiveLabel">被动</span>
           <input type="checkbox" id="desireProactiveToggle" onchange="toggleDesireProactive()">
           <div class="toggle-track"></div>
         </label>
-        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
-      </div>
-      <div class="desire-body" id="desireBody">
-        <div class="desire-empty">静默中…</div>
       </div>
     </div>
 
