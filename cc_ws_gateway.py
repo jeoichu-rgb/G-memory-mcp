@@ -1285,14 +1285,14 @@ async def pebbling_worker():
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
                         _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                        dg.satisfy_after_response(desire_st, _dp_dk)
+                        _desire_last_proactive = now
+                        log.info(f"Desire proactive satisfied (pre-response): {_dp_dk}")
                         _dp_text, _dp_thinking = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
                         if _dp_text:
                             _dp_action, _dp_content = parse_action(_dp_text)
                             if _dp_action not in ("none", "error") and _dp_content:
                                 await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
-                        dg.satisfy_after_response(desire_st, _dp_dk)
-                        _desire_last_proactive = now
-                        log.info(f"Desire proactive satisfied: {_dp_dk}")
                     except Exception as e:
                         log.warning(f"Desire proactive error: {e}")
 
@@ -1391,12 +1391,13 @@ async def pebbling_worker():
                     prompt = dg.build_desire_pebbling_prompt(
                         desire_st, elapsed_h, actual,
                         format_events_for_prompt(events))
+                    dg.satisfy_after_response(desire_st, _dk)
+                    log.info(f"Desire satisfied (pre-response): {_dk}")
                     text, thinking = await run_cc_oneshot(prompt, session, max_turns=6)
                     if text:
                         action, content = parse_action(text)
                         if action not in ("none", "error") and content:
                             await push_pebbling_msg("pebbling", content, session, thinking=thinking)
-                    dg.satisfy_after_response(desire_st, _dk)
                     log.info(f"Desire satisfied via pebbling: {_dk}")
                 else:
                     is_first = actual == 0
@@ -1768,26 +1769,20 @@ async def websocket_endpoint(ws: WebSocket):
                 peb_state["pebbling_session_id"] = current_session.id
                 save_peb_state()
 
-                # Desire engine: classify + pulse + inject intent
-                _desire_key = None
+                # Desire engine: classify + pulse + inject intent + immediate satisfy
                 if DESIRE_ENABLED and desire_st:
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
                         if inj:
                             cli_message = inj + chr(10)*2 + cli_message
                             log.info(f"Desire injected: {_desire_key}")
+                        if _desire_key:
+                            dg.satisfy_after_response(desire_st, _desire_key)
+                            log.info(f"Desire satisfied (pre-response): {_desire_key}")
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 
                 await run_claude(cli_message, current_session, ws)
-
-                # Auto-satisfy: seen = processed
-                if _desire_key and DESIRE_ENABLED and desire_st:
-                    try:
-                        dg.satisfy_after_response(desire_st, _desire_key)
-                        log.info(f"Desire satisfied: {_desire_key}")
-                    except Exception as e:
-                        log.warning(f"Desire satisfy error: {e}")
 
                 # Snap cleanup: delete temp file after CC has read it
                 if snap_path:
