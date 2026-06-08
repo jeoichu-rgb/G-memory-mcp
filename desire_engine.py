@@ -8,7 +8,7 @@ from typing import Optional
 DRIVE_KEYS = ["attachment", "curiosity", "reflection", "libido", "stress", "fatigue"]
 DRIVE_CONFIG = {
     "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.45, "pulse_delta": 0.18},
-    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.003, "drift_cap": 0.55, "pulse_delta": 0.18},
+    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.55, "pulse_delta": 0.18, "drift_delay": 10800},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
     "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18, "refractory_ticks": 5},
     "stress":     {"home": 0.12, "decay": 0.86, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.08},
@@ -193,7 +193,7 @@ def tick_thoughts(state):
     return events
 
 
-def tick_drives(state):
+def tick_drives(state, separation_secs=0):
     events = []
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
@@ -202,7 +202,8 @@ def tick_drives(state):
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
         dr, cap = cfg.get("drift", 0), cfg.get("drift_cap", 0)
-        if dr > 0 and cap > 0:
+        delay = cfg.get("drift_delay", 0)
+        if dr > 0 and cap > 0 and separation_secs >= delay:
             state.floors[k] = min(state.floors.get(k, cfg["home"]) + dr, cap)
     for src, tgt, coeff, mode in COUPLING_EDGES:
         if mode == "level":
@@ -252,8 +253,8 @@ def pick_intent(state):
     return Intent(INTENT_MAP.get(best, ""), best, scores[best], REASONS.get(best, ""), trail)
 
 
-def tick(state):
-    de = tick_drives(state)
+def tick(state, separation_secs=0):
+    de = tick_drives(state, separation_secs=separation_secs)
     te = tick_thoughts(state)
     intent = pick_intent(state)
     if intent:

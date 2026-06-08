@@ -1267,7 +1267,7 @@ async def pebbling_worker():
             # Desire tick
             if DESIRE_ENABLED and desire_st and now - _desire_last_tick >= 60:
                 try:
-                    dg.do_tick(desire_st)
+                    dg.do_tick(desire_st, t_jeoi=peb_state.get("t_jeoi"))
                     _desire_last_tick = now
                 except Exception as e:
                     log.warning(f"Desire tick error: {e}")

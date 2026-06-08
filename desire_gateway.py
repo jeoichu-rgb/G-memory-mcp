@@ -23,7 +23,7 @@ def classify_and_pulse(state, message_text):
         top = tags[0]["drive"]
         de.pulse(state, top, source=message_text[:35])
         de.add_thought(state, message_text[:60], top, now=state.tick_count)
-        de.tick(state)
+        de.tick(state, separation_secs=0)
         de.save_state(state)
 
     # Build injection if intent is present
@@ -194,11 +194,13 @@ def build_desire_proactive_prompt(state):
     return NL.join(parts)
 
 
-def do_tick(state):
+def do_tick(state, t_jeoi=None):
     """Run a single tick and save. For background ticker."""
     if not DESIRE_AVAILABLE or not state:
         return
-    de.tick(state)
+    import time as _t
+    sep = _t.time() - t_jeoi if t_jeoi else 0
+    de.tick(state, separation_secs=sep)
     de.save_state(state)
 
 
