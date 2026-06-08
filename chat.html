@@ -632,6 +632,43 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   margin-right:6px; vertical-align:middle;
 }
 .cli-dot.green { background:#22c55e; box-shadow:0 0 4px #22c55e88; }
+/* ── Desire panel ── */
+.desire-body { flex:1; overflow-y:auto; padding:16px; }
+.desire-drive { margin-bottom:14px; }
+.desire-drive-header {
+  display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;
+}
+.desire-drive-label { font-size:12px; font-family:var(--serif); }
+.desire-drive-value { font-size:11px; color:var(--text-secondary); font-family:var(--font); }
+.desire-bar { height:6px; background:var(--border); border-radius:3px; overflow:hidden; }
+.desire-bar-fill { height:100%; border-radius:3px; transition:width .4s ease; }
+.desire-section-title {
+  font-size:11px; color:var(--text-secondary); font-family:var(--font);
+  text-transform:uppercase; letter-spacing:.08em; margin:16px 0 8px;
+}
+.desire-thought {
+  font-size:12px; padding:6px 10px; margin-bottom:4px;
+  background:var(--bg-input); border-radius:6px; border:1px solid var(--border);
+}
+.desire-thought-kind {
+  display:inline-block; font-size:9px; padding:1px 5px; border-radius:3px;
+  margin-right:4px; font-family:var(--font);
+}
+.desire-thought-kind.flit { background:#fef3c7; color:#92400e; }
+.desire-thought-kind.fixation { background:#dbeafe; color:#1e40af; }
+.desire-intent {
+  padding:10px 14px; margin-top:8px;
+  background:var(--thinking-bg); border:1px solid var(--thinking-border);
+  border-radius:8px; font-size:12px;
+}
+.desire-trail {
+  font-size:11px; color:var(--text-secondary); margin-top:4px;
+  font-family:var(--font); line-height:1.5;
+}
+.desire-empty {
+  text-align:center; color:var(--text-secondary); font-size:12px; padding:20px;
+  font-family:var(--serif);
+}
 .cli-dot.yellow { background:#eab308; box-shadow:0 0 4px #eab30888; }
 .cli-dot.red { background:#ef4444; box-shadow:0 0 4px #ef444488; }
 .cli-dot.gray { background:#6b7280; }
@@ -906,6 +943,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">MCP 连接状态</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('desire')">
+          <span class="panel-menu-label">Erik的内心</span>
+          <span class="panel-menu-arrow">›</span>
+        </div>
       </div>
     </div>
 
@@ -995,6 +1036,18 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
             刷新会在下次消息时重新连接 MCP。工具定义不变则缓存不受影响。
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- View: Erik's desire -->
+    <div class="panel-view" id="panelDesire">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">Erik的内心</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="desire-body" id="desireBody">
+        <div class="desire-empty">静默中…</div>
       </div>
     </div>
 
@@ -1213,6 +1266,10 @@ function handleWSMessage(data) {
       showError(data.message || 'CLI error');
       break;
     }
+
+    case 'desire:state':
+      renderDesire(data);
+      break;
 
     default:
       console.log('[ws] unhandled:', event, data);
@@ -2043,10 +2100,131 @@ function openPanelView(view) {
   document.getElementById('panelCtx').classList.toggle('active', view === 'ctx');
   document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
   document.getElementById('panelCli').classList.toggle('active', view === 'cli');
+  document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
   if (view === 'ctx') wsSend('context:list', {});
   if (view === 'mcp') loadMcpServers();
   if (view === 'cli') loadCliStatus();
+  if (view === 'desire') fetchDesireState();
 }
+
+/* ── Desire Panel ── */
+const DESIRE_COLORS = {
+  attachment: "#f472b6", curiosity: "#60a5fa", reflection: "#a78bfa",
+  libido: "#fb923c", stress: "#f87171", fatigue: "#9ca3af",
+};
+
+function fetchDesireState() {
+  if (ws && ws.readyState === 1) {
+    wsSend("desire:state", {});
+  }
+}
+
+function renderDesire(data) {
+  var body = document.getElementById("desireBody");
+  if (!body) return;
+  if (data.error) {
+    body.innerHTML = "<div class=\"desire-empty\">not available</div>";
+    return;
+  }
+
+  var drives = data.drives || {};
+  var labels = data.labels || {};
+  var thoughts = data.thoughts || [];
+  var intent = data.intent;
+  var trails = data.trails || {};
+  var scores = data.scores || {};
+  var html = "";
+
+  // Drive bars
+  var keys = ["attachment","curiosity","reflection","libido","stress","fatigue"];
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var val = drives[k] || 0;
+    var pct = Math.round(val * 100);
+    var color = DESIRE_COLORS[k] || "#9ca3af";
+    var label = labels[k] || k;
+    var sc = scores[k] !== undefined ? " (" + Math.round(scores[k]*100) + ")" : "";
+    html += "<div class=\"desire-drive\">";
+    html += "<div class=\"desire-drive-header\">";
+    html += "<span class=\"desire-drive-label\">" + label + "</span>";
+    html += "<span class=\"desire-drive-value\">" + pct + "%" + sc + "</span>";
+    html += "</div>";
+    html += "<div class=\"desire-bar\"><div class=\"desire-bar-fill\" style=\"width:" + pct + "%;background:" + color + "\"></div></div>";
+    html += "</div>";
+  }
+
+  // Intent
+  if (intent) {
+    html += "<div class=\"desire-section-title\">INTENT</div>";
+    html += "<div class=\"desire-intent\">";
+    html += "<strong>" + (intent.want_action || "") + "</strong> ";
+    html += (intent.reason || "");
+    html += "<br><span style=\"font-size:10px;color:var(--text-secondary)\">score: " +
+            (intent.score || 0).toFixed(2) + " / " + (intent.drive_key || "") + "</span>";
+    if (intent.trail && intent.trail.length > 0) {
+      html += "<div class=\"desire-trail\">";
+      for (var j = 0; j < intent.trail.length; j++) {
+        html += escHtml(intent.trail[j]) + "<br>";
+      }
+      html += "</div>";
+    }
+    html += "</div>";
+  }
+
+  // Thoughts
+  if (thoughts.length > 0) {
+    html += "<div class=\"desire-section-title\">THOUGHTS (" + thoughts.length + ")</div>";
+    thoughts.sort(function(a,b){ return b.strength - a.strength; });
+    for (var t = 0; t < thoughts.length; t++) {
+      var th = thoughts[t];
+      var kc = th.kind === "fixation" ? "fixation" : "flit";
+      html += "<div class=\"desire-thought\">";
+      html += "<span class=\"desire-thought-kind " + kc + "\">" + th.kind + "</span>";
+      html += "<span style=\"font-size:11px;color:var(--text-secondary)\">" +
+              Math.round(th.strength*100) + "% " + String.fromCharCode(183) + " " + th.drive + "</span>";
+      html += "<div style=\"margin-top:2px\">" + escHtml(th.text) + "</div>";
+      if (th.trail && th.trail.length > 0) {
+        html += "<div class=\"desire-trail\">";
+        for (var r = 0; r < th.trail.length; r++) {
+          html += escHtml(th.trail[r]) + "<br>";
+        }
+        html += "</div>";
+      }
+      html += "</div>";
+    }
+  }
+
+  // Trails
+  var trailKeys = Object.keys(trails);
+  var hasTrails = false;
+  for (var ti = 0; ti < trailKeys.length; ti++) {
+    if (trails[trailKeys[ti]].length > 0) hasTrails = true;
+  }
+  if (hasTrails) {
+    html += "<div class=\"desire-section-title\">TRAIL</div>";
+    for (var ti = 0; ti < trailKeys.length; ti++) {
+      var tk = trailKeys[ti];
+      if (trails[tk].length === 0) continue;
+      html += "<div style=\"font-size:11px;font-weight:500;margin-bottom:2px\">" + (labels[tk]||tk) + "</div>";
+      html += "<div class=\"desire-trail\">";
+      for (var ri = 0; ri < trails[tk].length; ri++) {
+        html += escHtml(trails[tk][ri]) + "<br>";
+      }
+      html += "</div>";
+    }
+  }
+
+  if (!html) html = "<div class=\"desire-empty\">quiet</div>";
+  body.innerHTML = html;
+}
+
+function escHtml(s) {
+  var d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+
 
 async function loadMcpServers() {
   const list = document.getElementById('mcpServerList');
