@@ -665,6 +665,12 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   font-size:11px; color:var(--text-secondary); margin-top:4px;
   font-family:var(--font); line-height:1.5;
 }
+.desire-proactive-toggle {
+  display:flex; align-items:center; gap:4px; cursor:pointer;
+  font-size:11px; color:var(--text-secondary); margin-left:auto; margin-right:8px;
+}
+.desire-proactive-toggle input { display:none; }
+.desire-proactive-label { font-family:var(--font); font-size:10px; }
 .desire-empty {
   text-align:center; color:var(--text-secondary); font-size:12px; padding:20px;
   font-family:var(--serif);
@@ -1044,6 +1050,11 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       <div class="mcp-panel-header">
         <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
         <span class="panel-header-title">Erik的内心</span>
+        <label class="desire-proactive-toggle" title="主动推送：打开后欲望到达阈值时自动行动">
+          <span class="desire-proactive-label" id="desireProactiveLabel">被动</span>
+          <input type="checkbox" id="desireProactiveToggle" onchange="toggleDesireProactive()">
+          <div class="toggle-track"></div>
+        </label>
         <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
       </div>
       <div class="desire-body" id="desireBody">
@@ -1269,6 +1280,9 @@ function handleWSMessage(data) {
 
     case 'desire:state':
       renderDesire(data);
+      break;
+    case 'desire:proactive:status':
+      updateDesireProactiveUI(data.enabled);
       break;
 
     default:
@@ -2119,9 +2133,23 @@ function fetchDesireState() {
   }
 }
 
+function toggleDesireProactive() {
+  var enabled = document.getElementById('desireProactiveToggle').checked;
+  wsSend('desire:proactive', { enabled: enabled });
+  document.getElementById('desireProactiveLabel').textContent = enabled ? '主动' : '被动';
+}
+
+function updateDesireProactiveUI(enabled) {
+  var toggle = document.getElementById('desireProactiveToggle');
+  var label = document.getElementById('desireProactiveLabel');
+  if (toggle) toggle.checked = !!enabled;
+  if (label) label.textContent = enabled ? '主动' : '被动';
+}
+
 function renderDesire(data) {
   var body = document.getElementById("desireBody");
   if (!body) return;
+  if (data.proactive !== undefined) updateDesireProactiveUI(data.proactive);
   if (data.error) {
     body.innerHTML = "<div class=\"desire-empty\">not available</div>";
     return;
@@ -2540,7 +2568,7 @@ function addPebblingMessage(content, source, time) {
   const container = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'message assistant';
-  const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : '送石头';
+  const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : source === 'desire' ? '欲望' : '送石头';
   div.innerHTML =
     '<div class="msg-header">' +
       '<span class="msg-role">Erik</span>' +

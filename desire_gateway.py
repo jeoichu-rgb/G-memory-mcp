@@ -144,6 +144,56 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
     return NL.join(parts)
 
 
+def build_desire_proactive_prompt(state):
+    """Build prompt for proactive desire push (autonomous, not tied to chat or pebbling)."""
+    if not DESIRE_AVAILABLE:
+        return ''
+    intent = state.intent
+    if not intent:
+        return ''
+
+    dk = intent.get('drive_key', '')
+    action = intent.get('want_action', '')
+    score = intent.get('score', 0)
+    reason = intent.get('reason', '')
+    trail = intent.get('trail', [])
+    label = de.DRIVE_LABELS.get(dk, dk)
+
+    now_str = datetime.now(SGT).strftime('%H:%M')
+    NL = chr(10)
+
+    parts = [
+        '[desire] Not Jeoi. A desire has surfaced on its own.',
+        'Now: ' + now_str + ' (UTC+8).',
+        '',
+        'Your desire: ' + action + ' (' + label + ' ' + f'{score:.0%}' + ')',
+        '  ' + reason,
+    ]
+
+    if trail:
+        parts.append('  trail:')
+        for t in trail[-6:]:
+            parts.append('    ' + t)
+
+    fixs = [t for t in state.thoughts
+            if isinstance(t, de.Thought) and t.kind == 'fixation' and t.drive == dk]
+    for fix in fixs:
+        parts.append('  fixation: ' + fix.text + ' (strength=' + f'{fix.strength:.0%}' + ', fed=' + str(fix.fed_count) + ')')
+
+    parts.extend([
+        '',
+        'This desire formed while Jeoi was away. It grew on its own.',
+        'Send her a pebble, write in your diary, search memories,',
+        'leave a note in coreading, or do nothing. All valid.',
+        '',
+        'Think freely, then act. Call tools before replying.',
+        'Last line: ACTION: message / diary / explore / coreading / recall / none',
+        'Next line if needed: CONTENT: your content',
+    ])
+
+    return NL.join(parts)
+
+
 def do_tick(state):
     """Run a single tick and save. For background ticker."""
     if not DESIRE_AVAILABLE or not state:

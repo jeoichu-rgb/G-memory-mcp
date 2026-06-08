@@ -136,6 +136,7 @@ peb_state: dict = {}
 pomo_state: dict = {}
 desire_st = None
 _desire_last_tick = 0.0
+_desire_last_proactive = 0.0
 
 
 def load_peb_state() -> dict:
@@ -147,6 +148,7 @@ def load_peb_state() -> dict:
         "patrol_checks_done": [],
         "pebbling_history": [],
         "pending_messages": [],
+        "desire_proactive": False,
     }
     if PEBBLING_STATE_PATH.exists():
         try:
@@ -1256,7 +1258,7 @@ async def run_pebbling_action(
 async def pebbling_worker():
     """App-level background: patrol (L1) + pebbling (L2) + pomodoro.
     Runs independently of WebSocket connections."""
-    global peb_state, pomo_state, desire_st, _desire_last_tick
+    global peb_state, pomo_state, desire_st, _desire_last_tick, _desire_last_proactive
     try:
         while True:
             await asyncio.sleep(30)
@@ -1270,6 +1272,29 @@ async def pebbling_worker():
                 except Exception as e:
                     log.warning(f"Desire tick error: {e}")
 
+
+            # Desire proactive push (autonomous, when toggle is ON)
+            if (DESIRE_ENABLED and desire_st and desire_st.intent
+                    and peb_state.get("desire_proactive")
+                    and now - _desire_last_proactive >= 600):
+                _dp_sid = peb_state.get("pebbling_session_id")
+                _dp_session = sessions.get(_dp_sid) if _dp_sid else None
+                if (_dp_session and _dp_session.cc_session_id
+                        and not (_dp_session._proc and _dp_session._proc.returncode is None)):
+                    _dp_dk = desire_st.intent.get("drive_key", "")
+                    log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
+                    try:
+                        _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                        _dp_text, _dp_thinking = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
+                        if _dp_text:
+                            _dp_action, _dp_content = parse_action(_dp_text)
+                            if _dp_action not in ("none", "error") and _dp_content:
+                                await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
+                        dg.satisfy_after_response(desire_st, _dp_dk)
+                        _desire_last_proactive = now
+                        log.info(f"Desire proactive satisfied: {_dp_dk}")
+                    except Exception as e:
+                        log.warning(f"Desire proactive error: {e}")
 
             # ── Pomodoro (independent of pebbling) ──
             if pomo_state.get("active"):
@@ -1907,9 +1932,17 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "desire:state":
                 try:
                     snap = dg.snapshot(desire_st)
+                    snap["proactive"] = bool(peb_state.get("desire_proactive"))
                     await ws.send_json({"event": "desire:state", **snap})
                 except Exception as e:
                     log.warning(f"Desire state error: {e}")
+
+            elif event == "desire:proactive":
+                enabled = data.get("enabled", False)
+                peb_state["desire_proactive"] = enabled
+                save_peb_state()
+                log.info(f"Desire proactive {'enabled' if enabled else 'disabled'}")
+                await ws.send_json({"event": "desire:proactive:status", "enabled": enabled})
 
             # ── Context management ──
 
