@@ -675,6 +675,8 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 }
 .desire-proactive-toggle input { display:none; }
 .desire-proactive-label { font-family:var(--font); font-size:10px; }
+.desire-proactive-toggle input:checked + .toggle-track { background:var(--accent); }
+.desire-proactive-toggle input:checked + .toggle-track::after { transform:translateX(12px); }
 .desire-empty {
   text-align:center; color:var(--text-secondary); font-size:12px; padding:20px;
   font-family:var(--serif);
