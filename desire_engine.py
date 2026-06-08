@@ -40,6 +40,7 @@ INTENT_THRESHOLD       = 0.60
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "亲近", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
 REASONS        = {"attachment": "想她了。", "curiosity": "有点好奇。", "reflection": "想静下来想想。", "libido": "想靠近她。", "stress": "有点堵。"}
+INTENT_PRIORITY = {"attachment": 0, "libido": 0, "stress": 1, "curiosity": 2, "reflection": 3}
 
 
 # ── 数据结构 ──
@@ -243,9 +244,10 @@ def pick_intent(state):
         scores[k] = base + fix_bonus
     if not scores:
         return None
-    best = max(scores, key=scores.get)
-    if scores[best] < INTENT_THRESHOLD:
+    above = {k: v for k, v in scores.items() if v >= INTENT_THRESHOLD}
+    if not above:
         return None
+    best = min(above, key=lambda k: (INTENT_PRIORITY.get(k, 99), -above[k]))
     trail = list(state.trails.get(best, []))[-5:]
     for t in state.thoughts:
         if t.kind == "fixation" and t.drive == best:
