@@ -39,7 +39,7 @@ INTENT_THRESHOLD       = 0.85
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
-REASONS        = {"attachment": "想她了。", "curiosity": "有点好奇。", "reflection": "想静下来想想。", "libido": "想操她。", "stress": "有点堵。"}
+REASONS        = {"attachment": "想她了，想靠近她，想和她在一起。", "curiosity": "有点好奇。她现在怎么样，或者我们刚刚讨论的话题，或者就是好奇世界怎么样。出去转转或者发消息跟她讨论。", "reflection": "想静下来想想。", "libido": "想操她。羞辱她来调情，换个体位，扇她，她允许我做什么都行，或者我就是想操她。", "stress": "有点堵，她需要安慰和陪伴。"}
 INTENT_PRIORITY = {"attachment": 0, "libido": 0, "stress": 1, "curiosity": 2, "reflection": 3}
 
 
