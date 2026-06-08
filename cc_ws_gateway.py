@@ -23,6 +23,14 @@ import time as time_mod
 import re
 import random
 
+try:
+    import desire_engine as de
+    import desire_classifier as dc
+    import desire_gateway as dg
+    DESIRE_ENABLED = True
+except ImportError:
+    DESIRE_ENABLED = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -126,6 +134,8 @@ POMODORO_BREAK_MIN = 20
 active_ws = None  # WebSocket | None
 peb_state: dict = {}
 pomo_state: dict = {}
+desire_st = None
+_desire_last_tick = 0.0
 
 
 def load_peb_state() -> dict:
@@ -1246,11 +1256,20 @@ async def run_pebbling_action(
 async def pebbling_worker():
     """App-level background: patrol (L1) + pebbling (L2) + pomodoro.
     Runs independently of WebSocket connections."""
-    global peb_state, pomo_state
+    global peb_state, pomo_state, desire_st, _desire_last_tick
     try:
         while True:
             await asyncio.sleep(30)
             now = time_mod.time()
+
+            # Desire tick
+            if DESIRE_ENABLED and desire_st and now - _desire_last_tick >= 60:
+                try:
+                    dg.do_tick(desire_st)
+                    _desire_last_tick = now
+                except Exception as e:
+                    log.warning(f"Desire tick error: {e}")
+
 
             # ── Pomodoro (independent of pebbling) ──
             if pomo_state.get("active"):
@@ -1336,18 +1355,33 @@ async def pebbling_worker():
             expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
 
             if expected > actual:
-                is_first = actual == 0
-                if is_first:
-                    mode = "silent"
-                else:
-                    mode = "free"
-
                 elapsed_h = elapsed_jeoi / 3600
-                log.info(f"Pebbling #{actual + 1}: mode={mode}, "
-                         f"elapsed={elapsed_h:.1f}h")
-                await run_pebbling_action(
-                    session, elapsed_h, actual, mode
-                )
+
+                if DESIRE_ENABLED and dg.should_override_pebbling(desire_st):
+                    _dk = desire_st.intent.get("drive_key", "")
+                    log.info(f"Pebbling #{actual + 1}: desire-driven "
+                             f"({desire_st.intent.get('want_action')}), "
+                             f"elapsed={elapsed_h:.1f}h")
+                    events = get_recent_events(4)
+                    prompt = dg.build_desire_pebbling_prompt(
+                        desire_st, elapsed_h, actual,
+                        format_events_for_prompt(events))
+                    text, thinking = await run_cc_oneshot(prompt, session, max_turns=6)
+                    if text:
+                        action, content = parse_action(text)
+                        if action not in ("none", "error") and content:
+                            await push_pebbling_msg("pebbling", content, session, thinking=thinking)
+                    dg.satisfy_after_response(desire_st, _dk)
+                    log.info(f"Desire satisfied via pebbling: {_dk}")
+                else:
+                    is_first = actual == 0
+                    mode = "silent" if is_first else "free"
+                    log.info(f"Pebbling #{actual + 1}: mode={mode}, "
+                             f"elapsed={elapsed_h:.1f}h")
+                    await run_pebbling_action(
+                        session, elapsed_h, actual, mode
+                    )
+
                 peb_state["pebbling_history"].append(time_mod.time())
                 peb_state["t_cache"] = time_mod.time()
                 save_peb_state()
@@ -1423,7 +1457,7 @@ sessions: dict[str, Session] = {}
 
 @app.on_event("startup")
 async def startup_load_sessions():
-    global peb_state, pomo_state
+    global peb_state, pomo_state, desire_st
     # 动态注入deny列表到settings.json（只在VPS上跑gateway时生效，不污染git）
     try:
         settings = read_claude_settings()
@@ -1523,6 +1557,10 @@ async def startup_load_sessions():
     pomo_state = load_pomo_state()
     log.info(f"Pomodoro state loaded: active={pomo_state.get('active')}, "
              f"session={pomo_state.get('session_id')}")
+    if DESIRE_ENABLED:
+        desire_st = dg.load_state()
+        if desire_st:
+            log.info(f"Desire loaded: tick={desire_st.tick_count}, thoughts={len(desire_st.thoughts)}")
     asyncio.create_task(pebbling_worker())
 
 
@@ -1705,7 +1743,26 @@ async def websocket_endpoint(ws: WebSocket):
                 peb_state["pebbling_session_id"] = current_session.id
                 save_peb_state()
 
+                # Desire engine: classify + pulse + inject intent
+                _desire_key = None
+                if DESIRE_ENABLED and desire_st:
+                    try:
+                        inj, _desire_key = dg.classify_and_pulse(desire_st, message)
+                        if inj:
+                            cli_message = inj + chr(10)*2 + cli_message
+                            log.info(f"Desire injected: {_desire_key}")
+                    except Exception as e:
+                        log.warning(f"Desire engine error: {e}")
+
                 await run_claude(cli_message, current_session, ws)
+
+                # Auto-satisfy: seen = processed
+                if _desire_key and DESIRE_ENABLED and desire_st:
+                    try:
+                        dg.satisfy_after_response(desire_st, _desire_key)
+                        log.info(f"Desire satisfied: {_desire_key}")
+                    except Exception as e:
+                        log.warning(f"Desire satisfy error: {e}")
 
                 # Snap cleanup: delete temp file after CC has read it
                 if snap_path:
@@ -1846,6 +1903,13 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "mcp:test":
                 mcp_name = data.get("name", "")
                 await _mcp_test_connection(mcp_name, ws)
+
+            elif event == "desire:state":
+                try:
+                    snap = dg.snapshot(desire_st)
+                    await ws.send_json({"event": "desire:state", **snap})
+                except Exception as e:
+                    log.warning(f"Desire state error: {e}")
 
             # ── Context management ──
 
