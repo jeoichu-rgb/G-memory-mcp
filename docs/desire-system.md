@@ -247,3 +247,10 @@ Data fetched via WebSocket `desire:state` event on panel open.
 ---
 
 上传到 `docs/desire-system.md` 就行 (￣ω￣)
+
+更新
+1. **主动推送开关**：desire面板底部有个被动/主动toggle。打开后，intent一形成就自动给CLI发interactive消息（10分钟冷却），不需要等Jeoi说话或pebbling触发
+2. **satisfy提前**：三条路径（chat、proactive、pebbling）都改成注入injection后立即satisfy，不等CLI回复
+3. **libido加了drift**：分离2小时后开始漂，0.001/tick，cap 0.62，大约8小时自发触发intent
+4. **curiosity drift减速**：分离3小时后才开始漂（原来立即），速度减半（0.003→0.0015）
+5. **intent优先级**：多个drive同时过阈值时，attachment=libido优先，然后stress，然后curiosity，最后reflection
