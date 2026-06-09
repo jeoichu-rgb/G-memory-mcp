@@ -11,8 +11,8 @@ DRIVE_CONFIG = {
     "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.55, "pulse_delta": 0.18, "drift_delay": 10800},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
     "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.001, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 7200},
-    "stress":     {"home": 0.12, "decay": 0.86, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.08},
-    "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.05, "gate_threshold": 0.70},
+    "stress":     {"home": 0.12, "decay": 0.86, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},
+    "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12, "gate_threshold": 0.65},
 }
 DRIVE_LABELS = {
     "attachment": "想念", "curiosity": "好奇", "reflection": "沉淀",
