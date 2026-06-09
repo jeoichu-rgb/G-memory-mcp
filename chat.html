@@ -2126,7 +2126,13 @@ function openPanelView(view) {
   if (view === 'ctx') wsSend('context:list', {});
   if (view === 'mcp') loadMcpServers();
   if (view === 'cli') loadCliStatus();
-  if (view === 'desire') fetchDesireState();
+  if (view === 'desire') {
+    fetchDesireState();
+    if (_desirePoll) clearInterval(_desirePoll);
+    _desirePoll = setInterval(fetchDesireState, 5000);
+  } else {
+    if (_desirePoll) { clearInterval(_desirePoll); _desirePoll = null; }
+  }
 }
 
 /* ── Desire Panel ── */
@@ -2134,6 +2140,8 @@ const DESIRE_COLORS = {
   attachment: "#f472b6", curiosity: "#60a5fa", reflection: "#a78bfa",
   libido: "#fb923c", stress: "#f87171", fatigue: "#9ca3af",
 };
+
+var _desirePoll = null;
 
 function fetchDesireState() {
   if (ws && ws.readyState === 1) {
@@ -2145,6 +2153,7 @@ function toggleDesireProactive() {
   var enabled = document.getElementById('desireProactiveToggle').checked;
   wsSend('desire:proactive', { enabled: enabled });
   document.getElementById('desireProactiveLabel').textContent = enabled ? '主动' : '被动';
+  setTimeout(fetchDesireState, 500);
 }
 
 function updateDesireProactiveUI(enabled) {
@@ -2334,6 +2343,7 @@ function reconnectCli() {
 
 function closeMcpPanel() {
   document.getElementById('mcpOverlay').classList.remove('open');
+  if (_desirePoll) { clearInterval(_desirePoll); _desirePoll = null; }
 }
 
 function renderMcpServers(servers) {

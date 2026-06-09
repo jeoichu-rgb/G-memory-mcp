@@ -36,7 +36,7 @@ THOUGHT_MAX_FED        = 3
 THOUGHT_BUMP           = 0.15
 THOUGHT_FLOOR          = 0.05
 INTENT_THRESHOLD       = 0.85
-CONV_THRESHOLDS        = {"libido": 0.65}
+CONV_THRESHOLD         = 0.65
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
@@ -247,7 +247,7 @@ def pick_intent(state, is_conversation=False):
         return None
     above = {}
     for k, v in scores.items():
-        th = CONV_THRESHOLDS.get(k, INTENT_THRESHOLD) if is_conversation else INTENT_THRESHOLD
+        th = CONV_THRESHOLD if is_conversation else INTENT_THRESHOLD
         if v >= th:
             above[k] = v
     if not above:
