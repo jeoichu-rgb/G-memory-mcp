@@ -947,14 +947,6 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">上下文管理</span>
           <span class="panel-menu-arrow">›</span>
         </div>
-        <div class="panel-menu-item" onclick="openPanelView('mcp')">
-          <span class="panel-menu-label">MCP 工具</span>
-          <span class="panel-menu-arrow">›</span>
-        </div>
-        <div class="panel-menu-item" onclick="openPanelView('cli')">
-          <span class="panel-menu-label">MCP 连接状态</span>
-          <span class="panel-menu-arrow">›</span>
-        </div>
         <div class="panel-menu-item" onclick="openPanelView('desire')">
           <span class="panel-menu-label">Erik的内心</span>
           <span class="panel-menu-arrow">›</span>
@@ -981,75 +973,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
     </div>
 
     <!-- View: MCP 工具 -->
-    <div class="panel-view" id="panelMcp">
-      <div class="mcp-panel-header">
-        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
-        <span class="panel-header-title">MCP 工具</span>
-        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
-      </div>
-      <div class="mcp-panel-body" id="mcpServerList">
-        <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>
-      </div>
-      <div class="mcp-add-section">
-        <div id="mcpStatus" style="display:none;font-size:11px;padding:6px 0;"></div>
-        <div class="settings-label">添加 MCP 服务器</div>
-        <div style="display:flex;gap:6px;">
-          <input class="mcp-input" id="mcpAddName" placeholder="名称 (如 palace)">
-          <input class="mcp-input" id="mcpAddUrl" placeholder="SSE URL" style="flex:2;">
-          <button class="mcp-add-btn" id="mcpAddBtn" onclick="addMcpServer()">+</button>
-        </div>
-        <div style="font-size:10px;color:var(--text-secondary);margin-top:6px;line-height:1.6;">
-          添加后，下一条消息的 CLI 进程会自动连接此 MCP 服务器。<br>
-          工具名格式：mcp__&lt;名称&gt;__&lt;工具名&gt;
-        </div>
-      </div>
-    </div>
     <!-- View: MCP 连接状态 -->
-    <div class="panel-view" id="panelCli">
-      <div class="mcp-panel-header">
-        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
-        <span class="panel-header-title">MCP 连接状态</span>
-        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
-      </div>
-      <div class="cli-status-body">
-        <div class="cli-status-card">
-          <div class="cli-status-row">
-            <span class="cli-label">进程状态</span>
-            <span class="cli-value" id="cliRunning">—</span>
-          </div>
-          <div class="cli-status-row">
-            <span class="cli-label">MCP 连接</span>
-            <span class="cli-value" id="cliMcpStatus">—</span>
-          </div>
-          <div class="cli-status-row">
-            <span class="cli-label">PID</span>
-            <span class="cli-value" id="cliPid">—</span>
-          </div>
-          <div class="cli-status-row">
-            <span class="cli-label">模型</span>
-            <span class="cli-value" id="cliModel">—</span>
-          </div>
-          <div class="cli-status-row">
-            <span class="cli-label">CC Session</span>
-            <span class="cli-value cli-value-mono" id="cliCcSession">—</span>
-          </div>
-        </div>
-
-        <div class="cli-servers-section" id="cliServersSection" style="display:none;">
-          <div class="cli-section-title">已连接的 MCP 服务器</div>
-          <div class="cli-server-list" id="cliServerList"></div>
-        </div>
-
-        <div class="cli-actions">
-          <button class="cli-reconnect-btn" id="cliReconnectBtn" onclick="reconnectCli()">
-            重新连接 MCP
-          </button>
-          <div class="cli-hint">
-            刷新会在下次消息时重新连接 MCP。工具定义不变则缓存不受影响。
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- View: Erik's desire -->
     <div class="panel-view" id="panelDesire">
@@ -1276,15 +1200,7 @@ function handleWSMessage(data) {
       break;
     }
 
-    case 'cli:status':
-      updateCliPanel(data);
-      break;
-    case 'cli:error': {
-      const btn2 = document.getElementById('cliReconnectBtn');
-      if (btn2) { btn2.disabled = false; btn2.textContent = '重新连接 MCP'; }
-      showError(data.message || 'CLI error');
-      break;
-    }
+
 
     case 'desire:state':
       renderDesire(data);
@@ -2120,12 +2036,12 @@ function toggleMcpPanel() {
 function openPanelView(view) {
   document.getElementById('panelMenu').classList.toggle('active', view === 'menu');
   document.getElementById('panelCtx').classList.toggle('active', view === 'ctx');
-  document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
-  document.getElementById('panelCli').classList.toggle('active', view === 'cli');
+  
+  
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
   if (view === 'ctx') wsSend('context:list', {});
-  if (view === 'mcp') loadMcpServers();
-  if (view === 'cli') loadCliStatus();
+  
+  
   if (view === 'desire') {
     fetchDesireState();
     if (_desirePoll) clearInterval(_desirePoll);
@@ -2271,191 +2187,9 @@ function escHtml(s) {
 
 
 
-async function loadMcpServers() {
-  const list = document.getElementById('mcpServerList');
-  list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>';
-  try {
-    const r = await fetch(`${MCP_API}/api/mcp`, { headers: mcpHeaders() });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    renderMcpServers(data.servers || []);
-  } catch(e) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--context-red);font-size:12px;">
-      加载失败: ${e.message}<br><br>
-      <span style="color:var(--text-secondary);font-size:10px;">请确认已从 Dashboard 进入（需要登录态）</span>
-    </div>`;
-  }
-}
-
-function loadCliStatus() {
-  wsSend('cli:status', {});
-}
-
-function updateCliPanel(data) {
-  const running = data.running;
-  const mcp = data.mcp_status || 'disconnected';
-
-  const runEl = document.getElementById('cliRunning');
-  if (!data.persistent_enabled) {
-    runEl.innerHTML = '<span class="cli-dot green"></span>按需启动模式';
-  } else if (running) {
-    runEl.innerHTML = '<span class="cli-dot green"></span>常驻运行中';
-  } else {
-    runEl.innerHTML = '<span class="cli-dot gray"></span>未运行';
-  }
-
-  const mcpEl = document.getElementById('cliMcpStatus');
-  const mcpColors = { connected: 'green', connecting: 'yellow', failed: 'red', disconnected: 'gray', spawn_mode: 'green' };
-  const mcpLabels = { connected: '已连接', connecting: '连接中…', failed: '连接失败', disconnected: '未连接', spawn_mode: '按需连接' };
-  mcpEl.innerHTML = '<span class="cli-dot ' + (mcpColors[mcp] || 'gray') + '"></span>' + (mcpLabels[mcp] || mcp);
-
-  document.getElementById('cliPid').textContent = data.pid || '—';
-  document.getElementById('cliModel').textContent = data.model || '—';
-
-  const ccEl = document.getElementById('cliCcSession');
-  ccEl.textContent = data.cc_session_id ? data.cc_session_id.slice(0, 16) + '…' : '—';
-  if (data.cc_session_id) ccEl.title = data.cc_session_id;
-
-  const servers = data.mcp_servers || [];
-  const section = document.getElementById('cliServersSection');
-  const list = document.getElementById('cliServerList');
-  if (servers.length > 0) {
-    section.style.display = '';
-    list.innerHTML = servers.map(function(s) {
-      var name = typeof s === 'string' ? s : (s.name || s.url || JSON.stringify(s));
-      return '<span class="cli-server-tag">' + name + '</span>';
-    }).join('');
-  } else {
-    section.style.display = 'none';
-  }
-
-  const btn = document.getElementById('cliReconnectBtn');
-  btn.disabled = false;
-  btn.textContent = data.persistent_enabled ? '重新连接 MCP' : '刷新 MCP 配置';
-}
-
-function reconnectCli() {
-  const btn = document.getElementById('cliReconnectBtn');
-  btn.disabled = true;
-  btn.textContent = '重连中…';
-  wsSend('cli:reconnect', {});
-}
-
 function closeMcpPanel() {
   document.getElementById('mcpOverlay').classList.remove('open');
   if (_desirePoll) { clearInterval(_desirePoll); _desirePoll = null; }
-}
-
-function renderMcpServers(servers) {
-  const list = document.getElementById('mcpServerList');
-
-  if (servers.length === 0) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">
-      暂无 MCP 服务器<br>在下方添加一个
-    </div>`;
-    return;
-  }
-
-  list.innerHTML = servers.map(s => {
-    const safeName = escapeHtml(s.name);
-    return `
-    <div class="mcp-server" data-name="${safeName}">
-      <div class="mcp-server-header">
-        <div style="flex:1;min-width:0;">
-          <div class="mcp-server-name">${safeName}</div>
-          <div class="mcp-server-url">${escapeHtml(s.url || s.command || '')}</div>
-          <div class="mcp-test-status" id="mcp-test-${safeName}" style="font-size:10px;margin-top:3px;min-height:14px;"></div>
-        </div>
-        <div class="mcp-server-actions">
-          <button style="background:none;border:1px solid var(--border);color:var(--text-secondary);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);"
-            onclick="testMcp('${safeName}')" title="测试连接">测试</button>
-          <button class="mcp-toggle ${s.enabled ? 'on' : ''}"
-            onclick="toggleMcp('${safeName}', ${!s.enabled})" title="${s.enabled ? '已启用' : '已禁用'}"></button>
-          <button class="mcp-remove" onclick="removeMcp('${safeName}')" title="移除">✕</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-async function toggleMcp(name, enabled) {
-  try {
-    await fetch(`${MCP_API}/api/mcp/toggle`, {
-      method: 'POST', headers: mcpHeaders(),
-      body: JSON.stringify({ name, enabled })
-    });
-    await loadMcpServers();
-  } catch(e) { showMcpStatus('切换失败: ' + e.message, true); }
-}
-
-async function removeMcp(name) {
-  if (!confirm(`移除 MCP 服务器 "${name}"？`)) return;
-  try {
-    await fetch(`${MCP_API}/api/mcp/remove`, {
-      method: 'POST', headers: mcpHeaders(),
-      body: JSON.stringify({ name })
-    });
-    await loadMcpServers();
-  } catch(e) { showMcpStatus('移除失败: ' + e.message, true); }
-}
-
-async function testMcp(name) {
-  const el = document.getElementById('mcp-test-' + name);
-  if (el) { el.textContent = '测试中...'; el.style.color = 'var(--text-secondary)'; }
-  try {
-    const r = await fetch(`${MCP_API}/api/mcp/test`, {
-      method: 'POST', headers: mcpHeaders(),
-      body: JSON.stringify({ name })
-    });
-    const data = await r.json();
-    if (!el) return;
-    el.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
-    el.style.color = data.ok ? 'var(--context-green)' : 'var(--context-red)';
-  } catch(e) {
-    if (el) { el.textContent = '✗ ' + e.message; el.style.color = 'var(--context-red)'; }
-  }
-}
-
-function showMcpStatus(msg, isError) {
-  const el = document.getElementById('mcpStatus');
-  el.style.display = 'block';
-  el.textContent = (isError ? '✗ ' : '✓ ') + msg;
-  el.style.color = isError ? 'var(--context-red)' : 'var(--context-green)';
-  setTimeout(() => { el.style.display = 'none'; }, 5000);
-}
-
-async function addMcpServer() {
-  const nameInput = document.getElementById('mcpAddName');
-  const urlInput = document.getElementById('mcpAddUrl');
-  const name = nameInput.value.trim();
-  const url = urlInput.value.trim();
-
-  if (!name || !url) {
-    showMcpStatus('请填写名称和 URL', true);
-    return;
-  }
-
-  const btn = document.getElementById('mcpAddBtn');
-  btn.disabled = true;
-  btn.textContent = '…';
-
-  try {
-    const r = await fetch(`${MCP_API}/api/mcp/add`, {
-      method: 'POST', headers: mcpHeaders(),
-      body: JSON.stringify({ name, url })
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    showMcpStatus(`已添加 ${name}`, false);
-    nameInput.value = '';
-    urlInput.value = '';
-    renderMcpServers(data.servers || []);
-  } catch(e) {
-    showMcpStatus('添加失败: ' + e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '+';
-  }
 }
 
 /* ══════════════════════════════════════
