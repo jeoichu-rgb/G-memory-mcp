@@ -1504,7 +1504,7 @@ async def startup_load_sessions():
             allow_list[:] = [p for p in allow_list if not p.startswith(f"mcp__{k}")]
             log.info(f"Purged rogue MCP: {k}")
 
-        # Auto-detect internal palace URL (skip Traefik/nginx for SSE stability)
+        # Auto-detect internal palace URL (streamable HTTP for CC CLI ≥2.1)
         palace_url = os.getenv("PALACE_MCP_URL", "")
         if not palace_url:
             # Prefer 127.0.0.1 (IPv4) — Docker IPv6 port mapping can reset connections
