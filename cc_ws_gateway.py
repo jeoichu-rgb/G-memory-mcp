@@ -1512,13 +1512,13 @@ async def startup_load_sessions():
                 try:
                     r = httpx.get(f"{base}/health", timeout=3)
                     # Any HTTP response means server is alive (401 = needs auth but running)
-                    palace_url = f"{base}/mcp/{PALACE_SECRET}/sse"
+                    palace_url = f"{base}/mcp/{PALACE_SECRET}/http/mcp"
                     log.info(f"Palace auto-detected at {base} (health status={r.status_code})")
                     break
                 except Exception:
                     continue
         if not palace_url:
-            palace_url = f"http://127.0.0.1:8001/mcp/{PALACE_SECRET}/sse"
+            palace_url = f"http://127.0.0.1:8001/mcp/{PALACE_SECRET}/http/mcp"
             log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
         servers = settings.setdefault("mcpServers", {})
         old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")
@@ -2501,7 +2501,7 @@ def _mcp_server_list() -> list:
 
 
 async def _mcp_test_connection(name: str, ws: WebSocket):
-    """Test if an MCP server is reachable via its SSE URL."""
+    """Test if an MCP server is reachable via Streamable HTTP or SSE."""
     settings = read_claude_settings()
     cfg = settings.get("mcpServers", {}).get(name)
     if not cfg:
@@ -2512,16 +2512,25 @@ async def _mcp_test_connection(name: str, ws: WebSocket):
         await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "no url configured"})
         return
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=5, read=3), verify=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=5, read=5), verify=False) as client:
+            resp = await client.post(url, json={
+                "jsonrpc": "2.0", "method": "initialize", "id": 1,
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "palace-test", "version": "1.0"}}
+            }, headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+            if resp.status_code == 200:
+                await ws.send_json({"event": "mcp:test_result", "name": name, "ok": True, "message": "Streamable HTTP 连接成功"})
+                return
             resp = await client.get(url)
-            status = resp.status_code
-            ok = status in (200, 301, 302, 307, 308)
-            await ws.send_json({
-                "event": "mcp:test_result", "name": name, "ok": ok,
-                "message": f"HTTP {status}" if ok else f"HTTP {status} — server returned error",
-            })
+            ok = resp.status_code in (200, 301, 302, 307, 308)
+            await ws.send_json({"event": "mcp:test_result", "name": name, "ok": ok,
+                                "message": f"HTTP {resp.status_code}" if ok else f"HTTP {resp.status_code} — error"})
     except httpx.ReadTimeout:
         await ws.send_json({"event": "mcp:test_result", "name": name, "ok": True, "message": "SSE 连接成功（流式端点）"})
+    except httpx.TimeoutException:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "连接超时"})
+    except Exception as e:
+        await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": str(e)})
     except httpx.TimeoutException:
         await ws.send_json({"event": "mcp:test_result", "name": name, "ok": False, "message": "连接超时"})
     except Exception as e:
