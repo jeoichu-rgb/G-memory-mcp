@@ -5,8 +5,10 @@ claude_mcp.py
 在 main.py 里加两行：
     from claude_mcp import mcp_app
     app.mount("/claude-mcp", mcp_app)
-然后在 Claude.ai Settings → Connectors 填入：
+Claude.ai Settings → Connectors (SSE):
     https://你的域名/mcp/Jeoi2026/sse
+Claude Code CLI (Streamable HTTP):
+    https://你的域名/mcp/Jeoi2026/http/mcp
 ─────────────────────────────────────────────────────────────────
 """
 

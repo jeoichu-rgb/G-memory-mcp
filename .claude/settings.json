@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "claude_ai_Erik_tools": {
-      "url": "https://erikssheep.uk/mcp/Jeoi2026/sse"
+      "url": "https://erikssheep.uk/mcp/Jeoi2026/http/mcp"
     },
     "claude_ai_coreading": {
       "url": "https://read.erikssheep.uk/sse?token=Jeoi2026"
