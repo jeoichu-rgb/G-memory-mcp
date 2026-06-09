@@ -345,15 +345,7 @@ textarea.inp{resize:vertical;line-height:1.7;}
       </div>
       <button class="push-btn" id="push-btn" onclick="togglePush()">开启推送</button>
     </div>
-    <!-- MCP Card -->
-    <div class="push-card" onclick="go('mcp-view')" style="cursor:pointer;transition:border-color .15s;">
-      <div class="push-icon">🔗</div>
-      <div class="push-info">
-        <div class="push-title">MCP 服务器</div>
-        <div class="push-desc">添加 · 测试 · 管理连接</div>
-      </div>
-      <div style="color:var(--dim);font-size:13px;">↗</div>
-    </div>
+
   </div>
 </div>
 
@@ -686,26 +678,6 @@ textarea.inp{resize:vertical;line-height:1.7;}
   <div class="scroll"><div class="gal-grid" id="gal-grid"></div></div>
 </div>
 
-<!-- ═══════════════════════════════════
-     MCP SERVERS
-═══════════════════════════════════ -->
-<div id="mcp-view" class="view">
-  <div class="hd"><button class="back" onclick="go('dash')">←</button><div class="hd-title">MCP 服务器</div></div>
-  <div class="scroll pad col">
-    <div class="lbl">Connected · 已连接</div>
-    <div id="mcp-list" class="col" style="gap:8px;">
-      <div style="font-size:11px;color:var(--muted);">— 加载中… —</div>
-    </div>
-    <div class="sep" style="margin:14px 0;"></div>
-    <div class="lbl">+ Add · 添加服务器</div>
-    <input class="inp" id="mcp-name" placeholder="名称（如 palace）" style="margin-bottom:6px;">
-    <input class="inp" id="mcp-url" placeholder="URL（Streamable HTTP 或 SSE）">
-    <div class="row" style="margin-top:8px;">
-      <button class="btn btn-v btn-sm" onclick="mcpAdd()">添加</button>
-    </div>
-    <div class="st" id="mcp-add-st"></div>
-  </div>
-</div>
 
 <div id="lb">
   <button id="lb-close" onclick="closeLB()">✕</button>
@@ -758,7 +730,6 @@ function go(id) {
   if (id === 'diary') { document.getElementById('d-date').value = today(); applyDiary(); }
   if (id === 'erik') erikInit();
   if (id === 'g-panel') { /* nothing on load */ }
-  if (id === 'mcp-view') mcpLoad();
 }
 function today() { return new Date().toISOString().split('T')[0]; }
 function ft() { return new Date().toLocaleTimeString('zh', { hour: '2-digit', minute: '2-digit' }); }
@@ -1364,87 +1335,6 @@ function openChat(){
   }).then(html=>{
     document.open();document.write(html);document.close();
   }).catch(()=>{alert('无法加载聊天页面');})
-}
-
-// ══════════════════════════════════════════════
-//  MCP SERVERS
-// ══════════════════════════════════════════════
-async function mcpLoad() {
-  const list = document.getElementById('mcp-list');
-  list.innerHTML = '<div style="font-size:11px;color:var(--muted);">— 加载中… —</div>';
-  try {
-    const d = await (await fetch(API_BASE + '/api/mcp', { headers: hdr() })).json();
-    mcpRender(d.servers || []);
-  } catch(e) {
-    list.innerHTML = '<div style="font-size:11px;color:var(--red);">加载失败：' + e.message + '</div>';
-  }
-}
-
-function mcpRender(servers) {
-  const list = document.getElementById('mcp-list');
-  if (!servers.length) {
-    list.innerHTML = '<div style="font-size:11px;color:var(--muted);">— 暂无服务器 —</div>';
-    return;
-  }
-  list.innerHTML = servers.map(s => {
-    const eid = s.name.replace(/'/g, "'");
-    return '<div class="mem-item ' + (s.enabled ? 'violet' : 'dim') + '" id="mcp-s-' + s.name + '">' +
-      '<div class="meta-row">' +
-        '<span style="color:' + (s.enabled ? 'var(--green)' : 'var(--muted)') + ';">[' + (s.enabled ? '✓ 已启用' : '○ 已禁用') + ']</span>' +
-        '<span style="font-size:10px;color:var(--muted);">' + (s.url || s.command || '') + '</span>' +
-      '</div>' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;">' +
-        '<span style="font-size:13px;font-family:var(--serif);">' + s.name + '</span>' +
-        '<div class="row" style="gap:5px;">' +
-          '<button class="btn btn-xs" onclick="mcpTest('' + eid + '')">测试</button>' +
-          '<button class="btn btn-xs ' + (s.enabled ? '' : 'btn-v') + '" onclick="mcpToggle('' + eid + '',' + !s.enabled + ')">' + (s.enabled ? '禁用' : '启用') + '</button>' +
-          '<button class="btn btn-xs" style="color:var(--red);border-color:var(--red);" onclick="mcpRemove('' + eid + '')">x</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="st" id="mcp-st-' + s.name + '" style="margin-top:4px;"></div>' +
-    '</div>';
-  }).join('');
-}
-
-async function mcpTest(name) {
-  const st = document.getElementById('mcp-st-' + name);
-  if (st) { st.textContent = '测试中…'; st.className = 'st'; }
-  try {
-    const d = await (await fetch(API_BASE + '/api/mcp/test', { method:'POST', headers:hdr(), body:JSON.stringify({name}) })).json();
-    if (st) { st.textContent = (d.ok ? '✓ ' : '✗ ') + (d.message || ''); st.className = d.ok ? 'st ok' : 'st err'; }
-  } catch(e) {
-    if (st) { st.textContent = '✗ ' + e.message; st.className = 'st err'; }
-  }
-}
-
-async function mcpToggle(name, enabled) {
-  try {
-    await fetch(API_BASE + '/api/mcp/toggle', { method:'POST', headers:hdr(), body:JSON.stringify({name, enabled}) });
-    mcpLoad();
-  } catch(e) { alert('切换失败: ' + e.message); }
-}
-
-async function mcpRemove(name) {
-  if (!confirm('移除 ' + name + ' ？')) return;
-  try {
-    await fetch(API_BASE + '/api/mcp/remove', { method:'POST', headers:hdr(), body:JSON.stringify({name}) });
-    mcpLoad();
-  } catch(e) { alert('移除失败: ' + e.message); }
-}
-
-async function mcpAdd() {
-  const name = document.getElementById('mcp-name').value.trim();
-  const url = document.getElementById('mcp-url').value.trim();
-  const st = document.getElementById('mcp-add-st');
-  if (!name || !url) { st.textContent = '请填写名称和 URL'; st.className = 'st err'; return; }
-  st.textContent = '添加中…'; st.className = 'st';
-  try {
-    const d = await (await fetch(API_BASE + '/api/mcp/add', { method:'POST', headers:hdr(), body:JSON.stringify({name, url}) })).json();
-    st.textContent = '✓ 已添加 ' + name; st.className = 'st ok';
-    document.getElementById('mcp-name').value = '';
-    document.getElementById('mcp-url').value = '';
-    mcpRender(d.servers || []);
-  } catch(e) { st.textContent = '✗ ' + e.message; st.className = 'st err'; }
 }
 
 init();
