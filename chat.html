@@ -951,6 +951,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">Erik的内心</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+                 <div class="panel-menu-item" onclick="openPanelView('mcp')">
+          <span class="panel-menu-label">MCP 服务器</span>
+          <span class="panel-menu-arrow">›</span>
+        </div>
       </div>
     </div>
 
@@ -991,6 +995,26 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <input type="checkbox" id="desireProactiveToggle" onchange="toggleDesireProactive()">
           <div class="toggle-track"></div>
         </label>
+      </div>
+    </div>
+         <!-- View: MCP 服务器 -->
+    <div class="panel-view" id="panelMcp">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">MCP 服务器</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:12px 16px;" id="mcpServerList">
+        <div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">加载中...</div>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--text-secondary);letter-spacing:.08em;margin-bottom:8px;">添加服务器</div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          <input id="mcpAddName" placeholder="名称" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:var(--font);font-size:11px;color:var(--text-primary);outline:none;">
+          <input id="mcpAddUrl" placeholder="URL" style="flex:2;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:var(--font);font-size:11px;color:var(--text-primary);outline:none;">
+          <button onclick="mcpAdd()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;width:32px;font-size:16px;cursor:pointer;">+</button>
+        </div>
+        <div id="mcpAddStatus" style="font-size:11px;min-height:16px;"></div>
       </div>
     </div>
 
@@ -2039,7 +2063,9 @@ function openPanelView(view) {
   
   
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
+     document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
   if (view === 'ctx') wsSend('context:list', {});
+     if (view === 'mcp') loadMcpServers();
   
   
   if (view === 'desire') {
@@ -2453,6 +2479,102 @@ function toggleMemory() {
     document.getElementById('pomoToggle').checked = true;
   }
 })();
+
+// ══════════════════════════════════════
+//  MCP SERVER MANAGEMENT
+// ══════════════════════════════════════
+async function loadMcpServers() {
+  const list = document.getElementById('mcpServerList');
+  list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">加载中...</div>';
+  try {
+    const r = await fetch(MCP_API + '/api/mcp', { headers: mcpHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    renderMcpServers(data.servers || []);
+  } catch(e) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--context-red);font-size:12px;">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderMcpServers(servers) {
+  const list = document.getElementById('mcpServerList');
+  if (!servers.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:12px;">暂无 MCP 服务器</div>';
+    return;
+  }
+  list.innerHTML = servers.map(s => {
+    const eid = s.name.replace(/'/g, "\\'");
+    const dot = s.enabled
+      ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 4px #22c55e88;margin-right:6px;"></span>`
+      : `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#6b7280;margin-right:6px;"></span>`;
+    const togLabel = s.enabled ? '禁用' : '启用';
+    const togVal = !s.enabled;
+    return `<div style="padding:12px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;">${dot}${s.name}</div>
+          <div style="font-size:10px;color:var(--text-secondary);margin-top:2px;word-break:break-all;">${s.url||''}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;margin-left:8px;">
+          <button onclick="testMcp('${eid}')" style="background:none;border:1px solid var(--border);color:var(--text-secondary);font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);">测试</button>
+          <button onclick="toggleMcp('${eid}',${togVal})" style="background:none;border:1px solid var(--border);color:var(--text-secondary);font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);">${togLabel}</button>
+          <button onclick="removeMcp('${eid}')" style="background:none;border:1px solid var(--border);color:var(--context-red);font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;font-family:var(--font);">×</button>
+        </div>
+      </div>
+      <div id="mcp-test-${s.name}" style="font-size:10px;margin-top:4px;min-height:14px;"></div>
+    </div>`;
+  }).join('');
+}
+
+async function testMcp(name) {
+  const el = document.getElementById('mcp-test-' + name);
+  if (el) { el.textContent = '测试中...'; el.style.color = 'var(--text-secondary)'; }
+  try {
+    const r = await fetch(MCP_API + '/api/mcp/test', { method:'POST', headers:mcpHeaders(), body:JSON.stringify({name}) });
+    const data = await r.json();
+    if (el) {
+      el.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+      el.style.color = data.ok ? 'var(--context-green)' : 'var(--context-red)';
+    }
+  } catch(e) {
+    if (el) { el.textContent = '✗ ' + e.message; el.style.color = 'var(--context-red)'; }
+  }
+}
+
+async function toggleMcp(name, enabled) {
+  try {
+    await fetch(MCP_API + '/api/mcp/toggle', { method:'POST', headers:mcpHeaders(), body:JSON.stringify({name,enabled}) });
+    loadMcpServers();
+  } catch(e) { alert('切换失败: ' + e.message); }
+}
+
+async function removeMcp(name) {
+  if (!confirm('移除 ' + name + ' ？')) return;
+  try {
+    await fetch(MCP_API + '/api/mcp/remove', { method:'POST', headers:mcpHeaders(), body:JSON.stringify({name}) });
+    loadMcpServers();
+  } catch(e) { alert('移除失败: ' + e.message); }
+}
+
+async function mcpAdd() {
+  const nameInput = document.getElementById('mcpAddName');
+  const urlInput = document.getElementById('mcpAddUrl');
+  const st = document.getElementById('mcpAddStatus');
+  const name = nameInput.value.trim();
+  const url = urlInput.value.trim();
+  if (!name || !url) { st.textContent = '请填写名称和 URL'; st.style.color = 'var(--context-red)'; return; }
+  st.textContent = '添加中…'; st.style.color = 'var(--text-secondary)';
+  try {
+    const r = await fetch(MCP_API + '/api/mcp/add', { method:'POST', headers:mcpHeaders(), body:JSON.stringify({name,url}) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    st.textContent = '✓ 已添加 ' + name; st.style.color = 'var(--context-green)';
+    nameInput.value = ''; urlInput.value = '';
+    renderMcpServers(data.servers || []);
+  } catch(e) {
+    st.textContent = '✗ ' + e.message; st.style.color = 'var(--context-red)';
+  }
+}
 
 connectWS();
 </script>
