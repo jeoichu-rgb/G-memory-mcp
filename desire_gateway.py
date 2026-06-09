@@ -28,7 +28,7 @@ def classify_and_pulse(state, message_text):
     top = tags[0]["drive"]
     de.pulse(state, top, source=message_text[:35])
     de.add_thought(state, message_text[:60], top, now=state.tick_count)
-    de.tick(state, separation_secs=0)
+    de.tick(state, separation_secs=0, is_conversation=True)
     de.save_state(state)
 
     new_intent_key = state.intent.get("drive_key") if state.intent else None

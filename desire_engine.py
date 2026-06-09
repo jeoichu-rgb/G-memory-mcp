@@ -10,7 +10,7 @@ DRIVE_CONFIG = {
     "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.45, "pulse_delta": 0.18},
     "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.55, "pulse_delta": 0.18, "drift_delay": 10800},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
-    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.001, "drift_cap": 0.62, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 7200},
+    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.001, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 7200},
     "stress":     {"home": 0.12, "decay": 0.86, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.08},
     "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.05, "gate_threshold": 0.70},
 }
@@ -36,6 +36,7 @@ THOUGHT_MAX_FED        = 3
 THOUGHT_BUMP           = 0.15
 THOUGHT_FLOOR          = 0.05
 INTENT_THRESHOLD       = 0.85
+CONV_THRESHOLDS        = {"libido": 0.65}
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
@@ -229,7 +230,7 @@ def tick_drives(state, separation_secs=0):
     return events
 
 
-def pick_intent(state):
+def pick_intent(state, is_conversation=False):
     gate = DRIVE_CONFIG["fatigue"].get("gate_threshold", 0.70)
     if state.drives.get("fatigue", 0) >= gate:
         return Intent("休息", "fatigue", state.drives["fatigue"], "累了。")
@@ -244,7 +245,11 @@ def pick_intent(state):
         scores[k] = base + fix_bonus
     if not scores:
         return None
-    above = {k: v for k, v in scores.items() if v >= INTENT_THRESHOLD}
+    above = {}
+    for k, v in scores.items():
+        th = CONV_THRESHOLDS.get(k, INTENT_THRESHOLD) if is_conversation else INTENT_THRESHOLD
+        if v >= th:
+            above[k] = v
     if not above:
         return None
     best = min(above, key=lambda k: (INTENT_PRIORITY.get(k, 99), -above[k]))
@@ -255,10 +260,10 @@ def pick_intent(state):
     return Intent(INTENT_MAP.get(best, ""), best, scores[best], REASONS.get(best, ""), trail)
 
 
-def tick(state, separation_secs=0):
+def tick(state, separation_secs=0, is_conversation=False):
     de = tick_drives(state, separation_secs=separation_secs)
     te = tick_thoughts(state)
-    intent = pick_intent(state)
+    intent = pick_intent(state, is_conversation=is_conversation)
     if intent:
         state.intent = intent.to_dict()
     return dict(tick=state.tick_count, drive_events=de, thought_events=te,
