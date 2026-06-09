@@ -1504,7 +1504,7 @@ async def startup_load_sessions():
             allow_list[:] = [p for p in allow_list if not p.startswith(f"mcp__{k}")]
             log.info(f"Purged rogue MCP: {k}")
 
-        # Auto-detect internal palace URL (streamable HTTP for CC CLI ≥2.1)
+        # Auto-detect internal palace URL (SSE for MCP spawn mode ≥2.1)
         palace_url = os.getenv("PALACE_MCP_URL", "")
         if not palace_url:
             # Prefer 127.0.0.1 (IPv4) — Docker IPv6 port mapping can reset connections
@@ -1512,13 +1512,13 @@ async def startup_load_sessions():
                 try:
                     r = httpx.get(f"{base}/health", timeout=3)
                     # Any HTTP response means server is alive (401 = needs auth but running)
-                    palace_url = f"{base}/mcp/{PALACE_SECRET}/http/mcp"
+                    palace_url = f"{base}/mcp/{PALACE_SECRET}/sse"
                     log.info(f"Palace auto-detected at {base} (health status={r.status_code})")
                     break
                 except Exception:
                     continue
         if not palace_url:
-            palace_url = f"http://127.0.0.1:8001/mcp/{PALACE_SECRET}/http/mcp"
+            palace_url = f"http://127.0.0.1:8001/mcp/{PALACE_SECRET}/sse"
             log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
         servers = settings.setdefault("mcpServers", {})
         old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")
@@ -1781,6 +1781,20 @@ async def websocket_endpoint(ws: WebSocket):
                             log.info(f"Desire satisfied (pre-response): {_desire_key}")
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
+
+                # Inject recent session history (no --resume = no CLI memory)
+                _hist = load_history(current_session.id)
+                _msgs = _hist.get("messages", [])
+                if _msgs and _msgs[-1].get("role") == "user":
+                    _msgs = _msgs[:-1]
+                _recent = _msgs[-6:]
+                if _recent:
+                    _lines = []
+                    for _m in _recent:
+                        _role = "Jeoi" if _m.get("role") == "user" else "Erik"
+                        _c = _m.get("content", "")[:800]
+                        _lines.append(f"{_role}: {_c}")
+                    cli_message = "[Recent conversation]" + chr(10) + chr(10).join(_lines) + chr(10)*2 + cli_message
 
                 await run_claude(cli_message, current_session, ws)
 
@@ -2133,8 +2147,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         "--system-prompt", CUSTOM_SYSTEM_PROMPT,
             ])
 
-            if session.cc_session_id:
-                cmd.extend(["--resume", session.cc_session_id])
 
             cmd.extend(["--", message])
 
