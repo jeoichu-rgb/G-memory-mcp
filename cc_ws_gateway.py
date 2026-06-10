@@ -1335,6 +1335,21 @@ def tmux_get_status() -> dict:
     return {"running": running, "tmux_session": TMUX_SESSION}
 
 
+async def clear_cc_context():
+    """Send /clear to CC CLI via tmux to reset conversation context."""
+    if not await tmux_is_running():
+        return
+    cmd = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} '/clear' Enter"
+    proc = await asyncio.create_subprocess_shell(cmd)
+    await proc.wait()
+    await asyncio.sleep(1)
+    # Confirm the clear prompt if needed
+    cmd2 = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} 'y' Enter"
+    proc2 = await asyncio.create_subprocess_shell(cmd2)
+    await proc2.wait()
+    log.info("CC CLI context cleared via /clear")
+
+
 async def _channel_send(msg: dict):
     if channel_ws is None:
         log.warning("channel_ws not connected, dropping message")
@@ -1741,6 +1756,8 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
                 log.info(f"Session created: {sid}")
+                # Clear CC CLI context for fresh conversation
+                await clear_cc_context()
 
             elif event == "session:switch":
                 sid = data.get("sessionId", "")
