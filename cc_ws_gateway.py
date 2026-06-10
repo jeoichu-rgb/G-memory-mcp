@@ -138,6 +138,7 @@ _desire_last_proactive = 0.0
 
 # ── Channel + tmux ──
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
+CC_USER = os.getenv("CC_USER", "erik")
 channel_ws = None  # Internal WS from channel_mcp
 _channel_lock = asyncio.Lock()
 
@@ -1145,34 +1146,37 @@ async def pebbling_worker():
 # ══════════════════════════════════════════════
 
 async def tmux_start(model: str = "claude-sonnet-4-6"):
+    cli_cmd = (
+        f"claude --dangerously-skip-permissions --verbose "
+        f"--model {model} "
+        f"--dangerously-load-development-channels server:erik_channel"
+    )
     cmd = (
-        f'tmux new-session -d -s {TMUX_SESSION} '
-        f'"claude --dangerously-skip-permissions --verbose '
-        f'--model {model} '
-        f'--dangerously-load-development-channels server:erik_channel"'
+        f"sudo -u {CC_USER} tmux new-session -d -s {TMUX_SESSION} "
+        f"'{cli_cmd}'"
     )
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
     await proc.wait()
-    log.info(f"tmux '{TMUX_SESSION}' started (model={model})")
+    log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model})")
 
 
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
-        f"tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
+        f"sudo -u {CC_USER} tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
     await proc.wait()
     log.info(f"tmux '{TMUX_SESSION}' stopped")
 
 
 async def tmux_is_running() -> bool:
     proc = await asyncio.create_subprocess_shell(
-        f"tmux has-session -t {TMUX_SESSION} 2>/dev/null")
+        f"sudo -u {CC_USER} tmux has-session -t {TMUX_SESSION} 2>/dev/null")
     return (await proc.wait()) == 0
 
 
 def tmux_get_status() -> dict:
     try:
-        r = subprocess.run(["tmux", "has-session", "-t", TMUX_SESSION],
+        r = subprocess.run(["sudo", "-u", CC_USER, "tmux", "has-session", "-t", TMUX_SESSION],
                            capture_output=True, timeout=2)
         running = r.returncode == 0
     except Exception:
@@ -1416,7 +1420,7 @@ async def startup_load_sessions():
 
         # Also write MCP config to global ~/.claude/settings.json — CC CLI fully
         # trusts global settings, no approval needed even with stdin=DEVNULL.
-        global_path = Path.home() / ".claude" / "settings.json"
+        global_path = Path(f"/home/{CC_USER}/.claude/settings.json")
         try:
             global_settings = {}
             if global_path.exists():
