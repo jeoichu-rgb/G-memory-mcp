@@ -766,7 +766,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 
-ANSI_RE = re.compile(r'\[[0-9;]*[a-zA-Z]|\][^]*|[^[\])]')
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
 
 def _make_pty():
     """Create a configured PTY pair for CC CLI — real TTY on both stdin and stdout."""
