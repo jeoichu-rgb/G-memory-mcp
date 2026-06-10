@@ -846,7 +846,7 @@ class PersistentCLI:
         self.proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=slave_fd,
-            stdout=slave_fd,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=CC_CWD, env=env,
         )
@@ -883,30 +883,13 @@ class PersistentCLI:
                  f"cc_session={self.cc_session_id}, servers={len(self.mcp_servers)}")
 
     async def _read_stdout(self):
-        loop = asyncio.get_event_loop()
         try:
-            while self.is_running:
-                try:
-                    data = await asyncio.wait_for(
-                        loop.run_in_executor(None, os.read, self._master_fd, 65536),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
+            async for chunk in self.proc.stdout:
+                line = chunk.decode("utf-8", errors="replace").strip()
+                if not line:
                     continue
-                except OSError:
-                    break
-                if not data:
-                    break
-                text = data.decode("utf-8", errors="replace")
-                log.info(f"[PTY] raw ({len(data)}b): {text[:200]!r}")
-                text = ANSI_RE.sub("", text)
-                self._stdout_buf += text
-                while chr(10) in self._stdout_buf:
-                    line, self._stdout_buf = self._stdout_buf.split(chr(10), 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    await self._dispatch(line)
+                log.info(f"[PTY] line: {line[:200]!r}")
+                await self._dispatch(line)
         except asyncio.CancelledError:
             pass
         except Exception as e:
