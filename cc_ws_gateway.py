@@ -1152,7 +1152,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6"):
         f"--dangerously-load-development-channels server:erik_channel"
     )
     cmd = (
-        f"sudo -i -u {CC_USER} tmux new-session -d -s {TMUX_SESSION} "
+        f"sudo -u {CC_USER} tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
         f"'{cli_cmd}'"
     )
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
@@ -1163,7 +1163,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6"):
     # Auto-confirm "Loading development channels" prompt
     for delay in [3, 5, 8]:
         await asyncio.sleep(delay if delay == 3 else delay - 3)
-        confirm = f"sudo -i -u {CC_USER} tmux send-keys -t {TMUX_SESSION} Enter"
+        confirm = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} Enter"
         p = await asyncio.create_subprocess_shell(confirm)
         await p.wait()
         log.info(f"tmux send-keys Enter (t+{delay}s)")
@@ -1171,20 +1171,20 @@ async def tmux_start(model: str = "claude-sonnet-4-6"):
 
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
-        f"sudo -i -u {CC_USER} tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
+        f"sudo -u {CC_USER} tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
     await proc.wait()
     log.info(f"tmux '{TMUX_SESSION}' stopped")
 
 
 async def tmux_is_running() -> bool:
     proc = await asyncio.create_subprocess_shell(
-        f"sudo -i -u {CC_USER} tmux has-session -t {TMUX_SESSION} 2>/dev/null")
+        f"sudo -u {CC_USER} tmux has-session -t {TMUX_SESSION} 2>/dev/null")
     return (await proc.wait()) == 0
 
 
 def tmux_get_status() -> dict:
     try:
-        r = subprocess.run(["sudo", "-i", "-u", CC_USER, "tmux", "has-session", "-t", TMUX_SESSION],
+        r = subprocess.run(["sudo", "-u", CC_USER, "tmux", "has-session", "-t", TMUX_SESSION],
                            capture_output=True, timeout=2)
         running = r.returncode == 0
     except Exception:
