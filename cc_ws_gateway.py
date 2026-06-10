@@ -1160,6 +1160,14 @@ async def tmux_start(model: str = "claude-sonnet-4-6"):
     await proc.wait()
     log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model})")
 
+    # Auto-confirm "Loading development channels" prompt
+    for delay in [3, 5, 8]:
+        await asyncio.sleep(delay if delay == 3 else delay - 3)
+        confirm = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} Enter"
+        p = await asyncio.create_subprocess_shell(confirm)
+        await p.wait()
+        log.info(f"tmux send-keys Enter (t+{delay}s)")
+
 
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
