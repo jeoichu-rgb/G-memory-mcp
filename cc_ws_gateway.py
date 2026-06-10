@@ -1592,8 +1592,11 @@ async def startup_load_sessions():
         # Inject Stop hook for thinking extraction
         hooks = settings.setdefault("hooks", {})
         hooks["Stop"] = [{
-            "type": "command",
-            "command": f"python3 {Path(CC_CWD) / 'thinking_hook.py'}",
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": f"python3 {Path(CC_CWD) / 'thinking_hook.py'}",
+            }],
         }]
 
         write_claude_settings(settings)
