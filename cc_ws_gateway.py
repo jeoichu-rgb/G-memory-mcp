@@ -2104,6 +2104,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         req = await send_to_channel(message, session, ws, chat_id="cc",
                                      sender="Jeoi", timeout=300)
 
+        if not session.cc_session_id:
+            session.cc_session_id = "channel"
+            save_session_meta(session)
+
         await asyncio.sleep(1)
         await tailer.stop()
 
