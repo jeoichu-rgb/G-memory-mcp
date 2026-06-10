@@ -13,6 +13,7 @@ import uuid
 import os
 import logging
 import subprocess
+import getpass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -139,6 +140,7 @@ _desire_last_proactive = 0.0
 # ── Channel + tmux ──
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
 CC_USER = os.getenv("CC_USER", "erik")
+_SU_PFX = "" if getpass.getuser() == CC_USER else f"sudo -u {CC_USER} "
 channel_ws = None  # Internal WS from channel_mcp
 _channel_lock = asyncio.Lock()
 
@@ -1297,7 +1299,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
         f"{resume_flag}"
     )
     cmd = (
-        f"sudo -u {CC_USER} tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
+        f"{_SU_PFX}tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
         f"'{cli_cmd}'"
     )
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
@@ -1308,7 +1310,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     # Auto-confirm "Loading development channels" prompt
     for delay in [3, 5, 8]:
         await asyncio.sleep(delay if delay == 3 else delay - 3)
-        confirm = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} Enter"
+        confirm = f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Enter"
         p = await asyncio.create_subprocess_shell(confirm)
         await p.wait()
         log.info(f"tmux send-keys Enter (t+{delay}s)")
@@ -1316,20 +1318,20 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
 
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
-        f"sudo -u {CC_USER} tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
+        f"{_SU_PFX}tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
     await proc.wait()
     log.info(f"tmux '{TMUX_SESSION}' stopped")
 
 
 async def tmux_is_running() -> bool:
     proc = await asyncio.create_subprocess_shell(
-        f"sudo -u {CC_USER} tmux has-session -t {TMUX_SESSION} 2>/dev/null")
+        f"{_SU_PFX}tmux has-session -t {TMUX_SESSION} 2>/dev/null")
     return (await proc.wait()) == 0
 
 
 def tmux_get_status() -> dict:
     try:
-        r = subprocess.run(["sudo", "-u", CC_USER, "tmux", "has-session", "-t", TMUX_SESSION],
+        r = subprocess.run(f"{_SU_PFX}tmux has-session -t {TMUX_SESSION}".split(),
                            capture_output=True, timeout=2)
         running = r.returncode == 0
     except Exception:
