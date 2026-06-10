@@ -1786,8 +1786,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
                 log.info(f"Session created: {sid}")
-                # Restart CC CLI for fresh conversation context
-                await restart_cc_for_session(session, ws)
+                
 
             elif event == "session:switch":
                 sid = data.get("sessionId", "")
@@ -1804,10 +1803,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "effort": current_session.effort,
                     })
                     log.info(f"Switched to session: {sid}")
-                    # Restart CC CLI if target session has a different CC context
-                    target_cc_id = current_session.cc_session_id
-                    if target_cc_id and target_cc_id != "channel" and target_cc_id != prev_cc_id:
-                        await restart_cc_for_session(current_session, ws)
+                    
 
             elif event == "session:delete":
                 sid = data.get("sessionId", "")
