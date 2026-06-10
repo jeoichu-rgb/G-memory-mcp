@@ -1,4 +1,4 @@
-﻿"""
+"""
 Claude Code CLI WebSocket Gateway
 Translates between chat.html's WS protocol and Claude Code CLI's stream-json output.
 Chat history persisted to /opt/G-memory-mcp/chat_history/<session_id>.json
@@ -9,6 +9,9 @@ Port: 8081
 
 import asyncio
 import pty
+import termios
+import struct
+import fcntl
 import json
 import uuid
 import os
@@ -74,7 +77,7 @@ DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 INTERACTIVE_MODE = os.getenv("CC_INTERACTIVE_MODE", "1") == "1"
-PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "0") == "1"
+PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "1") == "1"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -762,6 +765,20 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 
+
+ANSI_RE = re.compile(r'\[[0-9;]*[a-zA-Z]|\][^]*|[^[\])]')
+
+def _make_pty():
+    """Create a configured PTY pair for CC CLI — real TTY on both stdin and stdout."""
+    master_fd, slave_fd = pty.openpty()
+    attrs = termios.tcgetattr(master_fd)
+    attrs[3] &= ~termios.ECHO
+    attrs[1] &= ~termios.OPOST
+    termios.tcsetattr(master_fd, termios.TCSANOW, attrs)
+    winsize = struct.pack('HHHH', 500, 500, 0, 0)
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+    return master_fd, slave_fd
+
 # ── Persistent CLI process (stable MCP + cache) ──
 
 class PersistentCLI:
@@ -803,14 +820,16 @@ class PersistentCLI:
 
     async def start(self, session):
         await self.stop()
-        cmd = ["claude"]
+        cmd = ["claude",
+               "--dangerously-skip-permissions",
+               ]
         if not INTERACTIVE_MODE:
             cmd.append("--print")
         cmd.extend([
             "--output-format", "stream-json",
             "--verbose",
             "--model", session.model,
-                "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+            "--system-prompt", CUSTOM_SYSTEM_PROMPT,
         ])
         if session.cc_session_id:
             cmd.extend(["--resume", session.cc_session_id])
@@ -823,13 +842,12 @@ class PersistentCLI:
         mode = "interactive" if INTERACTIVE_MODE else "print"
         log.info(f"PersistentCLI starting ({mode}): session={session.id}, "
                  f"cc={session.cc_session_id}, model={session.model}")
-        master_fd, slave_fd = pty.openpty()
+        master_fd, slave_fd = _make_pty()
         self.proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=slave_fd,
-            stdout=asyncio.subprocess.PIPE,
+            stdout=slave_fd,
             stderr=asyncio.subprocess.PIPE,
-            limit=20 * 1024 * 1024,
             cwd=CC_CWD, env=env,
         )
         os.close(slave_fd)
@@ -865,11 +883,25 @@ class PersistentCLI:
                  f"cc_session={self.cc_session_id}, servers={len(self.mcp_servers)}")
 
     async def _read_stdout(self):
+        loop = asyncio.get_event_loop()
         try:
-            async for chunk in self.proc.stdout:
-                self._stdout_buf += chunk.decode("utf-8", errors="replace")
-                while "\n" in self._stdout_buf:
-                    line, self._stdout_buf = self._stdout_buf.split("\n", 1)
+            while self.is_running:
+                try:
+                    data = await asyncio.wait_for(
+                        loop.run_in_executor(None, os.read, self._master_fd, 65536),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    break
+                text = data.decode("utf-8", errors="replace")
+                text = ANSI_RE.sub("", text)
+                self._stdout_buf += text
+                while chr(10) in self._stdout_buf:
+                    line, self._stdout_buf = self._stdout_buf.split(chr(10), 1)
                     line = line.strip()
                     if not line:
                         continue
@@ -1782,19 +1814,20 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 
-                # Inject recent session history (no --resume = no CLI memory)
-                _hist = load_history(current_session.id)
-                _msgs = _hist.get("messages", [])
-                if _msgs and _msgs[-1].get("role") == "user":
-                    _msgs = _msgs[:-1]
-                _recent = _msgs[-6:]
-                if _recent:
-                    _lines = []
-                    for _m in _recent:
-                        _role = "Jeoi" if _m.get("role") == "user" else "Erik"
-                        _c = _m.get("content", "")[:800]
-                        _lines.append(f"{_role}: {_c}")
-                    cli_message = "[Recent conversation]" + chr(10) + chr(10).join(_lines) + chr(10)*2 + cli_message
+                # Inject recent session history (only for spawn fallback — PersistentCLI remembers naturally)
+                if not (PERSISTENT_CLI_ENABLED and persistent_cli.is_running):
+                    _hist = load_history(current_session.id)
+                    _msgs = _hist.get("messages", [])
+                    if _msgs and _msgs[-1].get("role") == "user":
+                        _msgs = _msgs[:-1]
+                    _recent = _msgs[-6:]
+                    if _recent:
+                        _lines = []
+                        for _m in _recent:
+                            _role = "Jeoi" if _m.get("role") == "user" else "Erik"
+                            _c = _m.get("content", "")[:800]
+                            _lines.append(f"{_role}: {_c}")
+                        cli_message = "[Recent conversation]" + chr(10) + chr(10).join(_lines) + chr(10)*2 + cli_message
 
                 await run_claude(cli_message, current_session, ws)
 
@@ -2692,6 +2725,7 @@ async def health():
         "status": "ok",
         "sessions": len(sessions),
         "time": datetime.now(SGT).isoformat(),
+        "cli": persistent_cli.get_status() if PERSISTENT_CLI_ENABLED else None,
     }
 
 
