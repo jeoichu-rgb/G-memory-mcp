@@ -264,6 +264,9 @@ class TranscriptTailer:
             bt = blk.get("type", "")
 
             if bt == "thinking":
+                log.info(f"tailer thinking block: keys={sorted(blk.keys())} "
+                         f"thinking_len={len(blk.get('thinking','') or '')} "
+                         f"sig_len={len(blk.get('signature','') or '')}")
                 raw = blk.get("thinking") or ""
                 sig = blk.get("signature", "")
                 if raw:
