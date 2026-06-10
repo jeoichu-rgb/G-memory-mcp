@@ -8,14 +8,11 @@ Port: 8081
 """
 
 import asyncio
-import pty
-import termios
-import struct
-import fcntl
 import json
 import uuid
 import os
 import logging
+import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -76,8 +73,6 @@ DENY_TOOLS = [
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
-INTERACTIVE_MODE = os.getenv("CC_INTERACTIVE_MODE", "1") == "1"
-PERSISTENT_CLI_ENABLED = os.getenv("CC_PERSISTENT_CLI", "1") == "1"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -140,6 +135,24 @@ pomo_state: dict = {}
 desire_st = None
 _desire_last_tick = 0.0
 _desire_last_proactive = 0.0
+
+# ── Channel + tmux ──
+TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
+channel_ws = None  # Internal WS from channel_mcp
+_channel_lock = asyncio.Lock()
+
+
+class _ChannelReq:
+    __slots__ = ("session", "ws", "chat_id", "done", "text_parts")
+    def __init__(self, session, ws, chat_id):
+        self.session = session
+        self.ws = ws
+        self.chat_id = chat_id
+        self.done = asyncio.Event()
+        self.text_parts = []
+
+
+_ch_req: _ChannelReq | None = None
 
 
 def load_peb_state() -> dict:
@@ -768,229 +781,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
 
-def _make_pty():
-    """Create a configured PTY pair for CC CLI — real TTY on both stdin and stdout."""
-    master_fd, slave_fd = pty.openpty()
-    attrs = termios.tcgetattr(master_fd)
-    attrs[3] &= ~termios.ECHO
-    attrs[1] &= ~termios.OPOST
-    termios.tcsetattr(master_fd, termios.TCSANOW, attrs)
-    winsize = struct.pack('HHHH', 500, 500, 0, 0)
-    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
-    return master_fd, slave_fd
 
-# ── Persistent CLI process (stable MCP + cache) ──
-
-class PersistentCLI:
-    """Long-lived CC CLI process. MCP connects once, cache prefix stays stable."""
-
-    def __init__(self):
-        self.proc = None  # asyncio.subprocess.Process | None
-        self.session_id = None
-        self.cc_session_id = None
-        self.model = None
-        self.mcp_status = "disconnected"
-        self.mcp_servers = []
-        self._lock = asyncio.Lock()
-        self._reader_task = None
-        self._stderr_task = None
-        self._line_handler = None
-        self._result_event = None
-        self._init_event = None
-        self._stdout_buf = ""
-        self._master_fd = None
-
-    @property
-    def is_running(self) -> bool:
-        return self.proc is not None and self.proc.returncode is None
-
-    async def ensure_running(self, session) -> bool:
-        need_restart = (
-            not self.is_running
-            or self.session_id != session.id
-            or self.model != session.model
-        )
-        if need_restart:
-            await self.start(session)
-        if self.cc_session_id and not session.cc_session_id:
-            session.cc_session_id = self.cc_session_id
-        elif session.cc_session_id and not self.cc_session_id:
-            self.cc_session_id = session.cc_session_id
-        return self.is_running
-
-    async def start(self, session):
-        await self.stop()
-        cmd = ["claude",
-               "--dangerously-skip-permissions",
-               ]
-        if not INTERACTIVE_MODE:
-            cmd.append("--print")
-        cmd.extend([
-            "--output-format", "stream-json",
-            "--verbose",
-            "--model", session.model,
-            "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-        ])
-        if session.cc_session_id:
-            cmd.extend(["--resume", session.cc_session_id])
-        compact_pct = 80
-        env = {
-            **os.environ,
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
-        }
-        mode = "interactive" if INTERACTIVE_MODE else "print"
-        log.info(f"PersistentCLI starting ({mode}): session={session.id}, "
-                 f"cc={session.cc_session_id}, model={session.model}")
-        master_fd, slave_fd = _make_pty()
-        self.proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=slave_fd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=CC_CWD, env=env,
-        )
-        os.close(slave_fd)
-        self._master_fd = master_fd
-        self.session_id = session.id
-        self.cc_session_id = session.cc_session_id
-        self.model = session.model
-        self.mcp_status = "connecting"
-        self._init_event = asyncio.Event()
-        self._stdout_buf = ""
-        self._reader_task = asyncio.create_task(self._read_stdout())
-        self._stderr_task = asyncio.create_task(self._read_stderr())
-
-        try:
-            await asyncio.wait_for(self._init_event.wait(), timeout=30)
-            self.mcp_status = "connected"
-        except asyncio.TimeoutError:
-            if self.is_running:
-                self.mcp_status = "connected"
-                log.warning("PersistentCLI: no init event but process alive")
-            else:
-                self.mcp_status = "failed"
-                log.error(f"PersistentCLI exited (code={self.proc.returncode})")
-                # Capture stderr for debugging
-                if self.proc.stderr:
-                    try:
-                        err = await asyncio.wait_for(self.proc.stderr.read(), timeout=2)
-                        log.error(f"PersistentCLI stderr: {err.decode('utf-8', errors='replace')[:500]}")
-                    except Exception:
-                        pass
-                return
-        log.info(f"PersistentCLI ready: mcp={self.mcp_status}, "
-                 f"cc_session={self.cc_session_id}, servers={len(self.mcp_servers)}")
-
-    async def _read_stdout(self):
-        try:
-            async for chunk in self.proc.stdout:
-                line = chunk.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                log.info(f"[PTY] line: {line[:200]!r}")
-                await self._dispatch(line)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            log.error(f"PersistentCLI reader error: {e}")
-        finally:
-            self.mcp_status = "disconnected"
-            log.info("PersistentCLI stdout reader exited")
-
-    async def _read_stderr(self):
-        try:
-            async for chunk in self.proc.stderr:
-                text = chunk.decode("utf-8", errors="replace").strip()
-                if text:
-                    log.debug(f"PersistentCLI stderr: {text[:300]}")
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    async def _dispatch(self, line: str):
-        is_result = False
-        try:
-            ev = json.loads(line)
-            etype = ev.get("type", "")
-            if etype == "system" and ev.get("subtype") == "init":
-                sid = ev.get("session_id", "")
-                if sid:
-                    self.cc_session_id = sid
-                self.mcp_servers = ev.get("mcp_servers", [])
-                if self._init_event:
-                    self._init_event.set()
-                log.info(f"PersistentCLI init: cc={sid}, mcp={len(self.mcp_servers)}")
-            if etype == "result":
-                is_result = True
-        except json.JSONDecodeError:
-            log.info(f"[PTY] non-JSON: {line[:300]!r}")
-        if self._line_handler:
-            await self._line_handler(line)
-        if is_result and self._result_event:
-            self._result_event.set()
-
-    async def send_message(self, message: str, line_handler, timeout: float = 300):
-        async with self._lock:
-            if not self.is_running:
-                raise RuntimeError("PersistentCLI not running")
-            self._line_handler = line_handler
-            self._result_event = asyncio.Event()
-            flat = message.replace("\n", " ") + "\n"
-            os.write(self._master_fd, flat.encode("utf-8"))
-
-            try:
-                await asyncio.wait_for(self._result_event.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
-                log.warning("PersistentCLI send_message timeout")
-            finally:
-                self._line_handler = None
-                self._result_event = None
-
-    async def reconnect(self, session):
-        log.info("PersistentCLI reconnecting...")
-        await self.stop()
-        await self.start(session)
-
-    async def stop(self):
-        for task in [self._reader_task, self._stderr_task]:
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-        self._reader_task = self._stderr_task = None
-        if self.proc and self.proc.returncode is None:
-            try:
-                self.proc.kill()
-                await self.proc.wait()
-            except ProcessLookupError:
-                pass
-        if self._master_fd is not None:
-            try:
-                os.close(self._master_fd)
-            except OSError:
-                pass
-            self._master_fd = None
-        self.proc = None
-        self.mcp_status = "disconnected"
-        self._line_handler = None
-        self._result_event = None
-
-    def get_status(self) -> dict:
-        return {
-            "running": self.is_running,
-            "mcp_status": self.mcp_status,
-            "session_id": self.session_id,
-            "cc_session_id": self.cc_session_id,
-            "model": self.model,
-            "mcp_servers": self.mcp_servers,
-            "pid": self.proc.pid if self.proc else None,
-            "persistent_enabled": PERSISTENT_CLI_ENABLED,
-        }
-
-
-persistent_cli = PersistentCLI()
 
 
 # ── CC oneshot call (non-streaming, for patrol/pebbling) ──
@@ -998,112 +789,27 @@ persistent_cli = PersistentCLI()
 async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns=None
 ) -> tuple:
-    """Returns (text, thinking). Uses persistent CLI if available."""
-
-    # ── Persistent CLI path ──
-    if PERSISTENT_CLI_ENABLED:
-        try:
-            if await persistent_cli.ensure_running(session):
-                text_parts, thinking_parts = [], []
-
-                async def _collector(ln):
-                    try:
-                        ev = json.loads(ln)
-                        etype = ev.get("type", "")
-                        if etype == "assistant":
-                            for block in ev.get("message", {}).get("content", []):
-                                if block.get("type") == "thinking":
-                                    thinking_parts.append(block.get("thinking", ""))
-                                elif block.get("type") == "text":
-                                    text_parts.append(block.get("text", ""))
-                        elif etype == "content_block_delta":
-                            delta = ev.get("delta", {})
-                            if delta.get("type") == "thinking_delta":
-                                thinking_parts.append(delta.get("thinking", ""))
-                            elif delta.get("type") == "text_delta":
-                                text_parts.append(delta.get("text", ""))
-                    except json.JSONDecodeError:
-                        text_parts.append(ln)
-
-                await persistent_cli.send_message(prompt, _collector, timeout=120)
-                text = "".join(text_parts).strip()
-                thinking = "".join(thinking_parts).strip()
-                log.info(f"PersistentCLI oneshot (text={len(text)}, thinking={len(thinking)}): {text[:200]}")
-                return text, thinking
-        except Exception as e:
-            log.warning(f"PersistentCLI oneshot error: {e}, falling back to spawn")
-
-    # ── Spawn path (fallback) ──
-    cmd = ["claude"]
-    if not INTERACTIVE_MODE:
-        cmd.append("--print")
-    cmd.extend([
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", session.model,
-        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-        "--resume", session.cc_session_id,
-    ])
-    if max_turns is not None:
-        cmd.extend(["--max-turns", str(max_turns)])
-    cmd.extend(["--", prompt])
-    mode = "interactive" if INTERACTIVE_MODE else "print"
-    log.info(f"Pebbling CC call ({mode}): max_turns={max_turns}, session={session.id}")
+    """Returns (text, thinking). Sends via channel."""
+    if channel_ws is None:
+        log.warning("run_cc_oneshot: channel not connected")
+        return "", ""
+    if channel_busy():
+        log.info("run_cc_oneshot: channel busy, skipping")
+        return "", ""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
-            limit=2 * 1024 * 1024,
-            cwd=CC_CWD,
-            env={**os.environ,
-                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                 "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "99"},
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        raw = stdout.decode("utf-8", errors="replace").strip()
-        if stderr_text := stderr.decode("utf-8", errors="replace").strip():
-            log.debug(f"Pebbling CC stderr: {stderr_text[:300]}")
-
-        text_parts, thinking_parts = [], []
-        for line in raw.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                text_parts.append(line)
-                continue
-            etype = ev.get("type", "")
-            if etype == "assistant":
-                for block in ev.get("message", {}).get("content", []):
-                    if block.get("type") == "thinking":
-                        thinking_parts.append(block.get("thinking", ""))
-                    elif block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-            elif etype == "content_block_delta":
-                delta = ev.get("delta", {})
-                if delta.get("type") == "thinking_delta":
-                    thinking_parts.append(delta.get("thinking", ""))
-                elif delta.get("type") == "text_delta":
-                    text_parts.append(delta.get("text", ""))
-
-        text = "".join(text_parts).strip()
-        thinking = "".join(thinking_parts).strip()
-        log.info(f"Pebbling CC response (text={len(text)}, thinking={len(thinking)} chars): {text[:200]}")
-
-        if proc.returncode and proc.returncode != 0 and not thinking:
-            log.warning(f"CC exited {proc.returncode}, raw output: {raw[:300]}")
-
-        return text, thinking
-    except asyncio.TimeoutError:
-        log.warning("Pebbling CC call timed out")
+        req = await send_to_channel(
+            prompt, session, ws=None, chat_id="system",
+            sender="system", timeout=120)
+        text = "".join(req.text_parts).strip()
+        log.info(f"oneshot reply ({len(text)} chars): {text[:200]}")
+        return text, ""
+    except RuntimeError as e:
+        log.warning(f"run_cc_oneshot error: {e}")
         return "", ""
     except Exception as e:
-        log.error(f"Pebbling CC call error: {e}")
+        log.error(f"run_cc_oneshot error: {e}")
         return "", ""
+
 # ── Telegram push ──
 
 async def send_telegram(text: str):
@@ -1296,7 +1002,7 @@ async def pebbling_worker():
                 _dp_sid = peb_state.get("pebbling_session_id")
                 _dp_session = sessions.get(_dp_sid) if _dp_sid else None
                 if (_dp_session and _dp_session.cc_session_id
-                        and not (_dp_session._proc and _dp_session._proc.returncode is None)):
+                        and not channel_busy()):
                     _dp_dk = desire_st.intent.get("drive_key", "")
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
@@ -1319,8 +1025,8 @@ async def pebbling_worker():
                 if pomo_session and pomo_session.cc_session_id:
                     elapsed_pomo = now - pomo_state.get("started_at", now)
 
-                    # Skip if CC is busy on this session
-                    if pomo_session._proc and pomo_session._proc.returncode is None:
+                    # Skip if channel is busy
+                    if channel_busy():
                         pass  # retry next tick
                     elif not pomo_state.get("notified_40") and elapsed_pomo >= POMODORO_WORK_MIN * 60:
                         log.info(f"Pomodoro: 40min work done, sending reminder")
@@ -1432,6 +1138,141 @@ async def pebbling_worker():
         pass
     except Exception as e:
         log.exception(f"Pebbling worker error: {e}")
+
+
+# ══════════════════════════════════════════════
+#  TMUX + CHANNEL
+# ══════════════════════════════════════════════
+
+async def tmux_start(model: str = "claude-sonnet-4-6"):
+    cmd = (
+        f'tmux new-session -d -s {TMUX_SESSION} '
+        f'"claude --dangerously-skip-permissions --verbose '
+        f'--model {model} '
+        f'--dangerously-load-development-channels server:erik_channel"'
+    )
+    env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+    proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
+    await proc.wait()
+    log.info(f"tmux '{TMUX_SESSION}' started (model={model})")
+
+
+async def tmux_stop():
+    proc = await asyncio.create_subprocess_shell(
+        f"tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
+    await proc.wait()
+    log.info(f"tmux '{TMUX_SESSION}' stopped")
+
+
+async def tmux_is_running() -> bool:
+    proc = await asyncio.create_subprocess_shell(
+        f"tmux has-session -t {TMUX_SESSION} 2>/dev/null")
+    return (await proc.wait()) == 0
+
+
+def tmux_get_status() -> dict:
+    try:
+        r = subprocess.run(["tmux", "has-session", "-t", TMUX_SESSION],
+                           capture_output=True, timeout=2)
+        running = r.returncode == 0
+    except Exception:
+        running = False
+    return {"running": running, "tmux_session": TMUX_SESSION}
+
+
+async def _channel_send(msg: dict):
+    if channel_ws is None:
+        log.warning("channel_ws not connected, dropping message")
+        return False
+    try:
+        await channel_ws.send_json(msg)
+        return True
+    except Exception as e:
+        log.warning(f"channel_ws send failed: {e}")
+        return False
+
+
+async def send_to_channel(text: str, session, ws=None, chat_id: str = "cc",
+                           sender: str = "Jeoi", timeout: float = 300):
+    global _ch_req
+    async with _channel_lock:
+        if channel_ws is None:
+            raise RuntimeError("channel not connected")
+        session.reset_accumulator()
+        _ch_req = _ChannelReq(session, ws, chat_id)
+        msg = {"type": "user_message", "text": text,
+               "chat_id": chat_id, "from": sender}
+        await _channel_send(msg)
+        try:
+            await asyncio.wait_for(_ch_req.done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning(f"channel reply timeout ({timeout}s)")
+        req = _ch_req
+        _ch_req = None
+    return req
+
+
+def channel_busy() -> bool:
+    return _channel_lock.locked()
+
+
+@app.websocket("/internal/channel")
+async def internal_channel_ws(ws: WebSocket):
+    global channel_ws
+    await ws.accept()
+    channel_ws = ws
+    log.info("channel_mcp connected on /internal/channel")
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            msg_type = data.get("type", "")
+
+            if msg_type == "reply":
+                text = data.get("text", "")
+                if _ch_req:
+                    _ch_req.text_parts.append(text)
+                    _ch_req.session._current_text += text
+                    if _ch_req.ws:
+                        try:
+                            await _ch_req.ws.send_json(
+                                {"event": "stream:text", "text": text})
+                        except Exception:
+                            pass
+                    _ch_req.done.set()
+                log.info(f"channel reply: {text[:120]}")
+
+            elif msg_type == "reply_chunk":
+                text = data.get("text", "")
+                done = data.get("done", False)
+                if _ch_req:
+                    _ch_req.text_parts.append(text)
+                    _ch_req.session._current_text += text
+                    if _ch_req.ws:
+                        try:
+                            await _ch_req.ws.send_json(
+                                {"event": "stream:text", "text": text})
+                        except Exception:
+                            pass
+                    if done:
+                        _ch_req.done.set()
+
+            elif msg_type == "pong":
+                pass
+
+            else:
+                log.debug(f"internal/channel unknown type: {msg_type}")
+
+    except WebSocketDisconnect:
+        log.info("channel_mcp disconnected")
+    except Exception as e:
+        log.warning(f"internal/channel error: {e}")
+    finally:
+        if channel_ws is ws:
+            channel_ws = None
 
 
 # ══════════════════════════════════════════════
@@ -1547,6 +1388,15 @@ async def startup_load_sessions():
             allow_list.append(palace_perm)
             log.info(f"Added {palace_perm} to allow list")
 
+        # Channel MCP (stdio — CC CLI starts it as subprocess)
+        servers["erik_channel"] = {
+            "command": "python3",
+            "args": [str(Path(CC_CWD) / "channel_mcp.py")],
+        }
+        channel_perm = "mcp__erik_channel"
+        if channel_perm not in allow_list:
+            allow_list.append(channel_perm)
+
         write_claude_settings(settings)
         log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
 
@@ -1605,6 +1455,13 @@ async def startup_load_sessions():
         if desire_st:
             log.info(f"Desire loaded: tick={desire_st.tick_count}, thoughts={len(desire_st.thoughts)}")
     asyncio.create_task(pebbling_worker())
+
+    # Start CC CLI in tmux if not already running
+    if not await tmux_is_running():
+        log.info("Starting CC CLI in tmux...")
+        await tmux_start()
+    else:
+        log.info("tmux session already running")
 
 
 # ══════════════════════════════════════════════
@@ -1799,21 +1656,6 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 
-                # Inject recent session history (only for spawn fallback — PersistentCLI remembers naturally)
-                if not (PERSISTENT_CLI_ENABLED and persistent_cli.is_running):
-                    _hist = load_history(current_session.id)
-                    _msgs = _hist.get("messages", [])
-                    if _msgs and _msgs[-1].get("role") == "user":
-                        _msgs = _msgs[:-1]
-                    _recent = _msgs[-6:]
-                    if _recent:
-                        _lines = []
-                        for _m in _recent:
-                            _role = "Jeoi" if _m.get("role") == "user" else "Erik"
-                            _c = _m.get("content", "")[:800]
-                            _lines.append(f"{_role}: {_c}")
-                        cli_message = "[Recent conversation]" + chr(10) + chr(10).join(_lines) + chr(10)*2 + cli_message
-
                 await run_claude(cli_message, current_session, ws)
 
                 # Snap cleanup: delete temp file after CC has read it
@@ -1867,24 +1709,8 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "chat:stop":
                 if current_session:
                     current_session._stop_requested = True
-                    if PERSISTENT_CLI_ENABLED and persistent_cli.is_running:
-                        # Send Ctrl+C to interrupt current generation
-                        try:
-                            os.write(persistent_cli._master_fd, bytes([3]))
+                    log.info(f"Stop requested for session {current_session.id}")
 
-                            log.info("Sent interrupt to PersistentCLI")
-                        except Exception:
-                            await persistent_cli.stop()
-                            log.info("PersistentCLI stopped (interrupt failed)")
-                    else:
-                        proc = current_session._proc
-                        if proc and proc.returncode is None:
-                            try:
-                                proc.terminate()
-                                log.info(f"SIGTERM sent to session {current_session.id}")
-                            except ProcessLookupError:
-                                pass
-                            asyncio.create_task(_force_kill_proc(current_session))
 
             elif event == "mcp:list":
                 try:
@@ -1976,54 +1802,30 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "cli:status":
                 try:
-                    status = persistent_cli.get_status()
-                    # Add spawn-mode info from current session
+                    status = tmux_get_status()
+                    status["channel_connected"] = channel_ws is not None
+                    status["channel_busy"] = channel_busy()
                     if current_session:
-                        status["session_id"] = status["session_id"] or current_session.id
-                        status["cc_session_id"] = status["cc_session_id"] or current_session.cc_session_id
-                        status["model"] = status["model"] or current_session.model
-                    if not PERSISTENT_CLI_ENABLED:
-                        status["mcp_status"] = "spawn_mode"
+                        status["session_id"] = current_session.id
+                        status["model"] = current_session.model
                     await ws.send_json({"event": "cli:status", **status})
                 except Exception as e:
                     await ws.send_json({"event": "cli:error", "message": str(e)})
 
             elif event == "cli:reconnect":
                 try:
-                    if not PERSISTENT_CLI_ENABLED:
-                        # Spawn mode: just return current status, no persistent process to reconnect
-                        status = persistent_cli.get_status()
-                        if current_session:
-                            status["session_id"] = status["session_id"] or current_session.id
-                            status["cc_session_id"] = status["cc_session_id"] or current_session.cc_session_id
-                            status["model"] = status["model"] or current_session.model
-                        status["mcp_status"] = "spawn_mode"
-                        status["persistent_enabled"] = False
-                        await ws.send_json({"event": "cli:status", **status})
-                        log.info("cli:reconnect ignored (spawn mode)")
-                    elif current_session:
-                        await persistent_cli.reconnect(current_session)
-                        status = persistent_cli.get_status()
-                        await ws.send_json({"event": "cli:status", **status})
-                        log.info("PersistentCLI reconnected via frontend")
-                    else:
-                        await ws.send_json({"event": "cli:error", "message": "no active session"})
+                    model = current_session.model if current_session else "claude-sonnet-4-6"
+                    await tmux_stop()
+                    await tmux_start(model=model)
+                    await ws.send_json({"event": "system:error",
+                                        "message": "tmux 重启中，等待 channel 重连..."})
+                    status = tmux_get_status()
+                    status["channel_connected"] = channel_ws is not None
+                    await ws.send_json({"event": "cli:status", **status})
+                    log.info("tmux restarted via frontend")
                 except Exception as e:
                     log.exception(f"cli:reconnect error: {e}")
                     await ws.send_json({"event": "cli:error", "message": str(e)})
-
-            elif event == "cli:fallback_confirm":
-                if current_session:
-                    current_session._fallback_allowed = data.get("allow", False)
-                    if current_session._fallback_allowed:
-                        log.info("Spawn fallback allowed by user")
-                        await ws.send_json({"event": "system:error",
-                                            "message": "Spawn 模式已启用，正在重发..."})
-
-            elif event == "cli:allow_fallback":
-                if current_session:
-                    current_session._fallback_allowed = True
-                    log.info("Spawn fallback pre-allowed by user")
 
             elif event == "context:generate":
                 if current_session:
@@ -2120,135 +1922,37 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ══════════════════════════════════════════════
-#  CLAUDE CLI
+#  CLAUDE CLI (via channel)
 # ══════════════════════════════════════════════
 
-async def _force_kill_proc(session: Session):
-    """Wait 1s then SIGKILL if process still alive."""
-    await asyncio.sleep(1)
-    proc = session._proc
-    if proc and proc.returncode is None:
-        try:
-            proc.kill()
-            log.info(f"SIGKILL sent to session {session.id}")
-        except ProcessLookupError:
-            pass
-
-
-
-
 async def run_claude(message: str, session: Session, ws: WebSocket):
-    """Spawn claude CLI and stream results back via WS.
-    PERSISTENT_CLI_ENABLED: reuse long-lived CLI process for stable MCP cache.
-    INTERACTIVE_MODE: omits --print so Anthropic classifies usage as interactive."""
-
+    """Send message to CC CLI via channel_mcp and stream reply back."""
     session.reset_accumulator()
 
     try:
-        # ── Determine execution path ──
-        use_pcli = PERSISTENT_CLI_ENABLED
-        pcli_error = ""
-        if use_pcli:
-            try:
-                use_pcli = await persistent_cli.ensure_running(session)
-                if not use_pcli:
-                    pcli_error = "PersistentCLI not ready"
-                    log.warning(pcli_error)
-            except Exception as e:
-                pcli_error = str(e)
-                log.warning(f"PersistentCLI init error: {e}")
-                use_pcli = False
+        if channel_ws is None:
+            if not await tmux_is_running():
+                await ws.send_json({"event": "system:error",
+                                    "message": "CC CLI 未运行 (tmux)，正在启动..."})
+                await tmux_start(model=session.model)
+                await asyncio.sleep(5)
+            if channel_ws is None:
+                await ws.send_json({"event": "system:error",
+                                    "message": "channel 未连接，请稍等 channel_mcp 初始化..."})
+                for _ in range(10):
+                    await asyncio.sleep(2)
+                    if channel_ws is not None:
+                        break
+            if channel_ws is None:
+                await ws.send_json({"event": "system:error",
+                                    "message": "channel 连接失败，请检查 tmux 和 channel_mcp"})
+                await ws.send_json({"event": "message:complete", "usage": {}})
+                return
 
-        if not use_pcli and PERSISTENT_CLI_ENABLED and not session._fallback_allowed:
-            await ws.send_json({
-                "event": "cli:fallback_request",
-                "reason": pcli_error or "PersistentCLI unavailable",
-            })
-            await ws.send_json({"event": "system:error",
-                                "message": f"CLI 进程异常: {pcli_error}. 等待确认..."})
-            log.info("Waiting for fallback confirmation from frontend")
-            return
+        req = await send_to_channel(message, session, ws, chat_id="cc",
+                                     sender="Jeoi", timeout=300)
 
-        if use_pcli:
-            # ── Persistent CLI path ──
-            async def _pcli_handler(ln):
-                if not session._stop_requested:
-                    await handle_cli_line(ln, session, ws)
-
-            session._proc = persistent_cli.proc
-            await persistent_cli.send_message(message, _pcli_handler)
-            session._proc = None
-            log.info("PersistentCLI message completed")
-        else:
-            # ── Spawn path (fallback) ──
-            cmd = ["claude"]
-            if not INTERACTIVE_MODE:
-                cmd.append("--print")
-            cmd.extend([
-                "--output-format", "stream-json",
-                "--model", session.model,
-                "--verbose",
-                        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
-            ])
-
-
-            cmd.extend(["--", message])
-
-            # Compaction at 80% (160k), matching CLI defaults
-            compact_pct = 80
-            spawn_env = {
-                **os.environ,
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": str(compact_pct),
-            }
-
-            mode = "interactive" if INTERACTIVE_MODE else "print"
-            log.info(f"Spawning ({mode}, compact@{compact_pct}%): {' '.join(cmd[:6])}... "
-                     f"(session={session.id}, cc={session.cc_session_id})")
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL if INTERACTIVE_MODE else None,
-                limit=20 * 1024 * 1024,
-                cwd=CC_CWD,
-                env=spawn_env,
-            )
-            session._proc = proc
-
-            buffer = ""
-            async for chunk in proc.stdout:
-                if session._stop_requested:
-                    log.info(f"Stop requested, breaking stream for {session.id}")
-                    break
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-                    if not line:
-                        continue
-                    await handle_cli_line(line, session, ws)
-
-            if buffer.strip():
-                await handle_cli_line(buffer.strip(), session, ws)
-
-            stderr_bytes = await proc.stderr.read()
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-            if stderr_text:
-                log.warning(f"CLI stderr: {stderr_text[:500]}")
-
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                log.warning(f"CLI force-killed after timeout for {session.id}")
-            session._proc = None
-            log.info(f"CLI exited with code {proc.returncode}")
-
-        # ── Post-processing (shared by both paths) ──
-        # Parse Erik's sticker reactions before saving
+        # Post-processing: parse sticker reactions
         erik_reactions = []
         if session._current_text:
             react_pattern = re.compile(r'<!--react:(.+?):#(\d+)-->')
@@ -2257,17 +1961,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 erik_reactions.append((idx, emoji))
             session._current_text = react_pattern.sub('', session._current_text).rstrip()
 
-        # Save assistant response to history
         if session._current_text or session._current_thinking:
             append_message(
-                session.id,
-                "assistant",
-                session._current_text,
+                session.id, "assistant", session._current_text,
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
-
-            # Apply Erik's sticker reactions to target messages
             for idx, emoji in erik_reactions:
                 ok = set_reaction(session.id, idx, "erik", emoji)
                 if ok:
@@ -2279,15 +1978,14 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                     except Exception:
                         pass
                     log.info(f"Erik reacted {emoji} on #{idx + 1}")
-            # Preview = last message (truncated)
+
             if session._current_text:
-                txt = session._current_text.replace("\n", " ")[:30]
+                txt = session._current_text.replace(chr(10), " ")[:30]
                 if len(session._current_text) > 30:
                     txt += "..."
                 session.preview = txt
             session.last_active = datetime.now(SGT)
             save_session_meta(session)
-            # Push updated session list so sidebar reorders
             sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
             await ws.send_json({
                 "event": "session:list",
@@ -2298,16 +1996,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await ws.send_json({"event": "message:complete", "usage": {}})
 
     except Exception as e:
-        log.warning(f"run_claude interrupted: {type(e).__name__}: {e}")
-        # Kill orphaned CC process
-        if session._proc and session._proc.returncode is None:
-            try:
-                session._proc.kill()
-                await session._proc.wait()
-            except Exception:
-                pass
-        session._proc = None
-        # Save partial response even on error (strip reaction markers)
+        log.warning(f"run_claude error: {type(e).__name__}: {e}")
         if session._current_text:
             react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->')
             cleaned = react_pat.sub('', session._current_text).rstrip()
@@ -2316,186 +2005,13 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
-        ws_alive = True
         try:
             await ws.send_json({"event": "system:error", "message": str(e)})
         except Exception:
-            ws_alive = False
-        # WS dead (user locked screen / switched away) - push fallback
-        if not ws_alive and session._current_text:
-            preview = session._current_text.replace(chr(10), " ")[:100]
-            await send_web_push("Erik", preview, url="/chat.html")
-            log.info(f"Push fallback sent: {preview[:60]}")
-async def handle_cli_line(line: str, session: Session, ws: WebSocket):
-    """Parse one line of CLI stream-json output and relay to chat.html."""
+            if session._current_text:
+                preview = session._current_text.replace(chr(10), " ")[:100]
+                await send_web_push("Erik", preview, url="/chat.html")
 
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        log.debug(f"Non-JSON line: {line[:200]}")
-        if "compact" in line.lower():
-            log.info(f"Compaction text in non-JSON: {line[:200]}")
-        session._current_text += line + "\n"
-        await ws.send_json({"event": "stream:text", "text": line + "\n"})
-        return
-
-    log.debug(f"CLI event: {json.dumps(event, ensure_ascii=False)[:300]}")
-
-    etype = event.get("type", "")
-
-    # ── Format A: Anthropic API-style streaming events ──
-
-    if etype == "message_start":
-        msg = event.get("message", {})
-        if msg.get("id"):
-            session.cc_session_id = msg["id"]
-        usage = msg.get("usage", {})
-        if usage:
-            await ws.send_json({"event": "system:usage", "usage": usage})
-
-    elif etype == "content_block_start":
-        block = event.get("content_block", {})
-        btype = block.get("type", "")
-        if btype == "tool_use":
-            tool_info = {
-                "type": "tool_use",
-                "name": block.get("name", "tool"),
-                "input": block.get("input", {}),
-            }
-            session._current_tools.append(tool_info)
-            await ws.send_json({"event": "stream:block", "block": tool_info})
-
-    elif etype == "content_block_delta":
-        delta = event.get("delta", {})
-        dtype = delta.get("type", "")
-        if dtype == "thinking_delta":
-            text = delta.get("thinking", "")
-            if text:
-                session._current_thinking += text
-                await ws.send_json({"event": "stream:thinking", "text": text})
-        elif dtype == "text_delta":
-            text = delta.get("text", "")
-            if text:
-                session._current_text += text
-                await ws.send_json({"event": "stream:text", "text": text})
-        elif dtype == "input_json_delta":
-            pass
-
-    elif etype == "content_block_stop":
-        pass
-
-    elif etype == "message_delta":
-        usage = event.get("usage", {})
-        if usage:
-            await ws.send_json({"event": "system:usage", "usage": usage})
-
-    elif etype == "message_stop":
-        usage = event.get("message", {}).get("usage", {})
-        await ws.send_json({"event": "message:complete", "usage": usage})
-
-    # ── Format B: Claude Code CLI's own event format ──
-
-    elif etype == "system":
-        subtype = event.get("subtype", "")
-        log.info(f"System event subtype={subtype}: {json.dumps(event, ensure_ascii=False)[:300]}")
-        if subtype == "init":
-            sid = event.get("session_id", "")
-            if sid:
-                session.cc_session_id = sid
-                log.info(f"CC session ID: {sid}")
-
-    elif etype == "assistant":
-        message = event.get("message", {})
-        content_blocks = message.get("content", [])
-        if isinstance(content_blocks, list):
-            for block in content_blocks:
-                btype = block.get("type", "")
-                if btype == "thinking":
-                    text = block.get("thinking", "")
-                    if text:
-                        session._current_thinking += text
-                        await ws.send_json({"event": "stream:thinking", "text": text})
-                elif btype == "text":
-                    text = block.get("text", "")
-                    if text:
-                        session._current_text += text
-                        await ws.send_json({"event": "stream:text", "text": text})
-                elif btype == "tool_use":
-                    tool_info = {
-                        "type": "tool_use",
-                        "name": block.get("name", "tool"),
-                        "input": block.get("input", {}),
-                    }
-                    session._current_tools.append(tool_info)
-                    await ws.send_json({"event": "stream:block", "block": tool_info})
-        usage = message.get("usage", {})
-        if usage:
-            session._last_usage = usage
-            await ws.send_json({"event": "system:usage", "usage": usage})
-
-    elif etype == "result":
-        usage = event.get("usage", {})
-        cost = event.get("cost_usd", 0)
-        session_id = event.get("session_id", "")
-        log.info(f"Result event — usage: {json.dumps(usage)}, cost: {cost}")
-        if session_id:
-            session.cc_session_id = session_id
-        session._result_sent = True
-        # context_size = 最后一次API调用的真实context（不是累加值）
-        display_usage = session._last_usage or usage
-        # Accumulate session totals（用result的累加值）
-        msg_input = usage.get("input_tokens", 0)
-        msg_output = usage.get("output_tokens", 0)
-        msg_cache_read = usage.get("cache_read_input_tokens", 0)
-        msg_cache_create = usage.get("cache_creation_input_tokens", 0)
-        session.total_input += msg_input
-        session.total_output += msg_output
-        session.total_cache_read += msg_cache_read
-        session.total_cache_create += msg_cache_create
-        session.total_cost += cost or 0
-
-
-        await ws.send_json({
-            "event": "message:complete",
-            "context_size": display_usage,
-            "turn_usage": usage,
-            "cost": cost,
-            "session_usage": {
-                "total_input": session.total_input,
-                "total_output": session.total_output,
-                "total_cache_read": session.total_cache_read,
-                "total_cache_create": session.total_cache_create,
-                "total_cost": round(session.total_cost, 4),
-            },
-        })
-
-    elif etype == "tool":
-        pass
-
-    elif etype == "user":
-        message = event.get("message", {})
-        content_blocks = message.get("content", [])
-        if isinstance(content_blocks, list):
-            for block in content_blocks:
-                btype = block.get("type", "")
-                if btype == "tool_result":
-                    text = ""
-                    for item in block.get("content", []):
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            text += item.get("text", "")
-                        elif isinstance(item, str):
-                            text += item
-                    if text:
-                        tool_info = {
-                            "type": "tool_result",
-                            "name": block.get("tool_use_id", "tool"),
-                            "output": text[:500],
-                        }
-                        session._current_tools.append(tool_info)
-                        await ws.send_json({"event": "stream:block", "block": tool_info})
-
-    else:
-        log.info(f"Unknown CLI event type: {etype} — {json.dumps(event, ensure_ascii=False)[:500]}")
 
 
 # ══════════════════════════════════════════════
@@ -2736,7 +2252,8 @@ async def health():
         "status": "ok",
         "sessions": len(sessions),
         "time": datetime.now(SGT).isoformat(),
-        "cli": persistent_cli.get_status() if PERSISTENT_CLI_ENABLED else None,
+        "tmux": tmux_get_status(),
+        "channel_connected": channel_ws is not None,
     }
 
 
