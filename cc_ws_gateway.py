@@ -1769,19 +1769,13 @@ async def websocket_endpoint(ws: WebSocket):
                     if memory_on:
                         injection = await build_injection()
                         if injection:
-                            cli_message = injection + "
-
-" + time_tag + "
-" + message
+                            cli_message = injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected context for new session {current_session.id}")
                 elif memory_on:
                     # Subsequent messages + clip on: memory search only
                     mem_injection = await search_memory_for_injection(message)
                     if mem_injection:
-                        cli_message = mem_injection + "
-
-" + time_tag + "
-" + message
+                        cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
                         log.info(f"Injected memory for session {current_session.id}")
 
                 # Sticker reactions injection (one-shot, then cleared)
