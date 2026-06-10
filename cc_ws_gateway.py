@@ -155,6 +155,144 @@ class _ChannelReq:
 
 _ch_req: _ChannelReq | None = None
 
+# ── Transcript tailer (thinking + tool calls from CC CLI JSONL) ──
+CC_TRANSCRIPT_DIR = Path(f"/home/{CC_USER}/.claude/projects") / CC_CWD.replace("/", "-")
+_transcript_path_cache = None
+REPLY_TOOL_NAMES = {"reply", "reply_chunk",
+                    "mcp__erik_channel__reply", "mcp__erik_channel__reply_chunk"}
+
+
+def _find_active_transcript():
+    global _transcript_path_cache
+    if _transcript_path_cache and _transcript_path_cache.exists():
+        return _transcript_path_cache
+    if not CC_TRANSCRIPT_DIR.exists():
+        log.info(f"transcript dir missing: {CC_TRANSCRIPT_DIR}")
+        return None
+    candidates = list(CC_TRANSCRIPT_DIR.glob("*.jsonl"))
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda p: p.stat().st_mtime)
+    _transcript_path_cache = best
+    log.info(f"active transcript: {best}")
+    return best
+
+
+def _clean_tool_name(name):
+    parts = name.split("__")
+    if len(parts) >= 3 and parts[0] == "mcp":
+        return parts[-1]
+    return name
+
+
+class TranscriptTailer:
+    """Watch CC CLI conversation JSONL for thinking & tool_use in real time."""
+
+    def __init__(self, ws, session):
+        self.ws = ws
+        self.session = session
+        self._path = None
+        self._offset = 0
+        self._task = None
+        self._stop = asyncio.Event()
+        self._dbg = 0
+
+    def start(self):
+        global _transcript_path_cache
+        _transcript_path_cache = None
+        self._path = _find_active_transcript()
+        if self._path:
+            try:
+                self._offset = self._path.stat().st_size
+            except Exception:
+                self._offset = 0
+            self._task = asyncio.create_task(self._run())
+            log.info(f"tailer started: {self._path.name} @{self._offset}")
+
+    async def stop(self):
+        self._stop.set()
+        if self._task:
+            try:
+                await asyncio.wait_for(self._task, timeout=3)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                if self._task and not self._task.done():
+                    self._task.cancel()
+
+    async def _run(self):
+        while not self._stop.is_set():
+            try:
+                if self._path and self._path.exists():
+                    sz = self._path.stat().st_size
+                    if sz > self._offset:
+                        with open(self._path, "r", encoding="utf-8", errors="replace") as fh:
+                            fh.seek(self._offset)
+                            chunk = fh.read()
+                            self._offset = fh.tell()
+                        for ln in chunk.split(chr(10)):
+                            ln = ln.strip()
+                            if not ln:
+                                continue
+                            try:
+                                await self._handle(json.loads(ln))
+                            except json.JSONDecodeError:
+                                continue
+            except Exception as exc:
+                log.debug(f"tailer poll: {exc}")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=0.4)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _handle(self, entry):
+        if self._dbg < 5:
+            log.info(f"tailer: type={entry.get('type')} keys={list(entry.keys())[:6]}")
+            self._dbg += 1
+
+        if entry.get("type") != "assistant":
+            return
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            return
+        blocks = msg.get("content")
+        if not isinstance(blocks, list):
+            return
+
+        for blk in blocks:
+            if not isinstance(blk, dict):
+                continue
+            bt = blk.get("type", "")
+
+            if bt == "thinking":
+                raw = blk.get("thinking") or ""
+                sig = blk.get("signature", "")
+                if raw:
+                    self.session._current_thinking += raw
+                    await self._ws({"event": "stream:thinking", "text": raw})
+                elif sig:
+                    if not self.session._current_thinking:
+                        self.session._current_thinking = "[signed]"
+                    await self._ws({"event": "stream:thinking", "text": "​"})
+
+            elif bt == "tool_use":
+                name = blk.get("name", "")
+                if name in REPLY_TOOL_NAMES or _clean_tool_name(name) in REPLY_TOOL_NAMES:
+                    continue
+                clean = _clean_tool_name(name)
+                info = {"type": "tool_use", "name": clean,
+                        "input": blk.get("input", {})}
+                self.session._current_tools.append(info)
+                await self._ws({"event": "stream:block", "block": info})
+                log.info(f"tailer tool: {clean}")
+
+    async def _ws(self, data):
+        if self.ws:
+            try:
+                await self.ws.send_json(data)
+            except Exception:
+                pass
+
+
 
 def load_peb_state() -> dict:
     defaults = {
@@ -1940,6 +2078,7 @@ async def websocket_endpoint(ws: WebSocket):
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Send message to CC CLI via channel_mcp and stream reply back."""
     session.reset_accumulator()
+    tailer = TranscriptTailer(ws, session)
 
     try:
         if channel_ws is None:
@@ -1961,8 +2100,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 await ws.send_json({"event": "message:complete", "usage": {}})
                 return
 
+        tailer.start()
         req = await send_to_channel(message, session, ws, chat_id="cc",
                                      sender="Jeoi", timeout=300)
+
+        await asyncio.sleep(1)
+        await tailer.stop()
 
         # Post-processing: parse sticker reactions
         erik_reactions = []
@@ -2008,6 +2151,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await ws.send_json({"event": "message:complete", "usage": {}})
 
     except Exception as e:
+        try:
+            await tailer.stop()
+        except Exception:
+            pass
         log.warning(f"run_claude error: {type(e).__name__}: {e}")
         if session._current_text:
             react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->')
