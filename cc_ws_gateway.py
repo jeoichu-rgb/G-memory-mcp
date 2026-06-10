@@ -400,6 +400,7 @@ def save_session_meta(session: "Session"):
         "cc_session_id": session.cc_session_id,
         "created_at": session.created_at.isoformat(),
         "last_active": session.last_active.isoformat(),
+        "first_msg_seen": session.first_msg_seen,
     }
     path = history_path(session.id)
     # Load existing file to preserve messages
@@ -479,6 +480,7 @@ def load_all_sessions() -> list["Session"]:
             session.model = meta.get("model", "claude-sonnet-4-6")
             session.effort = meta.get("effort", "medium")
             session.cc_session_id = meta.get("cc_session_id")
+            session.first_msg_seen = meta.get("first_msg_seen", False)
             if meta.get("created_at"):
                 try:
                     session.created_at = datetime.fromisoformat(meta["created_at"])
@@ -1462,6 +1464,8 @@ class Session:
         self.last_context_size = 0
         # Sticker reactions: pending Jeoi reactions Erik hasn't seen yet
         self.pending_jeoi_reactions: list[dict] = []
+        # Whether first message has been sent (diary+summary only inject on first msg with 📎)
+        self.first_msg_seen = False
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -1758,17 +1762,27 @@ async def websocket_endpoint(ws: WebSocket):
                 time_tag = "[" + now_str + " UTC+8]"
                 cli_message = time_tag + "\n" + message
                 memory_on = data.get("memory_enabled", False)
-                if memory_on:
-                    if not current_session.cc_session_id:
+                if not current_session.first_msg_seen:
+                    # First message in session: diary+summary only if clip is on
+                    current_session.first_msg_seen = True
+                    save_session_meta(current_session)
+                    if memory_on:
                         injection = await build_injection()
                         if injection:
-                            cli_message = injection + "\n\n" + time_tag + "\n" + message
+                            cli_message = injection + "
+
+" + time_tag + "
+" + message
                             log.info(f"Injected context for new session {current_session.id}")
-                    else:
-                        mem_injection = await search_memory_for_injection(message)
-                        if mem_injection:
-                            cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
-                            log.info(f"Injected memory for session {current_session.id}")
+                elif memory_on:
+                    # Subsequent messages + clip on: memory search only
+                    mem_injection = await search_memory_for_injection(message)
+                    if mem_injection:
+                        cli_message = mem_injection + "
+
+" + time_tag + "
+" + message
+                        log.info(f"Injected memory for session {current_session.id}")
 
                 # Sticker reactions injection (one-shot, then cleared)
                 if current_session.pending_jeoi_reactions:
