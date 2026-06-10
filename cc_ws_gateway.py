@@ -898,6 +898,7 @@ class PersistentCLI:
                 if not data:
                     break
                 text = data.decode("utf-8", errors="replace")
+                log.info(f"[PTY] raw ({len(data)}b): {text[:200]!r}")
                 text = ANSI_RE.sub("", text)
                 self._stdout_buf += text
                 while chr(10) in self._stdout_buf:
@@ -939,7 +940,7 @@ class PersistentCLI:
             if etype == "result":
                 is_result = True
         except json.JSONDecodeError:
-            pass
+            log.info(f"[PTY] non-JSON: {line[:300]!r}")
         if self._line_handler:
             await self._line_handler(line)
         if is_result and self._result_event:
