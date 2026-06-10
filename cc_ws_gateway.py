@@ -1430,6 +1430,41 @@ async def internal_channel_ws(ws: WebSocket):
             channel_ws = None
 
 
+# ── Thinking hook endpoint (receives POST from thinking_hook.py) ──
+
+_active_frontend_ws: "WebSocket | None" = None
+
+@app.post("/internal/thinking")
+async def receive_thinking(request: Request):
+    """Receive thinking text from CC CLI Stop hook."""
+    try:
+        data = await request.json()
+        thinking = data.get("thinking", "")
+        if not thinking:
+            return JSONResponse({"status": "empty"})
+
+        # Find the most recently active session
+        if not sessions:
+            return JSONResponse({"status": "no_session"})
+        active = max(sessions.values(), key=lambda s: s.last_active)
+        active._current_thinking = thinking
+
+        # Push to frontend via active WS
+        if _active_frontend_ws:
+            try:
+                await _active_frontend_ws.send_json(
+                    {"event": "stream:thinking", "text": thinking})
+            except Exception:
+                pass
+
+        log.info(f"thinking hook: {len(thinking)} chars for session {active.id}")
+        return JSONResponse({"status": "ok", "chars": len(thinking)})
+    except Exception as e:
+        log.warning(f"thinking hook error: {e}")
+        return JSONResponse({"status": "error"}, status_code=500)
+
+
+
 # ══════════════════════════════════════════════
 #  SESSION
 # ══════════════════════════════════════════════
@@ -1554,8 +1589,15 @@ async def startup_load_sessions():
         if channel_perm not in allow_list:
             allow_list.append(channel_perm)
 
+        # Inject Stop hook for thinking extraction
+        hooks = settings.setdefault("hooks", {})
+        hooks["Stop"] = [{
+            "type": "command",
+            "command": f"python3 {Path(CC_CWD) / 'thinking_hook.py'}",
+        }]
+
         write_claude_settings(settings)
-        log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked")
+        log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked, Stop hook configured")
 
         # CC CLI treats project settings.json MCP servers as untrusted (needs
         # interactive approval). Write MCP config to settings.local.json which
@@ -1567,6 +1609,7 @@ async def startup_load_sessions():
             local_perms.get("allow", []) + perms.get("allow", [])
         ))
         local_perms["deny"] = perms["deny"]
+        local["hooks"] = settings.get("hooks", {})
         write_claude_local_settings(local)
         log.info(f"MCP config written to settings.local.json: "
                  f"{list(local.get('mcpServers', {}).keys())}")
@@ -1584,6 +1627,7 @@ async def startup_load_sessions():
                 global_perms.get("allow", []) + perms.get("allow", [])
             ))
             global_perms["deny"] = perms["deny"]
+            global_settings["hooks"] = settings.get("hooks", {})
             global_path.parent.mkdir(parents=True, exist_ok=True)
             global_path.write_text(
                 json.dumps(global_settings, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1627,9 +1671,10 @@ async def startup_load_sessions():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global active_ws
+    global active_ws, _active_frontend_ws
     await ws.accept()
     active_ws = ws
+    _active_frontend_ws = ws
     log.info("WS client connected")
 
     current_session = None
