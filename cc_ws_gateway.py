@@ -1288,11 +1288,13 @@ async def pebbling_worker():
 #  TMUX + CHANNEL
 # ══════════════════════════════════════════════
 
-async def tmux_start(model: str = "claude-sonnet-4-6"):
+async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
+    resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
         f"claude --dangerously-skip-permissions --verbose "
         f"--model {model} "
         f"--dangerously-load-development-channels server:erik_channel"
+        f"{resume_flag}"
     )
     cmd = (
         f"sudo -u {CC_USER} tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
@@ -1301,7 +1303,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6"):
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
     await proc.wait()
-    log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model})")
+    log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model}, resume={resume_id})")
 
     # Auto-confirm "Loading development channels" prompt
     for delay in [3, 5, 8]:
@@ -1335,19 +1337,47 @@ def tmux_get_status() -> dict:
     return {"running": running, "tmux_session": TMUX_SESSION}
 
 
-async def clear_cc_context():
-    """Send /clear to CC CLI via tmux to reset conversation context."""
-    if not await tmux_is_running():
-        return
-    cmd = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} '/clear' Enter"
-    proc = await asyncio.create_subprocess_shell(cmd)
-    await proc.wait()
-    await asyncio.sleep(1)
-    # Confirm the clear prompt if needed
-    cmd2 = f"sudo -u {CC_USER} tmux send-keys -t {TMUX_SESSION} 'y' Enter"
-    proc2 = await asyncio.create_subprocess_shell(cmd2)
-    await proc2.wait()
-    log.info("CC CLI context cleared via /clear")
+def _get_cc_session_id_from_transcript() -> str | None:
+    """Get CC CLI session ID from latest transcript filename."""
+    if not CC_TRANSCRIPT_DIR.exists():
+        return None
+    candidates = list(CC_TRANSCRIPT_DIR.glob("*.jsonl"))
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return latest.stem
+
+
+async def restart_cc_for_session(session: "Session", ws=None):
+    """Restart CC CLI for a session. Uses --resume if session has a cc_session_id."""
+    global channel_ws
+    if ws:
+        try:
+            await ws.send_json({"event": "system:status", "message": "Switching CC CLI session..."})
+        except Exception:
+            pass
+
+    await tmux_stop()
+    channel_ws = None
+    await asyncio.sleep(2)
+
+    resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id != "channel" else None
+    await tmux_start(model=session.model, resume_id=resume_id)
+
+    # Wait for channel to reconnect
+    for i in range(20):
+        await asyncio.sleep(1)
+        if channel_ws is not None:
+            log.info(f"Channel reconnected after CC restart ({i+1}s)")
+            break
+    else:
+        log.warning("Channel did not reconnect after CC restart")
+
+    if ws:
+        try:
+            await ws.send_json({"event": "system:status", "message": ""})
+        except Exception:
+            pass
 
 
 async def _channel_send(msg: dict):
@@ -1756,12 +1786,13 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
                 log.info(f"Session created: {sid}")
-                # Clear CC CLI context for fresh conversation
-                await clear_cc_context()
+                # Restart CC CLI for fresh conversation context
+                await restart_cc_for_session(session, ws)
 
             elif event == "session:switch":
                 sid = data.get("sessionId", "")
                 if sid in sessions:
+                    prev_cc_id = current_session.cc_session_id if current_session else None
                     current_session = sessions[sid]
                     pending_model = current_session.model
                     pending_effort = current_session.effort
@@ -1773,6 +1804,10 @@ async def websocket_endpoint(ws: WebSocket):
                         "effort": current_session.effort,
                     })
                     log.info(f"Switched to session: {sid}")
+                    # Restart CC CLI if target session has a different CC context
+                    target_cc_id = current_session.cc_session_id
+                    if target_cc_id and target_cc_id != "channel" and target_cc_id != prev_cc_id:
+                        await restart_cc_for_session(current_session, ws)
 
             elif event == "session:delete":
                 sid = data.get("sessionId", "")
@@ -2180,9 +2215,11 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         req = await send_to_channel(message, session, ws, chat_id="cc",
                                      sender="Jeoi", timeout=300)
 
-        if not session.cc_session_id:
-            session.cc_session_id = "channel"
+        if not session.cc_session_id or session.cc_session_id == "channel":
+            real_id = _get_cc_session_id_from_transcript()
+            session.cc_session_id = real_id or "channel"
             save_session_meta(session)
+            log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
 
         await asyncio.sleep(1)
         await tailer.stop()
