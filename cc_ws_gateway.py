@@ -1472,6 +1472,7 @@ class Session:
         self._last_usage: dict = {}
         self._proc = None
         self._stop_requested = False
+        self._fallback_allowed = False
         # Cumulative usage tracking
         self.total_input = 0
         self.total_output = 0
@@ -2027,6 +2028,19 @@ async def websocket_endpoint(ws: WebSocket):
                     log.exception(f"cli:reconnect error: {e}")
                     await ws.send_json({"event": "cli:error", "message": str(e)})
 
+            elif event == "cli:fallback_confirm":
+                if current_session:
+                    current_session._fallback_allowed = data.get("allow", False)
+                    if current_session._fallback_allowed:
+                        log.info("Spawn fallback allowed by user")
+                        await ws.send_json({"event": "system:error",
+                                            "message": "Spawn 模式已启用，正在重发..."})
+
+            elif event == "cli:allow_fallback":
+                if current_session:
+                    current_session._fallback_allowed = True
+                    log.info("Spawn fallback pre-allowed by user")
+
             elif event == "context:generate":
                 if current_session:
                     await ws.send_json({"event": "context:generating"})
@@ -2149,14 +2163,27 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
     try:
         # ── Determine execution path ──
         use_pcli = PERSISTENT_CLI_ENABLED
+        pcli_error = ""
         if use_pcli:
             try:
                 use_pcli = await persistent_cli.ensure_running(session)
                 if not use_pcli:
-                    log.warning("PersistentCLI not ready, falling back to spawn")
+                    pcli_error = "PersistentCLI not ready"
+                    log.warning(pcli_error)
             except Exception as e:
-                log.warning(f"PersistentCLI init error: {e}, falling back to spawn")
+                pcli_error = str(e)
+                log.warning(f"PersistentCLI init error: {e}")
                 use_pcli = False
+
+        if not use_pcli and PERSISTENT_CLI_ENABLED and not session._fallback_allowed:
+            await ws.send_json({
+                "event": "cli:fallback_request",
+                "reason": pcli_error or "PersistentCLI unavailable",
+            })
+            await ws.send_json({"event": "system:error",
+                                "message": f"CLI 进程异常: {pcli_error}. 等待确认..."})
+            log.info("Waiting for fallback confirmation from frontend")
+            return
 
         if use_pcli:
             # ── Persistent CLI path ──

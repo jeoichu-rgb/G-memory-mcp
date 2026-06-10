@@ -955,6 +955,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">MCP 服务器</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('cli')">
+          <span class="panel-menu-label">CLI 进程</span>
+          <span class="panel-menu-arrow" id="cliMenuDot" style="color:#4ade80;">●</span>
+        </div>
       </div>
     </div>
 
@@ -1015,6 +1019,18 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <button onclick="mcpAdd()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;width:32px;font-size:16px;cursor:pointer;">+</button>
         </div>
         <div id="mcpAddStatus" style="font-size:11px;min-height:16px;"></div>
+      </div>
+    </div>
+
+    <!-- View: CLI 进程监控 -->
+    <div class="panel-view" id="panelCli">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">CLI 进程</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div style="padding:16px;font-size:12px;color:var(--text-secondary);line-height:1.8;" id="cliStatusBody">
+        <div style="text-align:center;padding:20px;">加载中...</div>
       </div>
     </div>
 
@@ -1231,6 +1247,17 @@ function handleWSMessage(data) {
       break;
     case 'desire:proactive:status':
       updateDesireProactiveUI(data.enabled);
+      break;
+
+    // CLI process monitor
+    case 'cli:status':
+      renderCliStatus(data);
+      break;
+    case 'cli:error':
+      showError('CLI: ' + (data.message || 'unknown'));
+      break;
+    case 'cli:fallback_request':
+      handleCliFallbackRequest(data);
       break;
 
     default:
@@ -2064,8 +2091,10 @@ function openPanelView(view) {
   
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
      document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
+  document.getElementById('panelCli').classList.toggle('active', view === 'cli');
   if (view === 'ctx') wsSend('context:list', {});
      if (view === 'mcp') loadMcpServers();
+  if (view === 'cli') fetchCliStatus();
   
   
   if (view === 'desire') {
@@ -2479,6 +2508,117 @@ function toggleMemory() {
     document.getElementById('pomoToggle').checked = true;
   }
 })();
+
+
+// ══════════════════════════════════════
+//  CLI PROCESS MONITOR
+// ══════════════════════════════════════
+let _cliPoll = null;
+let _cliFallbackPending = false;
+
+function fetchCliStatus() {
+  if (!ws || ws.readyState !== 1) return;
+  wsSend('cli:status', {});
+  if (_cliPoll) clearInterval(_cliPoll);
+  _cliPoll = setInterval(() => {
+    if (document.getElementById('panelCli').classList.contains('active')) {
+      wsSend('cli:status', {});
+    } else {
+      clearInterval(_cliPoll); _cliPoll = null;
+    }
+  }, 5000);
+}
+
+function renderCliStatus(s) {
+  const body = document.getElementById('cliStatusBody');
+  if (!body) return;
+  const dot = document.getElementById('cliMenuDot');
+  const running = s.running;
+  const mcp = s.mcp_status || 'unknown';
+  const color = running ? (mcp === 'connected' ? '#4ade80' : '#facc15') : '#f87171';
+  if (dot) dot.style.color = color;
+
+  const statusLabel = running ? 'Running' : 'Stopped';
+  const mcpLabel = {connected:'Connected',connecting:'Connecting...',disconnected:'Disconnected',failed:'Failed',spawn_mode:'Spawn Mode'}[mcp] || mcp;
+
+  let html = '<div style="display:flex;flex-direction:column;gap:12px;">';
+  html += '<div style="display:flex;align-items:center;gap:8px;">';
+  html += '<span style="width:8px;height:8px;border-radius:50%;background:' + color + ';display:inline-block;"></span>';
+  html += '<span style="font-size:13px;color:var(--text-primary);font-weight:500;">PersistentCLI: ' + statusLabel + '</span></div>';
+
+  html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:11px;">';
+  html += '<span>MCP</span><span style="color:var(--text-primary);">' + mcpLabel + '</span>';
+  html += '<span>Model</span><span style="color:var(--text-primary);">' + (s.model || '-') + '</span>';
+  html += '<span>PID</span><span style="color:var(--text-primary);">' + (s.pid || '-') + '</span>';
+  html += '<span>CC Session</span><span style="color:var(--text-primary);word-break:break-all;">' + (s.cc_session_id || '-') + '</span>';
+  if (s.mcp_servers && s.mcp_servers.length) {
+    html += '<span>MCP Servers</span><span style="color:var(--text-primary);">' + s.mcp_servers.length + '</span>';
+  }
+  html += '</div>';
+
+  html += '<div style="display:flex;gap:8px;margin-top:4px;">';
+  html += '<button onclick="cliReconnect()" style="flex:1;padding:6px;font-size:11px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);cursor:pointer;">Reconnect</button>';
+  html += '</div>';
+
+  if (!running && !_cliFallbackPending) {
+    html += '<div style="margin-top:8px;padding:10px;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3);border-radius:8px;">';
+    html += '<div style="font-size:12px;color:#f87171;font-weight:500;margin-bottom:6px;">CLI 进程已停止</div>';
+    html += '<div style="font-size:11px;margin-bottom:8px;">消息将排队等待。你可以尝试重连，或允许临时使用 Spawn 模式（非交互式，cache 不一致）。</div>';
+    html += '<div style="display:flex;gap:6px;">';
+    html += '<button onclick="cliReconnect()" style="flex:1;padding:6px;font-size:11px;background:#4ade80;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:500;">重连</button>';
+    html += '<button onclick="cliAllowFallback()" style="flex:1;padding:6px;font-size:11px;background:rgba(248,113,113,.2);color:#f87171;border:1px solid rgba(248,113,113,.3);border-radius:6px;cursor:pointer;">允许 Spawn</button>';
+    html += '</div></div>';
+  }
+  if (_cliFallbackPending) {
+    html += '<div style="margin-top:8px;padding:8px;background:rgba(250,204,21,.1);border:1px solid rgba(250,204,21,.3);border-radius:8px;font-size:11px;color:#facc15;">Spawn 模式已临时启用（cache 不一致风险）</div>';
+  }
+
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+function cliReconnect() {
+  wsSend('cli:reconnect', {});
+  _cliFallbackPending = false;
+  const body = document.getElementById('cliStatusBody');
+  if (body) body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);font-size:12px;">重连中...</div>';
+  setTimeout(fetchCliStatus, 3000);
+}
+
+function cliAllowFallback() {
+  _cliFallbackPending = true;
+  wsSend('cli:allow_fallback', {});
+  fetchCliStatus();
+}
+
+
+function handleCliFallbackRequest(data) {
+  const reason = data.reason || 'PersistentCLI not available';
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  el.innerHTML = '<div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:340px;width:90%;">'
+    + '<div style="font-size:14px;font-weight:500;color:#f87171;margin-bottom:8px;">CLI 进程异常</div>'
+    + '<div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">' + reason + '</div>'
+    + '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:16px;">允许 Spawn 模式将临时使用非交互式进程（cache 不一致风险）。建议优先尝试重连。</div>'
+    + '<div style="display:flex;gap:8px;">'
+    + '<button onclick="cliFallbackRespond(true,this)" style="flex:1;padding:8px;font-size:12px;background:rgba(248,113,113,.2);color:#f87171;border:1px solid rgba(248,113,113,.3);border-radius:8px;cursor:pointer;">允许 Spawn</button>'
+    + '<button onclick="cliFallbackRespond(false,this)" style="flex:1;padding:8px;font-size:12px;background:#4ade80;color:#000;border:none;border-radius:8px;cursor:pointer;font-weight:500;">重连</button>'
+    + '</div></div>';
+  document.body.appendChild(el);
+  el._overlay = true;
+}
+
+function cliFallbackRespond(allow, btn) {
+  const overlay = btn.closest('div[style*="position:fixed"]');
+  if (overlay) overlay.remove();
+  if (allow) {
+    _cliFallbackPending = true;
+    wsSend('cli:fallback_confirm', { allow: true });
+  } else {
+    _cliFallbackPending = false;
+    wsSend('cli:reconnect', {});
+  }
+}
 
 // ══════════════════════════════════════
 //  MCP SERVER MANAGEMENT
