@@ -1688,6 +1688,11 @@ async def startup_load_sessions():
             allow_list.append(palace_perm)
             log.info(f"Added {palace_perm} to allow list")
 
+        # Remove legacy channel MCP if present
+        if "erik_channel" in servers:
+            del servers["erik_channel"]
+            log.info("Removed legacy erik_channel MCP from settings")
+
         # Inject Stop hook for thinking extraction
         hooks = settings.setdefault("hooks", {})
         hooks["Stop"] = [{
