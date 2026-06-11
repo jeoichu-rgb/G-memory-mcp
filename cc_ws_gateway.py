@@ -1058,6 +1058,7 @@ async def run_cc_oneshot(
         offset = start_offset
         text_parts, thinking_parts = [], []
         done = False
+        stale_ticks = 0
         deadline = asyncio.get_event_loop().time() + 120
         while not done and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
@@ -1066,7 +1067,18 @@ async def run_cc_oneshot(
             except Exception:
                 continue
             if sz <= offset:
+                stale_ticks += 1
+                # CLI may have compressed context → response in new transcript
+                if stale_ticks >= 8:
+                    _transcript_path_cache = None
+                    newer = _find_active_transcript()
+                    if newer and newer != transcript:
+                        log.info(f"oneshot transcript switch: {transcript.name} -> {newer.name}")
+                        transcript = newer
+                        offset = 0
+                        stale_ticks = 0
                 continue
+            stale_ticks = 0
             with open(transcript, "r", encoding="utf-8", errors="replace") as f:
                 f.seek(offset)
                 new_data = f.read()
@@ -2372,8 +2384,14 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
 
-        if not session.cc_session_id or session.cc_session_id in ("channel", "tmux"):
-            real_id = _get_cc_session_id_from_transcript()
+        # Always sync session ID to whatever transcript the tailer ended on
+        # (handles context compression creating a new transcript mid-turn)
+        real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
+        if real_id and real_id != session.cc_session_id:
+            log.info(f"CC session ID updated: {session.cc_session_id} -> {real_id}")
+            session.cc_session_id = real_id
+            save_session_meta(session)
+        elif not session.cc_session_id or session.cc_session_id in ("channel", "tmux"):
             session.cc_session_id = real_id or "tmux"
             save_session_meta(session)
             log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
