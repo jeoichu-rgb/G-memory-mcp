@@ -35,10 +35,6 @@ except ImportError:
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("/opt/G-memory-mcp/logs/cc_gateway.log", encoding="utf-8"),
-    ],
 )
 log = logging.getLogger("cc-gw")
 
@@ -1936,6 +1932,13 @@ async def websocket_endpoint(ws: WebSocket):
                 if not message:
                     continue
 
+                requested_sid = data.get("sessionId")
+                if requested_sid and requested_sid in sessions:
+                    if not current_session or current_session.id != requested_sid:
+                        log.warning(f"Session mismatch: frontend={requested_sid} "
+                                    f"gateway={current_session.id if current_session else None}, correcting")
+                        current_session = sessions[requested_sid]
+
                 if not current_session:
                     sid = uuid.uuid4().hex[:8]
                     current_session = Session(sid)
@@ -2298,6 +2301,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
     try:
         need_restart = False
+        current_cc_id = None
         if not await tmux_is_running():
             need_restart = True
         else:
@@ -2310,6 +2314,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 need_restart = True
 
         if need_restart:
+            log.info(f"CC CLI restart: session={session.id} "
+                     f"target_cc={session.cc_session_id} current_cc={current_cc_id or 'tmux_down'}")
             await ws.send_json({"event": "system:status",
                                 "message": "Switching session..."})
             await restart_cc_for_session(session, ws)
