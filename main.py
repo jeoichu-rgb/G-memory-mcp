@@ -9,6 +9,7 @@ from mcp_tools import write_daddy_diary, update_daddy_diary, search_core_memory
 from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app, mcp_http_app
+from tts_mcp import tts_mcp_app, tts_mcp_http_app
 import hmac
 import hashlib
 from claude_memory import claude_add_core_memory, claude_add_dynamic_memory, claude_search_memory
@@ -27,7 +28,8 @@ async def _lifespan(app_instance):
     # FastAPI.mount() 不传递 lifespan 给子应用，
     # 手动启动 MCP Streamable HTTP 的 task group
     async with mcp_http_app.router.lifespan_context(mcp_http_app):
-        yield
+        async with tts_mcp_http_app.router.lifespan_context(tts_mcp_http_app):
+            yield
 
 
 app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
@@ -55,6 +57,18 @@ mcp_http_path = f"/mcp/{PALACE_SECRET}/http"
 app.mount(mcp_http_path, mcp_http_app)  # Streamable HTTP for CC CLI
 app.mount(mcp_path, mcp_app)  # SSE for Claude.ai web
 
+# TTS MCP 服务
+tts_path = f"/tts/{PALACE_SECRET}"
+tts_http_path = f"/tts/{PALACE_SECRET}/http"
+app.mount(tts_http_path, tts_mcp_http_app)
+app.mount(tts_path, tts_mcp_app)
+
+# TTS 音频静态文件
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+_tts_dir = os.getenv("TTS_AUDIO_DIR", "/app/tts_audio")
+os.makedirs(_tts_dir, exist_ok=True)
+app.mount("/tts-audio", _StaticFiles(directory=_tts_dir), name="tts-audio")
+
 # 3. 最后才是门卫中间件（原生 ASGI，兼容 SSE 流式响应）
 class CheckSecretMiddleware:
     def __init__(self, app: ASGIApp):
@@ -77,6 +91,8 @@ class CheckSecretMiddleware:
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
             or path.startswith(mcp_path)
+            or path.startswith(tts_path)
+            or path.startswith("/tts-audio/")
             or path == "/api/pebbling/event"
             or path == "/sw.js"
             or path == "/manifest.json"

@@ -519,7 +519,7 @@ def save_session_meta(session: "Session"):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None):
+def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None):
     """Append a message to the session history file."""
     path = history_path(sid)
     data = {"meta": {}, "messages": []}
@@ -539,6 +539,8 @@ def append_message(sid: str, role: str, content: str, thinking: str = "", tools:
         msg["thinking"] = thinking
     if tools:
         msg["tools"] = tools
+    if voice:
+        msg["voice"] = voice
 
     data["messages"].append(msg)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2405,6 +2407,18 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             save_session_meta(session)
             log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
 
+        # Post-processing: parse voice markers
+        voice_messages = []
+        if session._current_text:
+            voice_pattern = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+            for m in voice_pattern.finditer(session._current_text):
+                voice_messages.append({
+                    "audio_url": m.group(1),
+                    "duration": float(m.group(2)),
+                    "text": m.group(3),
+                })
+            session._current_text = voice_pattern.sub('', session._current_text).rstrip()
+
         # Post-processing: parse sticker reactions
         erik_reactions = []
         if session._current_text:
@@ -2432,6 +2446,14 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         pass
                     log.info(f"Erik reacted {emoji} on #{idx + 1}")
 
+            for vm in voice_messages:
+                append_message(session.id, "assistant", "", voice=vm)
+                try:
+                    await ws.send_json({"event": "voice", **vm})
+                except Exception:
+                    pass
+                log.info(f"Voice message: {vm['duration']}s")
+
             if session._current_text:
                 txt = session._current_text.replace(chr(10), " ")[:30]
                 if len(session._current_text) > 30:
@@ -2457,8 +2479,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             pass
         log.warning(f"run_claude error: {type(e).__name__}: {e}")
         if session._current_text:
+            voice_pat = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+            cleaned = voice_pat.sub('', session._current_text).rstrip()
             react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
-            cleaned = react_pat.sub('', session._current_text).rstrip()
+            cleaned = react_pat.sub('', cleaned).rstrip()
             append_message(
                 session.id, "assistant", cleaned or session._current_text,
                 thinking=session._current_thinking,

@@ -264,6 +264,44 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   background:var(--bg-in); border-top-left-radius:0;
 }
 
+/* Voice message bubble */
+.voice-bubble {
+  display:flex; align-items:center; gap:10px;
+  padding:8px 12px; min-width:240px; max-width:320px;
+}
+.voice-play-btn {
+  width:36px; height:36px; border-radius:50%;
+  background:var(--accent); border:none; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  flex-shrink:0; transition:background .15s;
+}
+.voice-play-btn:hover { background:var(--accent-hover); }
+.voice-play-btn svg { fill:#fff; width:16px; height:16px; }
+.voice-waveform {
+  flex:1; display:flex; align-items:center; gap:1.5px; height:28px;
+}
+.voice-waveform .bar {
+  width:3px; border-radius:1.5px; background:var(--accent);
+  opacity:0.4; transition:opacity .1s;
+}
+.voice-waveform .bar.played { opacity:1; }
+.voice-duration {
+  font-size:11px; color:var(--text-secondary); white-space:nowrap; flex-shrink:0;
+}
+.voice-transcript-btn {
+  display:block; margin-top:4px; padding:0;
+  background:none; border:none; cursor:pointer;
+  font-size:11px; color:var(--text-secondary);
+  font-family:var(--font); text-align:left;
+}
+.voice-transcript-btn:hover { color:var(--accent); }
+.voice-transcript-text {
+  display:none; margin-top:6px; padding-top:6px;
+  border-top:1px solid var(--border);
+  font-size:12.5px; line-height:1.5; color:var(--text-primary);
+}
+.voice-transcript-text.show { display:block; }
+
 /* Copy button */
 .msg-copy {
   position:absolute; bottom:4px; right:4px;
@@ -1240,6 +1278,18 @@ function handleWSMessage(data) {
       break;
     }
 
+    case 'voice': {
+      const msgArea = document.getElementById('messages');
+      const row = document.createElement('div');
+      row.className = 'msg-row in';
+      row.innerHTML = buildVoiceBubble(data.audio_url, data.duration, data.text);
+      msgArea.appendChild(row);
+      initVoiceBubble(row);
+      initLongPress(row.querySelector('.bubble'));
+      scrollToBottom();
+      break;
+    }
+
 
 
     case 'desire:state':
@@ -1520,6 +1570,17 @@ function renderHistory(messages) {
       rawSpan.className = 'msg-raw-text';
       rawSpan.textContent = msg.content || '';
       row.appendChild(rawSpan);
+    } else if (msg.voice) {
+      row.className = 'msg-row in';
+      row.innerHTML = buildVoiceBubble(msg.voice.audio_url, msg.voice.duration, msg.voice.text, msg.time);
+      msgArea.appendChild(row);
+      initVoiceBubble(row);
+      const bubble = row.querySelector('.bubble');
+      initLongPress(bubble);
+      const rx = msg.reactions || {};
+      if (rx.jeoi) renderReaction(bubble, 'jeoi', rx.jeoi);
+      if (rx.erik) renderReaction(bubble, 'erik', rx.erik);
+      return;
     } else {
       row.className = 'msg-row in';
       let metaHtml = '';
@@ -1900,6 +1961,89 @@ function copyMsg(btn) {
 function escapeHtml(s) {
   if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ══════════════════════════════════════
+   VOICE MESSAGE
+══════════════════════════════════════ */
+function buildVoiceBubble(audioUrl, duration, text, savedTime) {
+  const bars = Array.from({length: 32}, () => {
+    const h = 4 + Math.random() * 22;
+    return `<div class="bar" style="height:${h}px"></div>`;
+  }).join('');
+  const durStr = duration >= 60
+    ? Math.floor(duration/60) + ':' + String(Math.round(duration%60)).padStart(2,'0')
+    : '0:' + String(Math.round(duration)).padStart(2,'0');
+  const timeStr = savedTime || (() => { const n = new Date(); return n.getHours().toString().padStart(2,'0') + ':' + n.getMinutes().toString().padStart(2,'0'); })();
+  return `
+    <div class="bubble">
+      <div class="voice-bubble" data-src="${escapeHtml(audioUrl)}">
+        <button class="voice-play-btn" onclick="toggleVoice(this)">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <div class="voice-waveform">${bars}</div>
+        <span class="voice-duration">${durStr}</span>
+      </div>
+      <button class="voice-transcript-btn" onclick="toggleTranscript(this)">⌄ 转文字</button>
+      <div class="voice-transcript-text">${escapeHtml(text)}</div>
+      <span class="msg-time">${timeStr}</span>
+      <div class="reactions"></div>
+    </div>`;
+}
+
+let currentAudio = null;
+let currentVoiceBubble = null;
+
+function toggleVoice(btn) {
+  const vb = btn.closest('.voice-bubble');
+  const src = vb.dataset.src;
+  if (currentAudio && currentVoiceBubble === vb) {
+    if (currentAudio.paused) {
+      currentAudio.play();
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    } else {
+      currentAudio.pause();
+      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    }
+    return;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+    if (currentVoiceBubble) {
+      const oldBtn = currentVoiceBubble.querySelector('.voice-play-btn');
+      if (oldBtn) oldBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+      currentVoiceBubble.querySelectorAll('.bar').forEach(b => b.classList.remove('played'));
+    }
+  }
+  const audio = new Audio(src);
+  currentAudio = audio;
+  currentVoiceBubble = vb;
+  const bars = vb.querySelectorAll('.bar');
+  btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+  audio.addEventListener('timeupdate', () => {
+    if (!audio.duration) return;
+    const pct = audio.currentTime / audio.duration;
+    const idx = Math.floor(pct * bars.length);
+    bars.forEach((b, i) => b.classList.toggle('played', i <= idx));
+  });
+  audio.addEventListener('ended', () => {
+    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    bars.forEach(b => b.classList.remove('played'));
+    currentAudio = null;
+    currentVoiceBubble = null;
+  });
+  audio.play();
+}
+
+function toggleTranscript(btn) {
+  const text = btn.nextElementSibling;
+  text.classList.toggle('show');
+  btn.textContent = text.classList.contains('show') ? '⌃ 收起' : '⌄ 转文字';
+}
+
+function initVoiceBubble(row) {
+  // placeholder for future enhancements
 }
 
 function renderMarkdown(text) {
