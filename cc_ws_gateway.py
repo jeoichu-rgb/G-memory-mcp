@@ -333,10 +333,14 @@ class TranscriptTailer:
 
 
 def _read_turn_usage(path, start_offset) -> tuple:
-    """Read usage from JSONL entries after start_offset, UUID-deduped.
+    """Read usage from JSONL entries after start_offset.
+    Deduplicates by usage-value fingerprint: intermediate + final entries
+    from the same API call have identical usage, so only counted once.
+    Different API calls (multi-tool turns) have different fingerprints.
     Returns (usage_dict, cost_float)."""
-    empty = {"input_tokens": 0, "output_tokens": 0,
-             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    _KEYS = ("input_tokens", "output_tokens",
+             "cache_read_input_tokens", "cache_creation_input_tokens")
+    empty = {k: 0 for k in _KEYS}
     if not path or not path.exists():
         return empty, 0.0
     try:
@@ -345,7 +349,7 @@ def _read_turn_usage(path, start_offset) -> tuple:
             data = f.read()
     except Exception:
         return empty, 0.0
-    seen = set()
+    seen_fp = set()
     total = dict(empty)
     cost = 0.0
     for line in data.split("\n"):
@@ -358,15 +362,14 @@ def _read_turn_usage(path, start_offset) -> tuple:
             continue
         if entry.get("type") != "assistant":
             continue
-        uid = entry.get("uuid", "")
-        if uid and uid in seen:
-            continue
-        if uid:
-            seen.add(uid)
         usage = (entry.get("message") or {}).get("usage")
         if not usage:
             continue
-        for k in total:
+        fp = tuple(usage.get(k, 0) for k in _KEYS)
+        if fp in seen_fp:
+            continue
+        seen_fp.add(fp)
+        for k in _KEYS:
             total[k] += usage.get(k, 0)
         cost += entry.get("costUSD", 0) or 0
     return total, cost
