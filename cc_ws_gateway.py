@@ -200,6 +200,7 @@ class TranscriptTailer:
         self._stop = asyncio.Event()
         self._reply_done = asyncio.Event()
         self._dbg = 0
+        self._start_offset = 0
 
     def start(self):
         global _transcript_path_cache
@@ -211,6 +212,7 @@ class TranscriptTailer:
                 self._offset = self._path.stat().st_size
             except Exception:
                 self._offset = 0
+            self._start_offset = self._offset
             self._task = asyncio.create_task(self._run())
             log.info(f"tailer started: {self._path.name} @{self._offset}")
 
@@ -329,6 +331,72 @@ class TranscriptTailer:
             except Exception:
                 pass
 
+
+def _read_turn_usage(path, start_offset) -> tuple:
+    """Read usage from JSONL entries after start_offset, UUID-deduped.
+    Returns (usage_dict, cost_float)."""
+    empty = {"input_tokens": 0, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    if not path or not path.exists():
+        return empty, 0.0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(start_offset)
+            data = f.read()
+    except Exception:
+        return empty, 0.0
+    seen = set()
+    total = dict(empty)
+    cost = 0.0
+    for line in data.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        uid = entry.get("uuid", "")
+        if uid and uid in seen:
+            continue
+        if uid:
+            seen.add(uid)
+        usage = (entry.get("message") or {}).get("usage")
+        if not usage:
+            continue
+        for k in total:
+            total[k] += usage.get(k, 0)
+        cost += entry.get("costUSD", 0) or 0
+    return total, cost
+
+
+def _accumulate_session_usage(session, turn_usage, turn_cost):
+    """Add turn usage to session cumulative totals."""
+    session.total_input += turn_usage.get("input_tokens", 0)
+    session.total_output += turn_usage.get("output_tokens", 0)
+    session.total_cache_read += turn_usage.get("cache_read_input_tokens", 0)
+    session.total_cache_create += turn_usage.get("cache_creation_input_tokens", 0)
+    session.total_cost += turn_cost
+
+
+def _usage_ws_payload(session, turn_usage, turn_cost):
+    """Build WS payload dict for usage events."""
+    return {
+        "usage": turn_usage,
+        "turn_usage": turn_usage,
+        "cost": turn_cost,
+        "session_usage": {
+            "total_input": session.total_input,
+            "total_output": session.total_output,
+            "total_cache_read": session.total_cache_read,
+            "total_cache_create": session.total_cache_create,
+            "total_cost": session.total_cost,
+        },
+        "context_size": turn_usage,
+        "compaction_count": session.compaction_count,
+    }
 
 
 def load_peb_state() -> dict:
@@ -979,14 +1047,16 @@ async def run_cc_oneshot(
         if not transcript:
             log.warning("run_cc_oneshot: no transcript")
             return "", ""
-        offset = transcript.stat().st_size
+        start_offset = transcript.stat().st_size
 
         async with _tmux_send_lock:
             await tmux_send_message(prompt)
 
+        offset = start_offset
         text_parts, thinking_parts = [], []
+        done = False
         deadline = asyncio.get_event_loop().time() + 120
-        while asyncio.get_event_loop().time() < deadline:
+        while not done and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
             try:
                 sz = transcript.stat().st_size
@@ -1015,12 +1085,24 @@ async def run_cc_oneshot(
                     elif bt == "thinking":
                         thinking_parts.append(blk.get("thinking", ""))
                 if msg.get("stop_reason") == "end_turn":
-                    text = "".join(text_parts).strip()
-                    log.info(f"oneshot reply ({len(text)} chars): {text[:200]}")
-                    return text, "".join(thinking_parts)
+                    done = True
+                    break
 
         text = "".join(text_parts).strip()
-        log.info(f"oneshot reply timeout ({len(text)} chars)")
+        label = "reply" if done else "timeout"
+        log.info(f"oneshot {label} ({len(text)} chars): {text[:200]}")
+
+        turn_usage, turn_cost = _read_turn_usage(transcript, start_offset)
+        if any(turn_usage.values()):
+            _accumulate_session_usage(session, turn_usage, turn_cost)
+            if active_ws:
+                try:
+                    payload = _usage_ws_payload(session, turn_usage, turn_cost)
+                    payload["event"] = "system:usage"
+                    await active_ws.send_json(payload)
+                except Exception:
+                    pass
+
         return text, "".join(thinking_parts)
     except Exception as e:
         log.error(f"run_cc_oneshot error: {e}")
@@ -2283,6 +2365,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         await asyncio.sleep(1)
         await tailer.stop()
 
+        turn_usage, turn_cost = _read_turn_usage(tailer._path, tailer._start_offset)
+        if any(turn_usage.values()):
+            _accumulate_session_usage(session, turn_usage, turn_cost)
+
         if not session.cc_session_id or session.cc_session_id in ("channel", "tmux"):
             real_id = _get_cc_session_id_from_transcript()
             session.cc_session_id = real_id or "tmux"
@@ -2330,7 +2416,9 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             })
 
         if not session._result_sent:
-            await ws.send_json({"event": "message:complete", "usage": {}})
+            payload = _usage_ws_payload(session, turn_usage, turn_cost)
+            payload["event"] = "message:complete"
+            await ws.send_json(payload)
 
     except Exception as e:
         try:
