@@ -1992,6 +1992,8 @@ function buildVoiceBubble(audioUrl, duration, text, savedTime) {
 }
 
 const sharedAudio = new Audio();
+sharedAudio.preload = 'auto';
+sharedAudio.setAttribute('playsinline', '');
 let currentVoiceBubble = null;
 let _voiceBars = [];
 
@@ -2016,7 +2018,7 @@ function toggleVoice(btn) {
   const src = vb.dataset.src;
   if (currentVoiceBubble === vb && sharedAudio.src) {
     if (sharedAudio.paused) {
-      sharedAudio.play();
+      sharedAudio.play().catch(err => console.error('Voice resume failed:', err));
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
     } else {
       sharedAudio.pause();
@@ -2030,10 +2032,16 @@ function toggleVoice(btn) {
     _voiceBars.forEach(b => b.classList.remove('played'));
   }
   sharedAudio.src = src;
+  sharedAudio.load();
   currentVoiceBubble = vb;
   _voiceBars = Array.from(vb.querySelectorAll('.bar'));
   btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
-  sharedAudio.play();
+  sharedAudio.play().catch(err => {
+    console.error('Voice play failed:', err);
+    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    btn.style.opacity = '0.4';
+    setTimeout(() => btn.style.opacity = '', 1500);
+  });
 }
 
 function toggleTranscript(btn) {
