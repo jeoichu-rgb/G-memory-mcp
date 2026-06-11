@@ -2258,12 +2258,22 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
     tailer = TranscriptTailer(ws, session)
 
     try:
+        need_restart = False
         if not await tmux_is_running():
-            await ws.send_json({"event": "system:error",
-                                "message": "CC CLI not running, starting..."})
-            resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id not in ("channel", "tmux") else None
-            await tmux_start(model=session.model, resume_id=resume_id)
-            await asyncio.sleep(8)
+            need_restart = True
+        else:
+            current_cc_id = _get_cc_session_id_from_transcript()
+            target_cc_id = session.cc_session_id
+            if target_cc_id and target_cc_id not in ("channel", "tmux"):
+                if current_cc_id != target_cc_id:
+                    need_restart = True
+            elif not target_cc_id and current_cc_id:
+                need_restart = True
+
+        if need_restart:
+            await ws.send_json({"event": "system:status",
+                                "message": "Switching session..."})
+            await restart_cc_for_session(session, ws)
 
         tailer.start()
         async with _tmux_send_lock:
