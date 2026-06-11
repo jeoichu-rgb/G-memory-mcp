@@ -141,7 +141,8 @@ _desire_last_proactive = 0.0
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
 CC_USER = os.getenv("CC_USER", "erik")
 _SU_PFX = "" if getpass.getuser() == CC_USER else f"sudo -u {CC_USER} "
-channel_ws = None  # Internal WS from channel_mcp
+_tmux_send_lock = asyncio.Lock()
+channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
 
 
@@ -197,11 +198,13 @@ class TranscriptTailer:
         self._offset = 0
         self._task = None
         self._stop = asyncio.Event()
+        self._reply_done = asyncio.Event()
         self._dbg = 0
 
     def start(self):
         global _transcript_path_cache
         _transcript_path_cache = None
+        self._reply_done.clear()
         self._path = _find_active_transcript()
         if self._path:
             try:
@@ -210,6 +213,12 @@ class TranscriptTailer:
                 self._offset = 0
             self._task = asyncio.create_task(self._run())
             log.info(f"tailer started: {self._path.name} @{self._offset}")
+
+    async def wait_done(self, timeout=300):
+        try:
+            await asyncio.wait_for(self._reply_done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.warning(f"tailer wait_done timeout ({timeout}s)")
 
     async def stop(self):
         self._stop.set()
@@ -289,6 +298,17 @@ class TranscriptTailer:
                 self.session._current_tools.append(info)
                 await self._ws({"event": "stream:block", "block": info})
                 log.info(f"tailer tool: {clean}")
+
+            elif bt == "text":
+                text = blk.get("text", "")
+                if text:
+                    self.session._current_text += text
+                    await self._ws({"event": "stream:text", "text": text})
+
+
+        stop_reason = msg.get("stop_reason", "")
+        if stop_reason == "end_turn":
+            self._reply_done.set()
 
     async def _ws(self, data):
         if self.ws:
@@ -935,23 +955,61 @@ ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
 async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns=None
 ) -> tuple:
-    """Returns (text, thinking). Sends via channel."""
-    if channel_ws is None:
-        log.warning("run_cc_oneshot: channel not connected")
+    """Returns (text, thinking). Sends via tmux and reads transcript."""
+    if _tmux_send_lock.locked():
+        log.info("run_cc_oneshot: tmux busy, skipping")
         return "", ""
-    if channel_busy():
-        log.info("run_cc_oneshot: channel busy, skipping")
+    if not await tmux_is_running():
+        log.warning("run_cc_oneshot: tmux not running")
         return "", ""
     try:
-        req = await send_to_channel(
-            prompt, session, ws=None, chat_id="system",
-            sender="system", timeout=120)
-        text = "".join(req.text_parts).strip()
-        log.info(f"oneshot reply ({len(text)} chars): {text[:200]}")
-        return text, ""
-    except RuntimeError as e:
-        log.warning(f"run_cc_oneshot error: {e}")
-        return "", ""
+        transcript = _find_active_transcript()
+        if not transcript:
+            log.warning("run_cc_oneshot: no transcript")
+            return "", ""
+        offset = transcript.stat().st_size
+
+        async with _tmux_send_lock:
+            await tmux_send_message(prompt)
+
+        text_parts, thinking_parts = [], []
+        deadline = asyncio.get_event_loop().time() + 120
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                sz = transcript.stat().st_size
+            except Exception:
+                continue
+            if sz <= offset:
+                continue
+            with open(transcript, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                new_data = f.read()
+            offset = sz
+            for line in new_data.strip().split(chr(10)):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("type") != "assistant":
+                    continue
+                msg = entry.get("message", {})
+                for blk in msg.get("content", []):
+                    bt = blk.get("type", "")
+                    if bt == "text":
+                        text_parts.append(blk.get("text", ""))
+                    elif bt == "thinking":
+                        thinking_parts.append(blk.get("thinking", ""))
+                if msg.get("stop_reason") == "end_turn":
+                    text = "".join(text_parts).strip()
+                    log.info(f"oneshot reply ({len(text)} chars): {text[:200]}")
+                    return text, "".join(thinking_parts)
+
+        text = "".join(text_parts).strip()
+        log.info(f"oneshot reply timeout ({len(text)} chars)")
+        return text, "".join(thinking_parts)
     except Exception as e:
         log.error(f"run_cc_oneshot error: {e}")
         return "", ""
@@ -1148,7 +1206,7 @@ async def pebbling_worker():
                 _dp_sid = peb_state.get("pebbling_session_id")
                 _dp_session = sessions.get(_dp_sid) if _dp_sid else None
                 if (_dp_session and _dp_session.cc_session_id
-                        and not channel_busy()):
+                        and not _tmux_send_lock.locked()):
                     _dp_dk = desire_st.intent.get("drive_key", "")
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
@@ -1171,8 +1229,7 @@ async def pebbling_worker():
                 if pomo_session and pomo_session.cc_session_id:
                     elapsed_pomo = now - pomo_state.get("started_at", now)
 
-                    # Skip if channel is busy
-                    if channel_busy():
+                    if _tmux_send_lock.locked():
                         pass  # retry next tick
                     elif not pomo_state.get("notified_40") and elapsed_pomo >= POMODORO_WORK_MIN * 60:
                         log.info(f"Pomodoro: 40min work done, sending reminder")
@@ -1294,8 +1351,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
         f"claude --dangerously-skip-permissions --verbose "
-        f"--model {model} "
-        f"--dangerously-load-development-channels server:erik_channel"
+        f"--model {model}"
         f"{resume_flag}"
     )
     cmd = (
@@ -1307,14 +1363,28 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     await proc.wait()
     log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model}, resume={resume_id})")
 
-    # Auto-confirm "Loading development channels" prompt
-    for delay in [3, 5, 8]:
-        await asyncio.sleep(delay if delay == 3 else delay - 3)
-        confirm = f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Enter"
-        p = await asyncio.create_subprocess_shell(confirm)
-        await p.wait()
-        log.info(f"tmux send-keys Enter (t+{delay}s)")
 
+async def tmux_send_message(text: str):
+    """Send message to CC CLI via tmux load-buffer + paste-buffer (bracketed paste)."""
+    tmp_path = f"/tmp/cc_msg_{uuid.uuid4().hex[:8]}.txt"
+    Path(tmp_path).write_text(text, encoding="utf-8")
+    try:
+        p = await asyncio.create_subprocess_shell(
+            f"{_SU_PFX}tmux load-buffer {tmp_path}")
+        await p.wait()
+        p = await asyncio.create_subprocess_shell(
+            f"{_SU_PFX}tmux paste-buffer -p -t {TMUX_SESSION}")
+        await p.wait()
+        await asyncio.sleep(0.3)
+        p = await asyncio.create_subprocess_shell(
+            f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Enter")
+        await p.wait()
+        log.info(f"tmux message sent ({len(text)} chars)")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
 
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
@@ -1352,7 +1422,6 @@ def _get_cc_session_id_from_transcript() -> str | None:
 
 async def restart_cc_for_session(session: "Session", ws=None):
     """Restart CC CLI for a session. Uses --resume if session has a cc_session_id."""
-    global channel_ws
     if ws:
         try:
             await ws.send_json({"event": "system:status", "message": "Switching CC CLI session..."})
@@ -1360,20 +1429,12 @@ async def restart_cc_for_session(session: "Session", ws=None):
             pass
 
     await tmux_stop()
-    channel_ws = None
     await asyncio.sleep(2)
 
-    resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id != "channel" else None
+    resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id not in ("channel", "tmux") else None
     await tmux_start(model=session.model, resume_id=resume_id)
-
-    # Wait for channel to reconnect
-    for i in range(20):
-        await asyncio.sleep(1)
-        if channel_ws is not None:
-            log.info(f"Channel reconnected after CC restart ({i+1}s)")
-            break
-    else:
-        log.warning("Channel did not reconnect after CC restart")
+    await asyncio.sleep(8)
+    log.info("CC CLI restarted, waiting for init")
 
     if ws:
         try:
@@ -1626,15 +1687,6 @@ async def startup_load_sessions():
         if palace_perm not in allow_list:
             allow_list.append(palace_perm)
             log.info(f"Added {palace_perm} to allow list")
-
-        # Channel MCP (stdio — CC CLI starts it as subprocess)
-        servers["erik_channel"] = {
-            "command": "python3",
-            "args": [str(Path(CC_CWD) / "channel_mcp.py")],
-        }
-        channel_perm = "mcp__erik_channel"
-        if channel_perm not in allow_list:
-            allow_list.append(channel_perm)
 
         # Inject Stop hook for thinking extraction
         hooks = settings.setdefault("hooks", {})
@@ -2062,8 +2114,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "cli:status":
                 try:
                     status = tmux_get_status()
-                    status["channel_connected"] = channel_ws is not None
-                    status["channel_busy"] = channel_busy()
+                    status["tmux_busy"] = _tmux_send_lock.locked()
                     if current_session:
                         status["session_id"] = current_session.id
                         status["model"] = current_session.model
@@ -2077,9 +2128,9 @@ async def websocket_endpoint(ws: WebSocket):
                     await tmux_stop()
                     await tmux_start(model=model)
                     await ws.send_json({"event": "system:error",
-                                        "message": "tmux 重启中，等待 channel 重连..."})
+                                        "message": "tmux restarting..."})
                     status = tmux_get_status()
-                    status["channel_connected"] = channel_ws is not None
+                    status["tmux_busy"] = _tmux_send_lock.locked()
                     await ws.send_json({"event": "cli:status", **status})
                     log.info("tmux restarted via frontend")
                 except Exception as e:
@@ -2181,51 +2232,40 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 # ══════════════════════════════════════════════
-#  CLAUDE CLI (via channel)
+#  CLAUDE CLI (via tmux)
 # ══════════════════════════════════════════════
 
 async def run_claude(message: str, session: Session, ws: WebSocket):
-    """Send message to CC CLI via channel_mcp and stream reply back."""
+    """Send message to CC CLI via tmux and stream reply via transcript."""
     session.reset_accumulator()
     tailer = TranscriptTailer(ws, session)
 
     try:
-        if channel_ws is None:
-            if not await tmux_is_running():
-                await ws.send_json({"event": "system:error",
-                                    "message": "CC CLI 未运行 (tmux)，正在启动..."})
-                await tmux_start(model=session.model)
-                await asyncio.sleep(5)
-            if channel_ws is None:
-                await ws.send_json({"event": "system:error",
-                                    "message": "channel 未连接，请稍等 channel_mcp 初始化..."})
-                for _ in range(10):
-                    await asyncio.sleep(2)
-                    if channel_ws is not None:
-                        break
-            if channel_ws is None:
-                await ws.send_json({"event": "system:error",
-                                    "message": "channel 连接失败，请检查 tmux 和 channel_mcp"})
-                await ws.send_json({"event": "message:complete", "usage": {}})
-                return
+        if not await tmux_is_running():
+            await ws.send_json({"event": "system:error",
+                                "message": "CC CLI not running, starting..."})
+            resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id not in ("channel", "tmux") else None
+            await tmux_start(model=session.model, resume_id=resume_id)
+            await asyncio.sleep(8)
 
         tailer.start()
-        req = await send_to_channel(message, session, ws, chat_id="cc",
-                                     sender="Jeoi", timeout=300)
+        async with _tmux_send_lock:
+            await tmux_send_message(message)
 
-        if not session.cc_session_id or session.cc_session_id == "channel":
-            real_id = _get_cc_session_id_from_transcript()
-            session.cc_session_id = real_id or "channel"
-            save_session_meta(session)
-            log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
-
+        await tailer.wait_done(timeout=300)
         await asyncio.sleep(1)
         await tailer.stop()
+
+        if not session.cc_session_id or session.cc_session_id in ("channel", "tmux"):
+            real_id = _get_cc_session_id_from_transcript()
+            session.cc_session_id = real_id or "tmux"
+            save_session_meta(session)
+            log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
 
         # Post-processing: parse sticker reactions
         erik_reactions = []
         if session._current_text:
-            react_pattern = re.compile(r'<!--react:(.+?):#(\d+)-->')
+            react_pattern = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
             for m in react_pattern.finditer(session._current_text):
                 emoji, idx = m.group(1), int(m.group(2)) - 1
                 erik_reactions.append((idx, emoji))
@@ -2272,7 +2312,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             pass
         log.warning(f"run_claude error: {type(e).__name__}: {e}")
         if session._current_text:
-            react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->')
+            react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
             cleaned = react_pat.sub('', session._current_text).rstrip()
             append_message(
                 session.id, "assistant", cleaned or session._current_text,
@@ -2285,7 +2325,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             if session._current_text:
                 preview = session._current_text.replace(chr(10), " ")[:100]
                 await send_web_push("Erik", preview, url="/chat.html")
-
 
 
 # ══════════════════════════════════════════════
@@ -2527,7 +2566,7 @@ async def health():
         "sessions": len(sessions),
         "time": datetime.now(SGT).isoformat(),
         "tmux": tmux_get_status(),
-        "channel_connected": channel_ws is not None,
+        "tmux_busy": _tmux_send_lock.locked(),
     }
 
 
