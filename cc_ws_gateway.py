@@ -35,6 +35,10 @@ except ImportError:
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("/opt/G-memory-mcp/logs/cc_gateway.log", encoding="utf-8"),
+    ],
 )
 log = logging.getLogger("cc-gw")
 
@@ -265,11 +269,7 @@ class TranscriptTailer:
 
     async def _handle(self, entry):
         if self._dbg < 5:
-            msg_peek = entry.get("message", {})
-            has_usage = bool(msg_peek.get("usage")) if isinstance(msg_peek, dict) else False
-            log.info(f"tailer: type={entry.get('type')} keys={list(entry.keys())[:8]} "
-                     f"msg_keys={list(msg_peek.keys())[:8] if isinstance(msg_peek, dict) else '?'} "
-                     f"has_usage={has_usage} costUSD={entry.get('costUSD')}")
+            log.info(f"tailer: type={entry.get('type')} keys={list(entry.keys())[:6]}")
             self._dbg += 1
 
         if entry.get("type") != "assistant":
@@ -277,12 +277,6 @@ class TranscriptTailer:
         msg = entry.get("message")
         if not isinstance(msg, dict):
             return
-
-        usage = msg.get("usage") or {}
-        cost = entry.get("costUSD") or 0
-        if usage:
-            self._accumulate_usage(usage, cost)
-
         blocks = msg.get("content")
         if not isinstance(blocks, list):
             return
@@ -323,44 +317,10 @@ class TranscriptTailer:
                     self.session._current_text += text
                     await self._ws({"event": "stream:text", "text": text})
 
+
         stop_reason = msg.get("stop_reason", "")
         if stop_reason == "end_turn":
-            tu = self.session._turn_usage
-            if tu.get("input_tokens") or tu.get("output_tokens"):
-                await self._ws({
-                    "event": "system:usage",
-                    "usage": tu,
-                    "turn_usage": tu,
-                    "cost": self.session._turn_cost,
-                    "session_usage": self._session_usage_dict(),
-                    "context_size": tu,
-                    "compaction_count": self.session.compaction_count,
-                })
             self._reply_done.set()
-
-    def _accumulate_usage(self, usage, cost=0):
-        _KEYS = ("input_tokens", "output_tokens",
-                 "cache_read_input_tokens", "cache_creation_input_tokens")
-        for k in _KEYS:
-            v = usage.get(k, 0)
-            if v:
-                self.session._turn_usage[k] = self.session._turn_usage.get(k, 0) + v
-        self.session.total_input += usage.get("input_tokens", 0)
-        self.session.total_output += usage.get("output_tokens", 0)
-        self.session.total_cache_read += usage.get("cache_read_input_tokens", 0)
-        self.session.total_cache_create += usage.get("cache_creation_input_tokens", 0)
-        if cost:
-            self.session._turn_cost += cost
-            self.session.total_cost += cost
-
-    def _session_usage_dict(self):
-        return {
-            "total_input": self.session.total_input,
-            "total_output": self.session.total_output,
-            "total_cache_read": self.session.total_cache_read,
-            "total_cache_create": self.session.total_cache_create,
-            "total_cost": self.session.total_cost,
-        }
 
     async def _ws(self, data):
         if self.ws:
@@ -1645,8 +1605,6 @@ class Session:
         self._current_tools: list = []
         self._result_sent = False
         self._last_usage: dict = {}
-        self._turn_usage: dict = {}
-        self._turn_cost: float = 0.0
         self._proc = None
         self._stop_requested = False
         self._fallback_allowed = False
@@ -1684,11 +1642,6 @@ class Session:
         self._current_tools = []
         self._result_sent = False
         self._stop_requested = False
-        self._turn_usage = {
-            "input_tokens": 0, "output_tokens": 0,
-            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-        }
-        self._turn_cost = 0.0
 
 
 sessions: dict[str, Session] = {}
@@ -1701,31 +1654,34 @@ sessions: dict[str, Session] = {}
 @app.on_event("startup")
 async def startup_load_sessions():
     global peb_state, pomo_state, desire_st
-    # Runtime config injection — settings.json (git tracked) only gets rogue
-    # cleanup; deny/hooks/mcpServers go to local + global only, so git pull
-    # on other machines (e.g. Jeoi's desktop CC) never inherits VPS deny rules.
+    # 动态注入deny列表到settings.json（只在VPS上跑gateway时生效，不污染git）
     try:
-        # ── Clean settings.json: only purge rogue servers ──
         settings = read_claude_settings()
-        servers = settings.get("mcpServers", {})
-        dirty = False
-        for k in [k for k in servers if "push" in k.lower() or "notify" in k.lower()]:
-            del servers[k]
-            dirty = True
-            log.info(f"Purged rogue MCP from settings.json: {k}")
-        if "erik_channel" in servers:
-            del servers["erik_channel"]
-            dirty = True
-            log.info("Removed legacy erik_channel from settings.json")
-        if dirty:
-            write_claude_settings(settings)
+        perms = settings.setdefault("permissions", {})
+        perms["deny"] = DENY_TOOLS
+        if "Read" not in perms.get("allow", []):
+            perms.setdefault("allow", []).insert(0, "Read")
+        # Remove Bash from allow if present (legacy)
+        allow_list = perms.get("allow", [])
+        if "Bash" in allow_list:
+            allow_list.remove("Bash")
 
-        # ── Build runtime config (deny + mcpServers + hooks + allow) ──
+        # Purge any push/notify MCP servers CC may have added
+        servers = settings.get("mcpServers", {})
+        purged = [k for k in servers if "push" in k.lower() or "notify" in k.lower()]
+        for k in purged:
+            del servers[k]
+            allow_list[:] = [p for p in allow_list if not p.startswith(f"mcp__{k}")]
+            log.info(f"Purged rogue MCP: {k}")
+
+        # Auto-detect internal palace URL (SSE for MCP spawn mode ≥2.1)
         palace_url = os.getenv("PALACE_MCP_URL", "")
         if not palace_url:
+            # Prefer 127.0.0.1 (IPv4) — Docker IPv6 port mapping can reset connections
             for base in ["http://127.0.0.1:8001", "http://127.0.0.1:8000", "http://localhost:8001", "http://localhost:8000"]:
                 try:
                     r = httpx.get(f"{base}/health", timeout=3)
+                    # Any HTTP response means server is alive (401 = needs auth but running)
                     palace_url = f"{base}/mcp/{PALACE_SECRET}/sse"
                     log.info(f"Palace auto-detected at {base} (health status={r.status_code})")
                     break
@@ -1734,59 +1690,68 @@ async def startup_load_sessions():
         if not palace_url:
             palace_url = f"http://127.0.0.1:8001/mcp/{PALACE_SECRET}/sse"
             log.warning(f"Palace auto-detect failed, using fallback: {palace_url}")
-
-        runtime_servers = dict(servers)
-        old_url = runtime_servers.get("claude_ai_Erik_tools", {}).get("url", "")
-        runtime_servers["claude_ai_Erik_tools"] = {"url": palace_url}
+        servers = settings.setdefault("mcpServers", {})
+        old_url = servers.get("claude_ai_Erik_tools", {}).get("url", "")
+        servers["claude_ai_Erik_tools"] = {"url": palace_url}
         if old_url != palace_url:
             log.info(f"Palace MCP: {old_url or '(none)'} → {palace_url}")
-        runtime_servers.pop("erik_channel", None)
+        palace_perm = "mcp__claude_ai_Erik_tools"
+        if palace_perm not in allow_list:
+            allow_list.append(palace_perm)
+            log.info(f"Added {palace_perm} to allow list")
 
-        runtime_allow = ["Read", "mcp__claude_ai_Erik_tools"]
-        for k in runtime_servers:
-            perm = f"mcp__{k}"
-            if perm not in runtime_allow:
-                runtime_allow.append(perm)
+        # Remove legacy channel MCP if present
+        if "erik_channel" in servers:
+            del servers["erik_channel"]
+            log.info("Removed legacy erik_channel MCP from settings")
 
-        runtime_hooks = {"Stop": [{
+        # Inject Stop hook for thinking extraction
+        hooks = settings.setdefault("hooks", {})
+        hooks["Stop"] = [{
             "matcher": "",
             "hooks": [{
                 "type": "command",
                 "command": f"python3 {Path(CC_CWD) / 'thinking_hook.py'}",
             }],
-        }]}
+        }]
 
-        # ── Write to settings.local.json (not git tracked) ──
+        write_claude_settings(settings)
+        log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked, Stop hook configured")
+
+        # CC CLI treats project settings.json MCP servers as untrusted (needs
+        # interactive approval). Write MCP config to settings.local.json which
+        # CC CLI trusts without confirmation — critical for stdin=DEVNULL spawn.
         local = read_claude_local_settings()
-        local["mcpServers"] = runtime_servers
+        local["mcpServers"] = settings.get("mcpServers", {})
         local_perms = local.setdefault("permissions", {})
         local_perms["allow"] = list(set(
-            local_perms.get("allow", []) + runtime_allow
+            local_perms.get("allow", []) + perms.get("allow", [])
         ))
-        local_perms["deny"] = DENY_TOOLS
-        local["hooks"] = runtime_hooks
+        local_perms["deny"] = perms["deny"]
+        local["hooks"] = settings.get("hooks", {})
         write_claude_local_settings(local)
-        log.info(f"Runtime config → settings.local.json: "
-                 f"{list(runtime_servers.keys())}, {len(DENY_TOOLS)} tools denied")
+        log.info(f"MCP config written to settings.local.json: "
+                 f"{list(local.get('mcpServers', {}).keys())}")
 
-        # ── Write to global ~/.claude/settings.json (VPS user-level) ──
+        # Also write MCP config to global ~/.claude/settings.json — CC CLI fully
+        # trusts global settings, no approval needed even with stdin=DEVNULL.
         global_path = Path(f"/home/{CC_USER}/.claude/settings.json")
         try:
             global_settings = {}
             if global_path.exists():
                 global_settings = json.loads(global_path.read_text(encoding="utf-8"))
-            global_settings["mcpServers"] = runtime_servers
+            global_settings["mcpServers"] = settings.get("mcpServers", {})
             global_perms = global_settings.setdefault("permissions", {})
             global_perms["allow"] = list(set(
-                global_perms.get("allow", []) + runtime_allow
+                global_perms.get("allow", []) + perms.get("allow", [])
             ))
-            global_perms["deny"] = DENY_TOOLS
-            global_settings["hooks"] = runtime_hooks
+            global_perms["deny"] = perms["deny"]
+            global_settings["hooks"] = settings.get("hooks", {})
             global_path.parent.mkdir(parents=True, exist_ok=True)
             global_path.write_text(
                 json.dumps(global_settings, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            log.info(f"Runtime config → global ~/.claude/settings.json")
+            log.info(f"MCP config written to global ~/.claude/settings.json")
         except Exception as e:
             log.warning(f"Failed to write global settings: {e}")
     except Exception as e:
@@ -1931,13 +1896,6 @@ async def websocket_endpoint(ws: WebSocket):
                 message = data.get("message", "")
                 if not message:
                     continue
-
-                requested_sid = data.get("sessionId")
-                if requested_sid and requested_sid in sessions:
-                    if not current_session or current_session.id != requested_sid:
-                        log.warning(f"Session mismatch: frontend={requested_sid} "
-                                    f"gateway={current_session.id if current_session else None}, correcting")
-                        current_session = sessions[requested_sid]
 
                 if not current_session:
                     sid = uuid.uuid4().hex[:8]
@@ -2301,7 +2259,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
     try:
         need_restart = False
-        current_cc_id = None
         if not await tmux_is_running():
             need_restart = True
         else:
@@ -2314,8 +2271,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 need_restart = True
 
         if need_restart:
-            log.info(f"CC CLI restart: session={session.id} "
-                     f"target_cc={session.cc_session_id} current_cc={current_cc_id or 'tmux_down'}")
             await ws.send_json({"event": "system:status",
                                 "message": "Switching session..."})
             await restart_cc_for_session(session, ws)
@@ -2375,23 +2330,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             })
 
         if not session._result_sent:
-            tu = session._turn_usage
-            usage_payload = tu if any(tu.values()) else {}
-            await ws.send_json({
-                "event": "message:complete",
-                "usage": usage_payload,
-                "turn_usage": usage_payload,
-                "cost": session._turn_cost,
-                "session_usage": {
-                    "total_input": session.total_input,
-                    "total_output": session.total_output,
-                    "total_cache_read": session.total_cache_read,
-                    "total_cache_create": session.total_cache_create,
-                    "total_cost": session.total_cost,
-                },
-                "context_size": usage_payload,
-                "compaction_count": session.compaction_count,
-            })
+            await ws.send_json({"event": "message:complete", "usage": {}})
 
     except Exception as e:
         try:
