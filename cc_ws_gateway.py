@@ -230,8 +230,20 @@ class TranscriptTailer:
                     self._task.cancel()
 
     async def _run(self):
+        _ticks = 0
         while not self._stop.is_set():
+            _ticks += 1
             try:
+                # Every ~4s, rescan for newer transcript file
+                if _ticks % 10 == 0:
+                    global _transcript_path_cache
+                    _transcript_path_cache = None
+                    latest = _find_active_transcript()
+                    if latest and latest != self._path:
+                        log.info(f"tailer switch: {self._path.name if self._path else 'none'} -> {latest.name}")
+                        self._path = latest
+                        self._offset = 0
+
                 if self._path and self._path.exists():
                     sz = self._path.stat().st_size
                     if sz > self._offset:
