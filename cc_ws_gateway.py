@@ -1127,8 +1127,6 @@ async def run_cc_oneshot(
 
 # ── Telegram push ──
 
-_TTS_DIR = Path(os.getenv("TTS_AUDIO_DIR", "/app/tts_audio"))
-
 async def send_telegram(text: str):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
@@ -1145,13 +1143,23 @@ async def send_telegram(text: str):
 async def send_telegram_voice(audio_url: str, caption: str = "", duration: float = 0):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
-    filename = audio_url.rsplit("/", 1)[-1]
-    mp3_path = _TTS_DIR / filename
-    if not mp3_path.exists():
-        log.warning(f"TTS file not found for TG push: {mp3_path}")
-        return
-    ogg_path = mp3_path.with_suffix(".ogg")
+    import tempfile
+    mp3_path = ogg_path = None
     try:
+        dl_url = f"http://127.0.0.1:8000{audio_url}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(dl_url)
+            if resp.status_code != 200:
+                log.warning(f"TTS download failed ({resp.status_code}): {dl_url}")
+                return
+            mp3_bytes = resp.content
+
+        tmp = Path(tempfile.gettempdir())
+        stem = audio_url.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        mp3_path = tmp / f"{stem}.mp3"
+        ogg_path = tmp / f"{stem}.ogg"
+        mp3_path.write_bytes(mp3_bytes)
+
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", str(mp3_path),
             "-c:a", "libopus", "-b:a", "64k", str(ogg_path),
@@ -1159,12 +1167,11 @@ async def send_telegram_voice(audio_url: str, caption: str = "", duration: float
             stderr=asyncio.subprocess.DEVNULL,
         )
         await asyncio.wait_for(proc.wait(), timeout=30)
-    except Exception as e:
-        log.warning(f"ffmpeg mp3→ogg failed: {e}")
-        return
-    if not ogg_path.exists():
-        return
-    try:
+
+        if not ogg_path.exists():
+            log.warning("ffmpeg produced no output")
+            return
+
         async with httpx.AsyncClient(timeout=30) as client:
             data = {"chat_id": TG_CHAT_ID}
             if caption:
@@ -1180,10 +1187,12 @@ async def send_telegram_voice(audio_url: str, caption: str = "", duration: float
     except Exception as e:
         log.warning(f"Telegram voice send failed: {e}")
     finally:
-        try:
-            ogg_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        for p in (mp3_path, ogg_path):
+            if p:
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 # ── Web Push ──
