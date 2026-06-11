@@ -1991,49 +1991,49 @@ function buildVoiceBubble(audioUrl, duration, text, savedTime) {
     </div>`;
 }
 
-let currentAudio = null;
+const sharedAudio = new Audio();
 let currentVoiceBubble = null;
+let _voiceBars = [];
+
+sharedAudio.addEventListener('timeupdate', () => {
+  if (!sharedAudio.duration || !_voiceBars.length) return;
+  const pct = sharedAudio.currentTime / sharedAudio.duration;
+  const idx = Math.floor(pct * _voiceBars.length);
+  _voiceBars.forEach((b, i) => b.classList.toggle('played', i <= idx));
+});
+sharedAudio.addEventListener('ended', () => {
+  if (currentVoiceBubble) {
+    const b = currentVoiceBubble.querySelector('.voice-play-btn');
+    if (b) b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    _voiceBars.forEach(b => b.classList.remove('played'));
+  }
+  currentVoiceBubble = null;
+  _voiceBars = [];
+});
 
 function toggleVoice(btn) {
   const vb = btn.closest('.voice-bubble');
   const src = vb.dataset.src;
-  if (currentAudio && currentVoiceBubble === vb) {
-    if (currentAudio.paused) {
-      currentAudio.play();
+  if (currentVoiceBubble === vb && sharedAudio.src) {
+    if (sharedAudio.paused) {
+      sharedAudio.play();
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
     } else {
-      currentAudio.pause();
+      sharedAudio.pause();
       btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
     }
     return;
   }
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio = null;
-    if (currentVoiceBubble) {
-      const oldBtn = currentVoiceBubble.querySelector('.voice-play-btn');
-      if (oldBtn) oldBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
-      currentVoiceBubble.querySelectorAll('.bar').forEach(b => b.classList.remove('played'));
-    }
+  if (currentVoiceBubble) {
+    const oldBtn = currentVoiceBubble.querySelector('.voice-play-btn');
+    if (oldBtn) oldBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    _voiceBars.forEach(b => b.classList.remove('played'));
   }
-  const audio = new Audio(src);
-  currentAudio = audio;
+  sharedAudio.src = src;
   currentVoiceBubble = vb;
-  const bars = vb.querySelectorAll('.bar');
+  _voiceBars = Array.from(vb.querySelectorAll('.bar'));
   btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
-  audio.addEventListener('timeupdate', () => {
-    if (!audio.duration) return;
-    const pct = audio.currentTime / audio.duration;
-    const idx = Math.floor(pct * bars.length);
-    bars.forEach((b, i) => b.classList.toggle('played', i <= idx));
-  });
-  audio.addEventListener('ended', () => {
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
-    bars.forEach(b => b.classList.remove('played'));
-    currentAudio = null;
-    currentVoiceBubble = null;
-  });
-  audio.play();
+  sharedAudio.play();
 }
 
 function toggleTranscript(btn) {
