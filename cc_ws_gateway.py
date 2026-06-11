@@ -1994,6 +1994,15 @@ async def websocket_endpoint(ws: WebSocket):
                 if not message:
                     continue
 
+                # Restore session from payload sessionId (survives WS reconnect race)
+                payload_sid = data.get("sessionId")
+                if payload_sid and payload_sid in sessions:
+                    if not current_session or current_session.id != payload_sid:
+                        log.info(f"chat:send restored session from payload: {payload_sid}")
+                        current_session = sessions[payload_sid]
+                        pending_model = current_session.model
+                        pending_effort = current_session.effort
+
                 if not current_session:
                     sid = uuid.uuid4().hex[:8]
                     current_session = Session(sid)
