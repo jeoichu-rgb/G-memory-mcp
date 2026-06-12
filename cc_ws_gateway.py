@@ -83,6 +83,22 @@ PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
+LAST_MODEL_PATH = Path(CC_CWD) / "last_model.txt"
+
+
+def _load_last_model() -> str:
+    try:
+        m = LAST_MODEL_PATH.read_text(encoding="utf-8").strip()
+        return m if m else "claude-sonnet-4-6"
+    except Exception:
+        return "claude-sonnet-4-6"
+
+
+def _save_last_model(model: str):
+    try:
+        LAST_MODEL_PATH.write_text(model, encoding="utf-8")
+    except Exception:
+        pass
 
 # ── Activity pool for pebbling lottery ──
 ACTIVITY_POOL = [
@@ -279,6 +295,16 @@ class TranscriptTailer:
         msg = entry.get("message")
         if not isinstance(msg, dict):
             return
+
+        resp_model = msg.get("model", "")
+        if resp_model and resp_model != self.session.model:
+            old = self.session.model
+            self.session.model = resp_model
+            save_session_meta(self.session)
+            _save_last_model(resp_model)
+            await self._ws({"event": "config:model_changed", "model": resp_model})
+            log.info(f"Model drift: {old} → {resp_model}")
+
         blocks = msg.get("content")
         if not isinstance(blocks, list):
             return
@@ -1591,6 +1617,15 @@ async def tmux_send_message(text: str):
         except Exception:
             pass
 
+async def tmux_send_slash_cmd(cmd: str):
+    """Send a slash command (like /model) to CC CLI via tmux send-keys."""
+    escaped = cmd.replace("'", "'\\''")
+    shell_cmd = f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} '{escaped}' Enter"
+    proc = await asyncio.create_subprocess_shell(shell_cmd)
+    await proc.wait()
+    log.info(f"tmux slash cmd: {cmd}")
+
+
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
         f"{_SU_PFX}tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
@@ -1990,7 +2025,7 @@ async def websocket_endpoint(ws: WebSocket):
     log.info("WS client connected")
 
     current_session = None
-    pending_model = "claude-sonnet-4-6"
+    pending_model = _load_last_model()
     pending_effort = "medium"
 
     # Send current pebbling status to frontend
@@ -1998,6 +2033,12 @@ async def websocket_endpoint(ws: WebSocket):
         "event": "pebbling:status",
         "enabled": peb_state.get("enabled", False),
         "session_id": peb_state.get("pebbling_session_id"),
+    })
+
+    # Send last-used model so frontend dropdown matches
+    await ws.send_json({
+        "event": "config:defaults",
+        "model": pending_model,
     })
 
     # Send current pomodoro status to frontend
@@ -2200,6 +2241,10 @@ async def websocket_endpoint(ws: WebSocket):
                     if current_session:
                         current_session.model = model
                         save_session_meta(current_session)
+                    _save_last_model(model)
+                    if await tmux_is_running():
+                        async with _tmux_send_lock:
+                            await tmux_send_slash_cmd(f"/model {model}")
                     log.info(f"Model → {model}")
 
             elif event == "config:effort":
@@ -2343,7 +2388,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "cli:reconnect":
                 try:
-                    model = current_session.model if current_session else "claude-sonnet-4-6"
+                    model = current_session.model if current_session else _load_last_model()
                     await tmux_stop()
                     await tmux_start(model=model)
                     await ws.send_json({"event": "system:error",

@@ -1225,6 +1225,17 @@ function handleWSMessage(data) {
       updateContext(data.usage);
       break;
 
+    case 'config:defaults':
+      if (data.model) document.getElementById('modelSelect').value = data.model;
+      break;
+
+    case 'config:model_changed':
+      if (data.model) {
+        document.getElementById('modelSelect').value = data.model;
+        showError('Model switched to ' + data.model);
+      }
+      break;
+
     case 'system:error':
       showError(data.message || 'Unknown error');
       break;
