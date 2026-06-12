@@ -196,7 +196,7 @@ def tick_thoughts(state):
     return events
 
 
-def tick_drives(state, separation_secs=0):
+def tick_drives(state, separation_secs=0, passive_mode=False):
     events = []
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
@@ -204,7 +204,8 @@ def tick_drives(state, separation_secs=0):
         state.drives[k] = eff_home + (state.drives[k] - eff_home) * cfg["decay"]
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
-        dr, cap = cfg.get("drift", 0), cfg.get("drift_cap", 0)
+        dr = cfg.get("drift", 0)
+        cap = 1.0 if passive_mode else cfg.get("drift_cap", 0)
         delay = cfg.get("drift_delay", 0)
         if dr > 0 and cap > 0 and separation_secs >= delay:
             state.floors[k] = min(state.floors.get(k, cfg["home"]) + dr, cap)
@@ -261,9 +262,16 @@ def pick_intent(state, is_conversation=False):
     return Intent(INTENT_MAP.get(best, ""), best, scores[best], REASONS.get(best, ""), trail)
 
 
-def tick(state, separation_secs=0, is_conversation=False):
-    de = tick_drives(state, separation_secs=separation_secs)
+def tick(state, separation_secs=0, is_conversation=False, passive_mode=False):
+    de = tick_drives(state, separation_secs=separation_secs, passive_mode=passive_mode)
     te = tick_thoughts(state)
+    # Trail cleanup: clear stale trails for drives at baseline with no active thoughts
+    for k in DRIVE_KEYS:
+        cfg = DRIVE_CONFIG[k]
+        eff_home = max(cfg["home"], state.floors.get(k, cfg["home"]))
+        has_thoughts = any(t.drive == k for t in state.thoughts)
+        if state.drives[k] <= eff_home + 0.02 and state.trails.get(k) and not has_thoughts:
+            state.trails[k] = []
     intent = pick_intent(state, is_conversation=is_conversation)
     if intent:
         state.intent = intent.to_dict()

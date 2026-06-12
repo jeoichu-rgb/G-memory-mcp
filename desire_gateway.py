@@ -135,6 +135,10 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "Think freely, then act. Call tools before replying.",
         "Last line: ACTION: message / diary / explore / coreading / recall / none",
         "Next line if needed: CONTENT: your content",
+        "",
+        "Important: if you did anything (diary, search, coreading, etc.),",
+        "always describe what you did in CONTENT, even if you don't want to message Jeoi.",
+        "Only use ACTION: none with no CONTENT if you truly did nothing.",
     ])
 
     return NL.join(parts)
@@ -185,18 +189,24 @@ def build_desire_proactive_prompt(state):
         'Think freely, then act. Call tools before replying.',
         'Last line: ACTION: message / diary / explore / coreading / recall / none',
         'Next line if needed: CONTENT: your content',
+        '',
+        'Important: if you did anything (diary, search, coreading, etc.),',
+        'always describe what you did in CONTENT, even if you don\'t want to message Jeoi.',
+        'Only use ACTION: none with no CONTENT if you truly did nothing.',
     ])
 
     return NL.join(parts)
 
 
-def do_tick(state, t_jeoi=None):
-    """Run a single tick and save. For background ticker."""
+def do_tick(state, t_jeoi=None, passive_mode=False):
+    """Run a single tick and save. For background ticker.
+    passive_mode=True: drift_cap removed, drives rise to 100% via their growth function.
+    """
     if not DESIRE_AVAILABLE or not state:
         return
     import time as _t
     sep = _t.time() - t_jeoi if t_jeoi else 0
-    de.tick(state, separation_secs=sep)
+    de.tick(state, separation_secs=sep, passive_mode=passive_mode)
     de.save_state(state)
 
 

@@ -962,6 +962,10 @@ def build_pebbling_prompt(
             "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
             "如果有想说的话或内容，下一行：CONTENT: 内容",
+            "",
+            "重要：如果你做了任何事（写日记、搜记忆、看书批注等），即使不想发消息，",
+            "也请用一句话在CONTENT里告诉Jeoi你做了什么，例如'翻了翻之前的日记'。",
+            "只有真正什么都没做才选ACTION: none且不写CONTENT。",
         ])
 
     return "\n".join(parts)
@@ -1040,25 +1044,25 @@ ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
 async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns=None
 ) -> tuple:
-    """Returns (text, thinking). Sends via tmux and reads transcript."""
+    """Returns (text, thinking, tools). Sends via tmux and reads transcript."""
     if _tmux_send_lock.locked():
         log.info("run_cc_oneshot: tmux busy, skipping")
-        return "", ""
+        return "", "", []
     if not await tmux_is_running():
         log.warning("run_cc_oneshot: tmux not running")
-        return "", ""
+        return "", "", []
     try:
         transcript = _find_active_transcript()
         if not transcript:
             log.warning("run_cc_oneshot: no transcript")
-            return "", ""
+            return "", "", []
         start_offset = transcript.stat().st_size
 
         async with _tmux_send_lock:
             await tmux_send_message(prompt)
 
         offset = start_offset
-        text_parts, thinking_parts = [], []
+        text_parts, thinking_parts, tool_parts = [], [], []
         done = False
         stale_ticks = 0
         deadline = asyncio.get_event_loop().time() + 120
@@ -1101,13 +1105,16 @@ async def run_cc_oneshot(
                         text_parts.append(blk.get("text", ""))
                     elif bt == "thinking":
                         thinking_parts.append(blk.get("thinking", ""))
+                    elif bt == "tool_use":
+                        tool_parts.append(_clean_tool_name(blk.get("name", "")))
                 if msg.get("stop_reason") == "end_turn":
                     done = True
                     break
 
         text = "".join(text_parts).strip()
+        tools = list(dict.fromkeys(tool_parts))  # dedupe, preserve order
         label = "reply" if done else "timeout"
-        log.info(f"oneshot {label} ({len(text)} chars): {text[:200]}")
+        log.info(f"oneshot {label} ({len(text)} chars, {len(tools)} tools): {text[:200]}")
 
         turn_usage, turn_cost = _read_turn_usage(transcript, start_offset)
         if any(turn_usage.values()):
@@ -1120,10 +1127,10 @@ async def run_cc_oneshot(
                 except Exception:
                     pass
 
-        return text, "".join(thinking_parts)
+        return text, "".join(thinking_parts), tools
     except Exception as e:
         log.error(f"run_cc_oneshot error: {e}")
-        return "", ""
+        return "", "", []
 
 # ── Telegram push ──
 
@@ -1276,6 +1283,33 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         await send_web_push("Erik", content)
 
 
+async def push_pebbling_activity(source: str, action: str, tools: list,
+                                  thinking: str, session: "Session"):
+    """Push background activity to frontend (WS only, no chat history, no push)."""
+    global active_ws
+    if not active_ws:
+        return
+    if action == "none" and not tools:
+        return
+    thinking_preview = ""
+    if thinking:
+        lines = [l.strip() for l in thinking.split("\n") if l.strip()]
+        if lines:
+            thinking_preview = lines[-1][:300]
+    try:
+        await active_ws.send_json({
+            "event": "pebbling:activity",
+            "source": source,
+            "action": action,
+            "tools": tools,
+            "thinking_preview": thinking_preview,
+            "time": datetime.now(SGT).strftime("%H:%M"),
+            "session_id": session.id,
+        })
+    except Exception:
+        pass
+
+
 async def replay_pending(ws: WebSocket):
     pending = peb_state.get("pending_messages", [])
     if not pending:
@@ -1300,7 +1334,7 @@ async def run_patrol(session: "Session", elapsed_seconds: float, check_min: int 
     events = get_recent_events(max(check_min, 10) / 60)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
 
-    text, thinking = await run_cc_oneshot(prompt, session, max_turns=1)
+    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=1)
     if not text:
         return "none"
 
@@ -1328,17 +1362,19 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    text, thinking = await run_cc_oneshot(prompt, session, max_turns=6)
+    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
     if not text:
         return "none"
 
     action, content = parse_action(text)
     log.info(f"Pebbling → action={action}, mode={mode}, "
-             f"content={content[:80] if content else ''}")
+             f"tools={tools}, content={content[:80] if content else ''}")
 
     if action == "error":
         await push_system_error("pebbling", content)
         return "none"
+    # Push activity to frontend (tools, action, thinking)
+    await push_pebbling_activity("pebbling", action, tools, thinking, session)
     if action not in ("none", "error") and content:
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
@@ -1359,7 +1395,8 @@ async def pebbling_worker():
             # Desire tick
             if DESIRE_ENABLED and desire_st and now - _desire_last_tick >= 60:
                 try:
-                    dg.do_tick(desire_st, t_jeoi=peb_state.get("t_jeoi"))
+                    is_passive = not peb_state.get("desire_proactive")
+                    dg.do_tick(desire_st, t_jeoi=peb_state.get("t_jeoi"), passive_mode=is_passive)
                     _desire_last_tick = now
                 except Exception as e:
                     log.warning(f"Desire tick error: {e}")
@@ -1380,9 +1417,10 @@ async def pebbling_worker():
                         dg.satisfy_after_response(desire_st, _dp_dk)
                         _desire_last_proactive = now
                         log.info(f"Desire proactive satisfied (pre-response): {_dp_dk}")
-                        _dp_text, _dp_thinking = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
+                        _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
                         if _dp_text:
                             _dp_action, _dp_content = parse_action(_dp_text)
+                            await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session)
                             if _dp_action not in ("none", "error") and _dp_content:
                                 await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
                     except Exception as e:
@@ -1400,7 +1438,7 @@ async def pebbling_worker():
                     elif not pomo_state.get("notified_40") and elapsed_pomo >= POMODORO_WORK_MIN * 60:
                         log.info(f"Pomodoro: 40min work done, sending reminder")
                         prompt = build_pomodoro_prompt("work_done")
-                        text, thinking = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
+                        text, thinking, _pomo_tools = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
                         if text:
                             action, content = parse_action(text)
                             if content:
@@ -1418,7 +1456,7 @@ async def pebbling_worker():
                     elif pomo_state.get("notified_40") and not pomo_state.get("notified_60") and elapsed_pomo >= (POMODORO_WORK_MIN + POMODORO_BREAK_MIN) * 60:
                         log.info(f"Pomodoro: 60min total, break over")
                         prompt = build_pomodoro_prompt("break_done")
-                        text, thinking = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
+                        text, thinking, _pomo_tools = await run_cc_oneshot(prompt, pomo_session, max_turns=1)
                         if text:
                             action, content = parse_action(text)
                             if content:
@@ -1484,9 +1522,10 @@ async def pebbling_worker():
                         format_events_for_prompt(events))
                     dg.satisfy_after_response(desire_st, _dk)
                     log.info(f"Desire satisfied (pre-response): {_dk}")
-                    text, thinking = await run_cc_oneshot(prompt, session, max_turns=6)
+                    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
                     if text:
                         action, content = parse_action(text)
+                        await push_pebbling_activity("pebbling", action, tools, thinking, session)
                         if action not in ("none", "error") and content:
                             await push_pebbling_msg("pebbling", content, session, thinking=thinking)
                     log.info(f"Desire satisfied via pebbling: {_dk}")
