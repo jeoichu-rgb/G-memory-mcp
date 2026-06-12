@@ -1626,6 +1626,16 @@ async def tmux_send_slash_cmd(cmd: str):
     log.info(f"tmux slash cmd: {cmd}")
 
 
+async def tmux_switch_model(model: str):
+    """Send /model command and auto-confirm the interactive prompt."""
+    await tmux_send_slash_cmd(f"/model {model}")
+    await asyncio.sleep(1.5)
+    p = await asyncio.create_subprocess_shell(
+        f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Enter")
+    await p.wait()
+    log.info(f"tmux model confirmed: {model}")
+
+
 async def tmux_stop():
     proc = await asyncio.create_subprocess_shell(
         f"{_SU_PFX}tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
@@ -2244,7 +2254,7 @@ async def websocket_endpoint(ws: WebSocket):
                     _save_last_model(model)
                     if await tmux_is_running():
                         async with _tmux_send_lock:
-                            await tmux_send_slash_cmd(f"/model {model}")
+                            await tmux_switch_model(model)
                     log.info(f"Model → {model}")
 
             elif event == "config:effort":
