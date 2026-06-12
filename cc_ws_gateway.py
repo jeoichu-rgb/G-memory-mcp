@@ -315,18 +315,7 @@ class TranscriptTailer:
             bt = blk.get("type", "")
 
             if bt == "thinking":
-                log.info(f"tailer thinking block: keys={sorted(blk.keys())} "
-                         f"thinking_len={len(blk.get('thinking','') or '')} "
-                         f"sig_len={len(blk.get('signature','') or '')}")
-                raw = blk.get("thinking") or ""
-                sig = blk.get("signature", "")
-                if raw:
-                    self.session._current_thinking += raw
-                    await self._ws({"event": "stream:thinking", "text": raw})
-                elif sig:
-                    if not self.session._current_thinking:
-                        self.session._current_thinking = "[signed]"
-                    await self._ws({"event": "stream:thinking", "text": "​"})
+                continue  # thinking handled by Stop hook → /internal/thinking
 
             elif bt == "tool_use":
                 name = blk.get("name", "")
