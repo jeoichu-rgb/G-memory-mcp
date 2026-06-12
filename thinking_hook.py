@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-CC CLI Stop hook — extract thinking from transcript and POST to gateway.
+CC CLI Stop hook — extract thinking and POST to gateway.
+Tries hook_input.last_assistant_message first, falls back to transcript.
 """
 
 import json
@@ -19,6 +20,18 @@ def _log(msg):
         f.write(f"{datetime.now():%H:%M:%S} {msg}\n")
 
 
+def _extract_thinking(content):
+    parts = []
+    if not isinstance(content, list):
+        return parts
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            t = block.get("thinking", "")
+            if t:
+                parts.append(t)
+    return parts
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -34,22 +47,25 @@ def main():
         _log("stdin not json")
         return
 
-    transcript_path = hook_input.get("transcript_path", "")
-    if not transcript_path:
-        session_id = hook_input.get("session_id", "")
-        if session_id:
-            cwd = hook_input.get("cwd", "/opt/G-memory-mcp")
-            home = Path.home()
-            slug = cwd.replace("/", "-")
-            candidates = list((home / ".claude" / "projects" / slug).glob("*.jsonl"))
-            if candidates:
-                transcript_path = str(max(candidates, key=lambda p: p.stat().st_mtime))
+    _log(f"keys: {list(hook_input.keys())}")
 
+    # Method 1: last_assistant_message from hook input
+    last_msg = hook_input.get("last_assistant_message", {})
+    if isinstance(last_msg, dict):
+        content = last_msg.get("content", [])
+        _log(f"last_msg content types: {[b.get('type','?') for b in content if isinstance(b, dict)]}")
+        thinking_parts = _extract_thinking(content)
+        if thinking_parts:
+            _log(f"method=last_msg, {len(''.join(thinking_parts))} chars")
+            _post(thinking_parts)
+            return
+
+    # Method 2: read transcript
+    transcript_path = hook_input.get("transcript_path", "")
     if not transcript_path or not Path(transcript_path).exists():
         _log(f"no transcript: {transcript_path}")
         return
 
-    thinking_parts = []
     with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
 
@@ -63,22 +79,20 @@ def main():
             continue
         if entry.get("type") != "assistant":
             continue
-        msg = entry.get("message", {})
-        content = msg.get("content", [])
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                t = block.get("thinking", "")
-                if t:
-                    thinking_parts.append(t)
+        content = entry.get("message", {}).get("content", [])
+        _log(f"transcript content types: {[b.get('type','?') for b in content if isinstance(b, dict)]}")
+        thinking_parts = _extract_thinking(content)
+        if thinking_parts:
+            _log(f"method=transcript, {len(''.join(thinking_parts))} chars")
+            _post(thinking_parts)
+            return
         break
 
-    if not thinking_parts:
-        _log(f"no thinking found in {len(lines)} lines")
-        return
+    _log("no thinking found anywhere")
 
-    thinking_text = "\n".join(thinking_parts)
-    _log(f"found {len(thinking_text)} chars thinking")
 
+def _post(parts):
+    thinking_text = "\n".join(parts)
     try:
         payload = json.dumps({"thinking": thinking_text}, ensure_ascii=False).encode("utf-8")
         req = Request(GATEWAY_URL, data=payload,
