@@ -152,6 +152,7 @@ pomo_state: dict = {}
 desire_st = None
 _desire_last_tick = 0.0
 _desire_last_proactive = 0.0
+_user_msg_active = False  # True while run_claude is processing a user message
 
 # ── Channel + tmux ──
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
@@ -1060,8 +1061,8 @@ async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns=None
 ) -> tuple:
     """Returns (text, thinking, tools). Sends via tmux and reads transcript."""
-    if _tmux_send_lock.locked():
-        log.info("run_cc_oneshot: tmux busy, skipping")
+    if _tmux_send_lock.locked() or _user_msg_active:
+        log.info(f"run_cc_oneshot: busy (lock={_tmux_send_lock.locked()}, user_msg={_user_msg_active}), skipping")
         return "", "", []
     if not await tmux_is_running():
         log.warning("run_cc_oneshot: tmux not running")
@@ -1424,7 +1425,8 @@ async def pebbling_worker():
                 _dp_sid = peb_state.get("pebbling_session_id")
                 _dp_session = sessions.get(_dp_sid) if _dp_sid else None
                 if (_dp_session and _dp_session.cc_session_id
-                        and not _tmux_send_lock.locked()):
+                        and not _tmux_send_lock.locked()
+                        and not _user_msg_active):
                     _dp_dk = desire_st.intent.get("drive_key", "")
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
@@ -1498,6 +1500,9 @@ async def pebbling_worker():
                 continue
 
             elapsed_jeoi = now - peb_state.get("t_jeoi", now)
+
+            if _user_msg_active:
+                continue
 
             # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
             checks_done = set(peb_state.get("patrol_checks_done", []))
@@ -2217,6 +2222,12 @@ async def websocket_endpoint(ws: WebSocket):
                 if DESIRE_ENABLED and desire_st:
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
+                        # Passive mode: if classify didn't trigger new injection but
+                        # an existing intent is sitting there, inject it now
+                        if not inj and not peb_state.get("desire_proactive") and desire_st.intent:
+                            inj = dg.build_desire_injection(desire_st)
+                            _desire_key = desire_st.intent.get("drive_key")
+                            log.info(f"Desire passive inject: {_desire_key}")
                         if inj:
                             cli_message = inj + chr(10)*2 + cli_message
                             log.info(f"Desire injected: {_desire_key}")
@@ -2500,6 +2511,8 @@ async def websocket_endpoint(ws: WebSocket):
 
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Send message to CC CLI via tmux and stream reply via transcript."""
+    global _user_msg_active
+    _user_msg_active = True
     session.reset_accumulator()
     tailer = TranscriptTailer(ws, session)
 
@@ -2613,7 +2626,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             payload["event"] = "message:complete"
             await ws.send_json(payload)
 
+        _user_msg_active = False
+
     except Exception as e:
+        _user_msg_active = False
         try:
             await tailer.stop()
         except Exception:
