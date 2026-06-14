@@ -958,7 +958,7 @@ def build_pebbling_prompt(
             "",
             "严格按此格式回复：",
             "ACTION: message / recall / none",
-            "CONTENT: 具体内容（message写给Jeoi的话，recall写搜索关键词）",
+            "CONTENT: message时写你要发给Jeoi的完整消息（会直接推送到她手机），recall时写搜索关键词",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -977,11 +977,11 @@ def build_pebbling_prompt(
             "",
             "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
-            "如果有想说的话或内容，下一行：CONTENT: 内容",
+            "下一行：CONTENT: 要发给Jeoi的话（这行会直接推送到她手机，写完整的话，不是行动描述）",
             "",
-            "重要：如果你做了任何事（写日记、搜记忆、看书批注等），即使不想发消息，",
-            "也请用一句话在CONTENT里告诉Jeoi你做了什么，例如'翻了翻之前的日记'。",
-            "只有真正什么都没做才选ACTION: none且不写CONTENT。",
+            "重要：CONTENT这一行就是Jeoi会看到的消息原文。不要写'提了一下'这种描述，",
+            "要写你真正想对她说的完整的话。",
+            "如果你做了事但不想发消息，选ACTION: none，不写CONTENT。",
         ])
 
     return "\n".join(parts)

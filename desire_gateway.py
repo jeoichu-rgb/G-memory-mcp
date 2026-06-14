@@ -134,11 +134,11 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "",
         "Think freely, then act. Call tools before replying.",
         "Last line: ACTION: message / diary / explore / coreading / recall / none",
-        "Next line if needed: CONTENT: your content",
+        "Next line: CONTENT: the exact message Jeoi will see (pushed directly to her phone — write the real words, not a description)",
         "",
-        "Important: if you did anything (diary, search, coreading, etc.),",
-        "always describe what you did in CONTENT, even if you don't want to message Jeoi.",
-        "Only use ACTION: none with no CONTENT if you truly did nothing.",
+        "Important: CONTENT is the literal text that gets sent to Jeoi.",
+        "Don't write meta-descriptions like 'teased her a bit' — write what you actually want to say.",
+        "If you did something but don't want to message her, use ACTION: none with no CONTENT.",
     ])
 
     return NL.join(parts)
