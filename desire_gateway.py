@@ -138,7 +138,8 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "",
         "Important: CONTENT is the literal text that gets sent to Jeoi.",
         "Don't write meta-descriptions like 'teased her a bit' — write what you actually want to say.",
-        "If you did something but don't want to message her, use ACTION: none with no CONTENT.",
+        "If you did anything (diary, search, coreading, etc.), also tell Jeoi what you did in CONTENT.",
+        "Only use ACTION: none with no CONTENT if you truly did nothing.",
     ])
 
     return NL.join(parts)
