@@ -44,9 +44,9 @@ log = logging.getLogger("cc-gw")
 
 app = FastAPI(title="CC WebSocket Gateway")
 
-PALACE_SECRET = os.getenv("PALACE_SECRET", "Jeoi2026")
+PALACE_SECRET = os.getenv("PALACE_SECRET", "")
 CC_CWD = os.getenv("CC_CWD", "/opt/G-memory-mcp")
-TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8843423989:AAGrgrkYAUIznKlI_0tbY7-C_B3wjDaHXCc")
+TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "6830267835")
 HISTORY_DIR = Path(CC_CWD) / "chat_history"
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
