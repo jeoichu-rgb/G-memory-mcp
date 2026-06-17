@@ -842,7 +842,7 @@ from fastapi.responses import FileResponse
 VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIMS      = {"sub": "mailto:eriklamb@163.com"}
-PUSH_SUBS_FILE    = Path("/app/push_subscriptions.json")
+PUSH_SUBS_FILE    = Path(os.getenv("PUSH_SUBS_FILE", "/app/palace-data/push_subscriptions.json"))
 
 
 def _load_push_subs() -> list:
