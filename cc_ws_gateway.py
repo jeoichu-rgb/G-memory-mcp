@@ -2162,6 +2162,7 @@ async def websocket_endpoint(ws: WebSocket):
                 peb_state["t_cache"] = time_mod.time()
                 peb_state["t_jeoi"] = time_mod.time()
                 peb_state["patrol_checks_done"] = []
+                peb_state["pebbling_history"] = []
                 peb_state["pebbling_session_id"] = current_session.id
                 save_peb_state()
 
