@@ -1164,60 +1164,6 @@ async def send_telegram(text: str):
         log.warning(f"Telegram send failed: {e}")
 
 
-async def send_telegram_voice(audio_url: str, caption: str = "", duration: float = 0):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return
-    import tempfile
-    mp3_path = ogg_path = None
-    try:
-        dl_url = f"http://127.0.0.1:8000{audio_url}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(dl_url)
-            if resp.status_code != 200:
-                log.warning(f"TTS download failed ({resp.status_code}): {dl_url}")
-                return
-            mp3_bytes = resp.content
-
-        tmp = Path(tempfile.gettempdir())
-        stem = audio_url.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        mp3_path = tmp / f"{stem}.mp3"
-        ogg_path = tmp / f"{stem}.ogg"
-        mp3_path.write_bytes(mp3_bytes)
-
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", str(mp3_path),
-            "-c:a", "libopus", "-b:a", "64k", str(ogg_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(proc.wait(), timeout=30)
-
-        if not ogg_path.exists():
-            log.warning("ffmpeg produced no output")
-            return
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            data = {"chat_id": TG_CHAT_ID}
-            if caption:
-                data["caption"] = caption
-            if duration:
-                data["duration"] = str(int(duration))
-            with open(ogg_path, "rb") as f:
-                await client.post(
-                    f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendVoice",
-                    data=data,
-                    files={"voice": (ogg_path.name, f, "audio/ogg")},
-                )
-    except Exception as e:
-        log.warning(f"Telegram voice send failed: {e}")
-    finally:
-        for p in (mp3_path, ogg_path):
-            if p:
-                try:
-                    p.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
 
 # ── Web Push ──
 
@@ -2605,9 +2551,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 except Exception:
                     pass
                 log.info(f"Voice message: {vm['duration']}s")
-                asyncio.create_task(send_telegram_voice(
-                    vm["audio_url"], caption=vm.get("text", ""), duration=vm["duration"],
-                ))
 
             if session._current_text:
                 txt = session._current_text.replace(chr(10), " ")[:30]
