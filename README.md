@@ -116,7 +116,10 @@ CC CLI 在 tmux detached 中 = 真 PTY = 交互式 = 走 Pro/Max 订阅固定价
 CC CLI 必须以非 root 用户运行（`--dangerously-skip-permissions` 禁止 root/sudo）。网关以 root 运行，通过 `sudo -u erik` 管理 tmux。
 
 ```bash
-# 一键更新 + 重启
+# 软重启（只重启网关，保留 tmux/CC CLI session）
+cd /opt/G-memory-mcp && fuser -k 3000/tcp; source .env && git pull && nohup python3 cc_ws_gateway.py >> logs/cc_gateway.log 2>&1 &
+
+# 硬重启（杀 tmux + 丢弃运行时改动，CC CLI 会冷启动）
 bash /opt/G-memory-mcp/restart.sh
 ```
 
