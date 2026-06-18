@@ -1153,13 +1153,20 @@ async def run_cc_oneshot(
 
 async def send_telegram(text: str):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        log.warning(f"Telegram skipped: token={'set' if TG_BOT_TOKEN else 'EMPTY'}, chat_id={'set' if TG_CHAT_ID else 'EMPTY'}")
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
+            r = await client.post(
                 f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
                 json={"chat_id": TG_CHAT_ID, "text": text},
             )
+            if r.status_code != 200:
+                log.warning(f"Telegram API error: HTTP {r.status_code} → {r.text[:200]}")
+            else:
+                data = r.json()
+                if not data.get("ok"):
+                    log.warning(f"Telegram API rejected: {data.get('description', '')}")
     except Exception as e:
         log.warning(f"Telegram send failed: {e}")
 
@@ -1955,6 +1962,11 @@ async def startup_load_sessions():
             log.info(f"Desire loaded: tick={desire_st.tick_count}, thoughts={len(desire_st.thoughts)}")
     asyncio.create_task(pebbling_worker())
 
+    # Push config check
+    log.info(f"TG_BOT_TOKEN={'set ('+TG_BOT_TOKEN[:8]+'...)' if TG_BOT_TOKEN else 'EMPTY'}, "
+             f"TG_CHAT_ID={TG_CHAT_ID or 'EMPTY'}, "
+             f"PUSH_API_BASE={PUSH_API_BASE}")
+
     # Start CC CLI in tmux if not already running
     if not await tmux_is_running():
         log.info("Starting CC CLI in tmux...")
@@ -2571,6 +2583,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             payload["event"] = "message:complete"
             await ws.send_json(payload)
 
+        # Always push notification — sw.js suppresses if page is focused
+        if session._current_text:
+            preview = session._current_text.replace(chr(10), " ")[:100]
+            await send_web_push("Erik", preview, url="/chat.html")
+            await send_telegram(preview)
+
         _user_msg_active = False
 
     except Exception as e:
@@ -2596,6 +2614,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             if session._current_text:
                 preview = session._current_text.replace(chr(10), " ")[:100]
                 await send_web_push("Erik", preview, url="/chat.html")
+                await send_telegram(preview)
 
 
 # ══════════════════════════════════════════════

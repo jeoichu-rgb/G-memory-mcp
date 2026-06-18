@@ -4,14 +4,18 @@
 self.addEventListener('push', (event) => {
   const data = event.data ? event.data.json() : {};
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Erik', {
-      body: data.body || '',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
-      vibrate: [80, 40, 80],
-      data: { url: data.url || '/' },
-      tag: data.tag || 'erik-push',
-      renotify: true
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      const isPageFocused = windowClients.some(c => c.focused);
+      if (isPageFocused) return;
+      return self.registration.showNotification(data.title || 'Erik', {
+        body: data.body || '',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [80, 40, 80],
+        data: { url: data.url || '/' },
+        tag: data.tag || 'erik-push',
+        renotify: true
+      });
     })
   );
 });
