@@ -719,6 +719,35 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   text-align:center; color:var(--text-secondary); font-size:12px; padding:20px;
   font-family:var(--serif);
 }
+/* ── Curiosity pool panel ── */
+.curiosity-body { flex:1; overflow-y:auto; padding:16px; }
+.curiosity-empty {
+  text-align:center; color:var(--text-secondary); font-size:12px; padding:20px;
+  font-family:var(--serif);
+}
+.curiosity-seed {
+  padding:10px 12px; margin-bottom:8px;
+  background:var(--bg-input); border:1px solid var(--border);
+  border-radius:8px; position:relative;
+}
+.curiosity-seed-text {
+  font-size:13px; font-family:var(--serif); line-height:1.5;
+  color:var(--text-primary);
+}
+.curiosity-seed-meta {
+  display:flex; justify-content:space-between; align-items:center;
+  margin-top:6px; font-size:10px; color:var(--text-secondary); font-family:var(--font);
+}
+.curiosity-seed-delete {
+  background:none; border:none; color:var(--text-secondary);
+  cursor:pointer; font-size:12px; padding:2px 6px; border-radius:4px;
+}
+.curiosity-seed-delete:hover { background:var(--border); color:var(--text-primary); }
+.curiosity-seed-trail {
+  font-size:10px; color:var(--text-secondary); margin-top:4px;
+  font-family:var(--font); line-height:1.4; border-top:1px solid var(--border);
+  padding-top:4px;
+}
 .cli-dot.yellow { background:#eab308; box-shadow:0 0 4px #eab30888; }
 .cli-dot.red { background:#ef4444; box-shadow:0 0 4px #ef444488; }
 .cli-dot.gray { background:#6b7280; }
@@ -989,6 +1018,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">Erik的内心</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('curiosity')">
+          <span class="panel-menu-label">好奇池</span>
+          <span class="panel-menu-arrow" id="curiosityMenuBadge" style="font-size:11px;color:var(--text-secondary)"></span>
+        </div>
                  <div class="panel-menu-item" onclick="openPanelView('mcp')">
           <span class="panel-menu-label">MCP 服务器</span>
           <span class="panel-menu-arrow">›</span>
@@ -1037,6 +1070,17 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <input type="checkbox" id="desireProactiveToggle" onchange="toggleDesireProactive()">
           <div class="toggle-track"></div>
         </label>
+      </div>
+    </div>
+    <!-- View: 好奇池 -->
+    <div class="panel-view" id="panelCuriosity">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">好奇池</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="curiosity-body" id="curiosityBody">
+        <div class="curiosity-empty">还没有种子</div>
       </div>
     </div>
          <!-- View: MCP 服务器 -->
@@ -1308,9 +1352,20 @@ function handleWSMessage(data) {
 
     case 'desire:state':
       renderDesire(data);
+      if (data.curiosity_pool) updateCuriosityBadge(data.curiosity_pool);
       break;
     case 'desire:proactive:status':
       updateDesireProactiveUI(data.enabled);
+      break;
+
+    case 'curiosity:list':
+      renderCuriosityPool(data.seeds || []);
+      break;
+    case 'curiosity:seed_added':
+      if (data.seed) updateCuriosityBadge(null, 1);
+      break;
+    case 'curiosity:seed_consumed':
+      updateCuriosityBadge(null, -1);
       break;
 
     // CLI process monitor
@@ -1444,10 +1499,11 @@ function ensureAssistantBubble() {
   initLongPress(currentBubble);
 }
 
+var _hiddenMarkerRe = /<!--(?:voice|react|curiosity-seed):[^>]*?-->/g;
 function appendStreamText(text) {
   ensureAssistantBubble();
   streamedText += text;
-  currentTextNode.innerHTML = renderMarkdown(streamedText);
+  currentTextNode.innerHTML = renderMarkdown(streamedText.replace(_hiddenMarkerRe, ''));
   scrollToBottom();
 }
 
@@ -2256,13 +2312,14 @@ function openPanelView(view) {
   
   
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
+  document.getElementById('panelCuriosity').classList.toggle('active', view === 'curiosity');
      document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
   document.getElementById('panelCli').classList.toggle('active', view === 'cli');
   if (view === 'ctx') wsSend('context:list', {});
      if (view === 'mcp') loadMcpServers();
   if (view === 'cli') fetchCliStatus();
-  
-  
+  if (view === 'curiosity') wsSend('curiosity:list', {});
+
   if (view === 'desire') {
     fetchDesireState();
     if (_desirePoll) clearInterval(_desirePoll);
@@ -2411,6 +2468,56 @@ function escHtml(s) {
 function closeMcpPanel() {
   document.getElementById('mcpOverlay').classList.remove('open');
   if (_desirePoll) { clearInterval(_desirePoll); _desirePoll = null; }
+}
+
+/* ── Curiosity Pool ── */
+var _curiosityCount = 0;
+
+function renderCuriosityPool(seeds) {
+  var body = document.getElementById('curiosityBody');
+  if (!body) return;
+  _curiosityCount = seeds.length;
+  updateCuriosityBadge(seeds);
+  if (!seeds.length) {
+    body.innerHTML = '<div class="curiosity-empty">还没有种子</div>';
+    return;
+  }
+  var html = '';
+  for (var i = seeds.length - 1; i >= 0; i--) {
+    var s = seeds[i];
+    var dt = s.created_at ? s.created_at.split('T')[0] : '';
+    var time = s.created_at && s.created_at.indexOf('T') > -1
+      ? s.created_at.split('T')[1].substring(0, 5) : '';
+    html += '<div class="curiosity-seed" data-id="' + escHtml(s.id) + '">';
+    html += '<div class="curiosity-seed-text">' + escHtml(s.text) + '</div>';
+    if (s.trail && s.trail.length) {
+      html += '<div class="curiosity-seed-trail">';
+      for (var j = 0; j < s.trail.length; j++) {
+        html += escHtml(s.trail[j]) + '<br>';
+      }
+      html += '</div>';
+    }
+    html += '<div class="curiosity-seed-meta">';
+    html += '<span>' + dt + ' ' + time + '</span>';
+    html += '<button class="curiosity-seed-delete" onclick="deleteCuriositySeed(\'' + s.id + '\')">&times;</button>';
+    html += '</div>';
+    html += '</div>';
+  }
+  body.innerHTML = html;
+}
+
+function deleteCuriositySeed(id) {
+  wsSend('curiosity:delete', { id: id });
+}
+
+function updateCuriosityBadge(seeds, delta) {
+  if (seeds !== null && seeds !== undefined) {
+    _curiosityCount = Array.isArray(seeds) ? seeds.length : 0;
+  } else if (delta) {
+    _curiosityCount = Math.max(0, _curiosityCount + delta);
+  }
+  var badge = document.getElementById('curiosityMenuBadge');
+  if (badge) badge.textContent = _curiosityCount > 0 ? _curiosityCount : '';
 }
 
 /* ══════════════════════════════════════

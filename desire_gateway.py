@@ -1,5 +1,7 @@
 """desire_gateway.py - Bridge between desire engine and WebSocket gateway."""
+import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 SGT = timezone(timedelta(hours=8))
 
@@ -9,6 +11,59 @@ try:
     DESIRE_AVAILABLE = True
 except ImportError:
     DESIRE_AVAILABLE = False
+
+# ── Curiosity Pool ──
+
+CURIOSITY_POOL_PATH = Path("./curiosity_pool.json")
+
+
+def load_curiosity_pool() -> list:
+    if CURIOSITY_POOL_PATH.exists():
+        try:
+            data = json.loads(CURIOSITY_POOL_PATH.read_text("utf-8"))
+            return data.get("seeds", [])
+        except Exception:
+            pass
+    return []
+
+
+def save_curiosity_pool(seeds: list):
+    CURIOSITY_POOL_PATH.write_text(
+        json.dumps({"seeds": seeds}, ensure_ascii=False, indent=2), "utf-8"
+    )
+
+
+def add_curiosity_seed(text: str, trail: list = None):
+    seeds = load_curiosity_pool()
+    import time as _t
+    seed = {
+        "id": f"seed_{int(_t.time())}_{len(seeds)}",
+        "text": text.strip(),
+        "trail": (trail or [])[-4:],
+        "created_at": datetime.now(SGT).isoformat(),
+    }
+    seeds.append(seed)
+    save_curiosity_pool(seeds)
+    return seed
+
+
+def pop_latest_curiosity_seed():
+    seeds = load_curiosity_pool()
+    if not seeds:
+        return None
+    seed = seeds.pop()
+    save_curiosity_pool(seeds)
+    return seed
+
+
+def delete_curiosity_seed(seed_id: str) -> bool:
+    seeds = load_curiosity_pool()
+    before = len(seeds)
+    seeds = [s for s in seeds if s.get("id") != seed_id]
+    if len(seeds) < before:
+        save_curiosity_pool(seeds)
+        return True
+    return False
 
 
 def classify_and_pulse(state, message_text):
@@ -34,7 +89,7 @@ def classify_and_pulse(state, message_text):
     new_intent_key = state.intent.get("drive_key") if state.intent else None
 
     if state.intent and new_intent_key != old_intent_key:
-        inj = build_desire_injection(state)
+        inj = build_desire_injection(state, is_conversation=True)
         return inj, new_intent_key
 
     return "", None
@@ -48,9 +103,10 @@ def satisfy_after_response(state, drive_key):
     de.save_state(state)
 
 
-def build_desire_injection(state) -> str:
+def build_desire_injection(state, is_conversation=False) -> str:
     """Build one-shot context injection for CLI when intent is newly triggered.
     Shows only the triggered drive, percentage, and trail.
+    When curiosity fires in conversation, includes seed recording hint.
     """
     if not DESIRE_AVAILABLE:
         return ""
@@ -73,6 +129,14 @@ def build_desire_injection(state) -> str:
         parts.append("  trail:")
         for t in trail[-6:]:
             parts.append(f"    {t}")
+
+    if dk == "curiosity" and is_conversation:
+        parts.append("")
+        parts.append(
+            "  [seed] 如果这段对话里有什么你觉得没来得及展开、想之后自己去查的东西，"
+            "可以在回复末尾用隐藏标记记下来：<!--curiosity-seed:用简短一句话记下想检索的内容-->"
+            " 这条会存进好奇池，下次你独处时系统会推给你去探索。不记也完全可以。"
+        )
 
     return NL.join(parts)
 
@@ -199,6 +263,45 @@ def build_desire_proactive_prompt(state):
     return NL.join(parts)
 
 
+def build_curiosity_seed_prompt(seed, elapsed_hours):
+    """Build prompt for exploring a curiosity seed during silent mode."""
+    now_str = datetime.now(SGT).strftime('%H:%M')
+    NL = chr(10)
+
+    parts = [
+        '[curiosity-seed] Not Jeoi. Your own curiosity brought you here.',
+        f'Now: {now_str} (UTC+8). Jeoi last spoke: {elapsed_hours:.1f}h ago.',
+        '',
+        f'You noted this down during a conversation:',
+        f'  "{seed["text"]}"',
+    ]
+
+    if seed.get('trail'):
+        parts.append('  context trail:')
+        for t in seed['trail']:
+            parts.append(f'    {t}')
+
+    parts.extend([
+        '',
+        'This seed was waiting in your curiosity pool. Now it\'s yours.',
+        'You can:',
+        '  - Use browser_open / browser_js to search Yahoo or the web',
+        '  - Search memories via palace',
+        '  - Or decide it\'s not worth pursuing right now (none)',
+        '',
+        'If you found something interesting, share it with Jeoi.',
+        'Think freely, then act. Call tools before replying.',
+        'Last line: ACTION: message / explore / recall / none',
+        'Next line: CONTENT: the exact message Jeoi will see (if you explored something worth sharing)',
+        '',
+        'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
+        'Write what you actually want to tell her, not a description of what you did.',
+        'Only use ACTION: none with no CONTENT if you truly found nothing worth sharing.',
+    ])
+
+    return NL.join(parts)
+
+
 def do_tick(state, t_jeoi=None, passive_mode=False):
     """Run a single tick and save. For background ticker.
     passive_mode=True: drift_cap removed, drives rise to 100% via their growth function.
@@ -222,4 +325,6 @@ def snapshot(state):
     """Get current snapshot for frontend."""
     if not DESIRE_AVAILABLE or not state:
         return {"error": "not available"}
-    return de.snapshot(state)
+    snap = de.snapshot(state)
+    snap["curiosity_pool"] = load_curiosity_pool()
+    return snap

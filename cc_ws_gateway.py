@@ -333,7 +333,9 @@ class TranscriptTailer:
                 text = blk.get("text", "")
                 if text:
                     self.session._current_text += text
-                    await self._ws({"event": "stream:text", "text": text})
+                    display = _HIDDEN_MARKER_RE.sub('', text)
+                    if display:
+                        await self._ws({"event": "stream:text", "text": display})
 
 
         stop_reason = msg.get("stop_reason", "")
@@ -1052,6 +1054,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed):[^>]*-->')
 
 
 
@@ -1384,7 +1387,22 @@ async def pebbling_worker():
                     _dp_dk = desire_st.intent.get("drive_key", "")
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
-                        _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                        # Curiosity + seeds in pool → seed exploration prompt
+                        if _dp_dk == "curiosity":
+                            _seed = dg.pop_latest_curiosity_seed()
+                            if _seed:
+                                _elapsed_h = (now - peb_state.get("t_jeoi", now)) / 3600
+                                _dp_prompt = dg.build_curiosity_seed_prompt(_seed, _elapsed_h)
+                                log.info(f"Curiosity seed popped for exploration: {_seed['text'][:60]}")
+                                if active_ws:
+                                    try:
+                                        await active_ws.send_json({"event": "curiosity:seed_consumed", "seed_id": _seed["id"]})
+                                    except Exception:
+                                        pass
+                            else:
+                                _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                        else:
+                            _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                         dg.satisfy_after_response(desire_st, _dp_dk)
                         _desire_last_proactive = now
                         log.info(f"Desire proactive satisfied (pre-response): {_dp_dk}")
@@ -1490,10 +1508,27 @@ async def pebbling_worker():
                     log.info(f"Pebbling #{actual + 1}: desire-driven "
                              f"({desire_st.intent.get('want_action')}), "
                              f"elapsed={elapsed_h:.1f}h")
-                    events = get_recent_events(4)
-                    prompt = dg.build_desire_pebbling_prompt(
-                        desire_st, elapsed_h, actual,
-                        format_events_for_prompt(events))
+                    # Curiosity + seeds → seed exploration
+                    if _dk == "curiosity":
+                        _peb_seed = dg.pop_latest_curiosity_seed()
+                        if _peb_seed:
+                            prompt = dg.build_curiosity_seed_prompt(_peb_seed, elapsed_h)
+                            log.info(f"Pebbling curiosity seed: {_peb_seed['text'][:60]}")
+                            if active_ws:
+                                try:
+                                    await active_ws.send_json({"event": "curiosity:seed_consumed", "seed_id": _peb_seed["id"]})
+                                except Exception:
+                                    pass
+                        else:
+                            events = get_recent_events(4)
+                            prompt = dg.build_desire_pebbling_prompt(
+                                desire_st, elapsed_h, actual,
+                                format_events_for_prompt(events))
+                    else:
+                        events = get_recent_events(4)
+                        prompt = dg.build_desire_pebbling_prompt(
+                            desire_st, elapsed_h, actual,
+                            format_events_for_prompt(events))
                     dg.satisfy_after_response(desire_st, _dk)
                     log.info(f"Desire satisfied (pre-response): {_dk}")
                     text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
@@ -2185,7 +2220,7 @@ async def websocket_endpoint(ws: WebSocket):
                         # Passive mode: if classify didn't trigger new injection but
                         # an existing intent is sitting there, inject it now
                         if not inj and not peb_state.get("desire_proactive") and desire_st.intent:
-                            inj = dg.build_desire_injection(desire_st)
+                            inj = dg.build_desire_injection(desire_st, is_conversation=True)
                             _desire_key = desire_st.intent.get("drive_key")
                             log.info(f"Desire passive inject: {_desire_key}")
                         if inj:
@@ -2341,6 +2376,18 @@ async def websocket_endpoint(ws: WebSocket):
                 save_peb_state()
                 log.info(f"Desire proactive {'enabled' if enabled else 'disabled'}")
                 await ws.send_json({"event": "desire:proactive:status", "enabled": enabled})
+
+            elif event == "curiosity:list":
+                seeds = dg.load_curiosity_pool() if DESIRE_ENABLED else []
+                await ws.send_json({"event": "curiosity:list", "seeds": seeds})
+
+            elif event == "curiosity:delete":
+                seed_id = data.get("id", "")
+                if DESIRE_ENABLED and seed_id:
+                    ok = dg.delete_curiosity_seed(seed_id)
+                    log.info(f"Curiosity seed {'deleted' if ok else 'not found'}: {seed_id}")
+                seeds = dg.load_curiosity_pool() if DESIRE_ENABLED else []
+                await ws.send_json({"event": "curiosity:list", "seeds": seeds})
 
             # ── Context management ──
 
@@ -2538,6 +2585,24 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 emoji, idx = m.group(1), int(m.group(2)) - 1
                 erik_reactions.append((idx, emoji))
             session._current_text = react_pattern.sub('', session._current_text).rstrip()
+
+        # Post-processing: parse curiosity seeds
+        if session._current_text and DESIRE_ENABLED:
+            seed_pattern = re.compile(r'<!--curiosity-seed:(.+?)-->')
+            seed_matches = seed_pattern.findall(session._current_text)
+            for seed_text in seed_matches:
+                trail = list((desire_st.trails.get("curiosity", []) if desire_st else [])[-4:])
+                seed = dg.add_curiosity_seed(seed_text, trail)
+                log.info(f"Curiosity seed recorded: {seed_text[:60]}")
+                if active_ws:
+                    try:
+                        await active_ws.send_json({
+                            "event": "curiosity:seed_added",
+                            "seed": seed,
+                        })
+                    except Exception:
+                        pass
+            session._current_text = seed_pattern.sub('', session._current_text).rstrip()
 
         if session._current_text or session._current_thinking:
             append_message(
