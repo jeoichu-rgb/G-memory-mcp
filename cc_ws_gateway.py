@@ -2578,16 +2578,23 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 "sessions": [s.to_dict() for s in sorted_sessions],
             })
 
+        ws_ok = False
         if not session._result_sent:
-            payload = _usage_ws_payload(session, turn_usage, turn_cost)
-            payload["event"] = "message:complete"
-            await ws.send_json(payload)
+            try:
+                payload = _usage_ws_payload(session, turn_usage, turn_cost)
+                payload["event"] = "message:complete"
+                await ws.send_json(payload)
+                ws_ok = True
+            except Exception:
+                pass
 
-        # WS 在线时不推（前端直接显示）；WS 离线时推 TG + Web Push
-        if session._current_text and not active_ws:
+        # Web Push 始终发（SW 层 isPageFocused 自动抑制）
+        # TG 只在 WS 发送失败时发（说明用户不在页面）
+        if session._current_text:
             preview = session._current_text.replace(chr(10), " ")[:100]
             await send_web_push("Erik", preview, url="/chat.html")
-            await send_telegram(preview)
+            if not ws_ok:
+                await send_telegram(preview)
 
         _user_msg_active = False
 
@@ -2608,13 +2615,16 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
             )
+        ws_err_ok = False
         try:
             await ws.send_json({"event": "system:error", "message": str(e)})
+            ws_err_ok = True
         except Exception:
-            if session._current_text and not active_ws:
-                preview = session._current_text.replace(chr(10), " ")[:100]
-                await send_web_push("Erik", preview, url="/chat.html")
-                await send_telegram(preview)
+            pass
+        if session._current_text and not ws_err_ok:
+            preview = session._current_text.replace(chr(10), " ")[:100]
+            await send_web_push("Erik", preview, url="/chat.html")
+            await send_telegram(preview)
 
 
 # ══════════════════════════════════════════════
