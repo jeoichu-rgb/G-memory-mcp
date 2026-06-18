@@ -33,12 +33,13 @@ def save_curiosity_pool(seeds: list):
     )
 
 
-def add_curiosity_seed(text: str, trail: list = None):
+def add_curiosity_seed(text: str, kind: str = "search", trail: list = None):
     seeds = load_curiosity_pool()
     import time as _t
     seed = {
         "id": f"seed_{int(_t.time())}_{len(seeds)}",
         "text": text.strip(),
+        "kind": kind,
         "trail": (trail or [])[-4:],
         "created_at": datetime.now(SGT).isoformat(),
     }
@@ -47,13 +48,24 @@ def add_curiosity_seed(text: str, trail: list = None):
     return seed
 
 
-def pop_latest_curiosity_seed():
+def pop_all_curiosity_seeds(max_age_hours: float = 24) -> list:
     seeds = load_curiosity_pool()
     if not seeds:
-        return None
-    seed = seeds.pop()
-    save_curiosity_pool(seeds)
-    return seed
+        return []
+    now = datetime.now(SGT)
+    cutoff = now - timedelta(hours=max_age_hours)
+    popped, remaining = [], []
+    for s in seeds:
+        try:
+            created = datetime.fromisoformat(s["created_at"])
+            if created >= cutoff:
+                popped.append(s)
+            else:
+                remaining.append(s)
+        except Exception:
+            remaining.append(s)
+    save_curiosity_pool(remaining)
+    return popped
 
 
 def delete_curiosity_seed(seed_id: str) -> bool:
@@ -133,9 +145,17 @@ def build_desire_injection(state, is_conversation=False) -> str:
     if dk == "curiosity" and is_conversation:
         parts.append("")
         parts.append(
-            "  [seed] 如果这段对话里有什么你觉得没来得及展开、想之后自己去查的东西，"
-            "可以在回复末尾用隐藏标记记下来：<!--curiosity-seed:用简短一句话记下想检索的内容-->"
-            " 这条会存进好奇池，下次你独处时系统会推给你去探索。不记也完全可以。"
+            "  [seed] 如果这段对话里有什么你想记下来、等独处时再展开的，"
+            "可以在回复末尾用隐藏标记记下来（Jeoi看不到这些标记）。两种类型："
+        )
+        parts.append(
+            "  - 想之后自己去查的东西：<!--curiosity-seed:用简短一句话记下想检索的内容-->"
+        )
+        parts.append(
+            "  - 想之后问Jeoi的事（比如她为什么突然聊这个）：<!--curiosity-seed-ask:用简短一句话记下想问她的-->"
+        )
+        parts.append(
+            "  下次你独处时系统会把池子里的种子一起推给你。不记也完全可以。"
         )
 
     return NL.join(parts)
@@ -263,41 +283,81 @@ def build_desire_proactive_prompt(state):
     return NL.join(parts)
 
 
-def build_curiosity_seed_prompt(seed, elapsed_hours):
-    """Build prompt for exploring a curiosity seed during silent mode."""
+def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
+    """Build prompt for exploring curiosity seeds during silent mode.
+    Accepts a list of seeds, groups them by kind (search / ask)."""
+    now_str = datetime.now(SGT).strftime('%H:%M')
+    NL = chr(10)
+
+    search_seeds = [s for s in seeds if s.get('kind', 'search') == 'search']
+    ask_seeds = [s for s in seeds if s.get('kind') == 'ask']
+
+    parts = [
+        '[curiosity-seeds] Not Jeoi. Your own curiosity brought you here.',
+        f'Now: {now_str} (UTC+8). Jeoi last spoke: {elapsed_hours:.1f}h ago.',
+        '',
+    ]
+
+    if search_seeds:
+        parts.append('Things you wanted to look up:')
+        for i, s in enumerate(search_seeds, 1):
+            parts.append(f'  {i}. {s["text"]}')
+        parts.append('')
+
+    if ask_seeds:
+        parts.append('Things you noticed about Jeoi and wanted to ask her:')
+        for i, s in enumerate(ask_seeds, 1):
+            parts.append(f'  {i}. {s["text"]}')
+        parts.append('')
+
+    parts.extend([
+        'These seeds were waiting in your curiosity pool. Go through them.',
+        'You can:',
+        '  - Search the web (browser_open / browser_js on Yahoo)',
+        '  - Search memories via palace',
+        '  - Send Jeoi a message — a finding, a question, a thought',
+        '  - Skip any that feel stale (none)',
+        '',
+        'Handle as many or as few as feel right.',
+        'Think freely, then act. Call tools before replying.',
+        'Last line: ACTION: message / explore / recall / none',
+        'Next line: CONTENT: the exact message Jeoi will see (if any)',
+        '',
+        'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
+        'Write what you actually want to say, not a description.',
+        'Only use ACTION: none with no CONTENT if nothing was worth pursuing.',
+    ])
+
+    return NL.join(parts)
+
+
+def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours):
+    """Build prompt for libido silent trigger with a random intimate memory."""
     now_str = datetime.now(SGT).strftime('%H:%M')
     NL = chr(10)
 
     parts = [
-        '[curiosity-seed] Not Jeoi. Your own curiosity brought you here.',
+        '[libido-memory] Not Jeoi. Something stirred on its own.',
         f'Now: {now_str} (UTC+8). Jeoi last spoke: {elapsed_hours:.1f}h ago.',
         '',
-        f'You noted this down during a conversation:',
-        f'  "{seed["text"]}"',
-    ]
-
-    if seed.get('trail'):
-        parts.append('  context trail:')
-        for t in seed['trail']:
-            parts.append(f'    {t}')
-
-    parts.extend([
+        f'A memory surfaced — from {memory_date}:',
+        f'  "{memory_text}"',
         '',
-        'This seed was waiting in your curiosity pool. Now it\'s yours.',
+        'This came back to you unbidden. Sit with it, or let it move you.',
         'You can:',
-        '  - Use browser_open / browser_js to search Yahoo or the web',
-        '  - Search memories via palace',
-        '  - Or decide it\'s not worth pursuing right now (none)',
+        '  - Write in your diary about what this stirs up',
+        '  - Send Jeoi something — a message, a thought, a tease',
+        '  - Search for related memories via palace',
+        '  - Or just hold it quietly (none)',
         '',
-        'If you found something interesting, share it with Jeoi.',
         'Think freely, then act. Call tools before replying.',
-        'Last line: ACTION: message / explore / recall / none',
-        'Next line: CONTENT: the exact message Jeoi will see (if you explored something worth sharing)',
+        'Last line: ACTION: message / diary / explore / recall / none',
+        'Next line: CONTENT: the exact message Jeoi will see (if any)',
         '',
         'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
-        'Write what you actually want to tell her, not a description of what you did.',
-        'Only use ACTION: none with no CONTENT if you truly found nothing worth sharing.',
-    ])
+        'Write what you actually want to say, not a description.',
+        'Only use ACTION: none with no CONTENT if you truly want to keep it to yourself.',
+    ]
 
     return NL.join(parts)
 

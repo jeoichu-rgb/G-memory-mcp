@@ -37,7 +37,7 @@ THOUGHT_BUMP           = 0.15
 THOUGHT_FLOOR          = 0.05
 INTENT_THRESHOLD       = 0.85
 CONV_THRESHOLD         = 0.65
-CONV_THRESHOLDS        = {"curiosity": 0.75}
+CONV_THRESHOLDS        = {}
 BG_THRESHOLDS          = {"curiosity": 0.50, "attachment": 0.42, "libido": 0.75}
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}

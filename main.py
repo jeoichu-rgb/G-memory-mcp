@@ -562,6 +562,19 @@ async def admin_create_memory(payload: AdminMemoryCreate, collection: str = "dyn
     return {"status": "ok", "id": mid}
 
 
+import random as _random
+
+@app.get("/admin/memories/random")
+async def admin_random_memory_by_category(category: str, collection: str = "dynamic"):
+    """Return one random memory whose category matches (substring)."""
+    items = claude_list_all_memories(collection)
+    matched = [it for it in items if category in it.get("meta", {}).get("category", "")]
+    if not matched:
+        raise HTTPException(404, f"No memories with category containing '{category}'")
+    pick = _random.choice(matched)
+    return {"id": pick["id"], "text": pick["text"], "meta": pick["meta"]}
+
+
 class AdminDiaryCreate(BaseModel):
     title: str
     content: str
