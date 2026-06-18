@@ -1247,9 +1247,9 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         save_peb_state()
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
 
-    await send_telegram(content)
-    # WS 离线时才推 Web Push（在线时前端直接显示，不用推）
+    # WS 离线时才推 TG 和 Web Push（在线时前端直接显示，不用推）
     if not sent:
+        await send_telegram(content)
         await send_web_push("Erik", content)
 
 
@@ -2583,8 +2583,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             payload["event"] = "message:complete"
             await ws.send_json(payload)
 
-        # Always push notification — sw.js suppresses if page is focused
-        if session._current_text:
+        # WS 在线时不推（前端直接显示）；WS 离线时推 TG + Web Push
+        if session._current_text and not active_ws:
             preview = session._current_text.replace(chr(10), " ")[:100]
             await send_web_push("Erik", preview, url="/chat.html")
             await send_telegram(preview)
@@ -2611,7 +2611,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         try:
             await ws.send_json({"event": "system:error", "message": str(e)})
         except Exception:
-            if session._current_text:
+            if session._current_text and not active_ws:
                 preview = session._current_text.replace(chr(10), " ")[:100]
                 await send_web_push("Erik", preview, url="/chat.html")
                 await send_telegram(preview)

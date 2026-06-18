@@ -1398,6 +1398,45 @@ async function checkPushState() {
     btn.textContent = '关闭推送';
     btn.classList.add('off');
     btn.disabled = false;
+    localStorage.setItem('push_wanted', '1');
+  } else if (localStorage.getItem('push_wanted') === '1') {
+    // iOS Safari 后台回收了订阅，自动重新订阅
+    title.textContent = '推送恢复中…';
+    desc.textContent = '订阅被系统回收，正在自动重连';
+    btn.disabled = true;
+    try {
+      const keyResp = await fetch(API_BASE + '/api/push/vapid-key');
+      const { publicKey } = await keyResp.json();
+      if (publicKey) {
+        const newSub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
+        });
+        const subJson = newSub.toJSON();
+        await fetch(API_BASE + '/api/push/subscribe', {
+          method: 'POST', headers: hdr(),
+          body: JSON.stringify({ endpoint: subJson.endpoint, keys: subJson.keys })
+        });
+        card.classList.add('active');
+        title.textContent = '推送已开启 ✓';
+        desc.textContent = '自动恢复成功';
+        btn.textContent = '关闭推送';
+        btn.classList.add('off');
+        btn.disabled = false;
+      } else {
+        title.textContent = '推送恢复失败';
+        desc.textContent = 'VAPID 未配置';
+        btn.textContent = '重试';
+        btn.disabled = false;
+      }
+    } catch (e) {
+      console.warn('Push auto-resubscribe failed:', e);
+      title.textContent = '推送通知';
+      desc.textContent = '自动恢复失败，点击重新开启';
+      btn.textContent = '开启推送';
+      btn.classList.remove('off');
+      btn.disabled = false;
+    }
   } else {
     card.classList.remove('active');
     title.textContent = '推送通知';
@@ -1420,6 +1459,7 @@ async function togglePush() {
     if (existingSub) {
       // 取消订阅
       await existingSub.unsubscribe();
+      localStorage.removeItem('push_wanted');
       await fetch(API_BASE + '/api/push/unsubscribe', {
         method: 'POST', headers: hdr(),
         body: JSON.stringify({ endpoint: existingSub.endpoint })
@@ -1463,6 +1503,7 @@ async function togglePush() {
       })
     });
 
+    localStorage.setItem('push_wanted', '1');
     checkPushState();
   } catch (e) {
     console.error('Push toggle error:', e);
