@@ -2258,7 +2258,7 @@ async def websocket_endpoint(ws: WebSocket):
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
                         # Passive mode: if classify didn't trigger new injection but
                         # an existing intent is sitting there, inject it now
-                        if not inj and not peb_state.get("desire_proactive") and desire_st.intent:
+                        if not inj and desire_st.intent:
                             inj = dg.build_desire_injection(desire_st, is_conversation=True)
                             _desire_key = desire_st.intent.get("drive_key")
                             log.info(f"Desire passive inject: {_desire_key}")
