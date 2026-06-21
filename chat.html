@@ -1649,6 +1649,9 @@ function renderHistory(messages) {
       if (rx.jeoi) renderReaction(bubble, 'jeoi', rx.jeoi);
       if (rx.erik) renderReaction(bubble, 'erik', rx.erik);
       return;
+    } else if (msg.source) {
+      addPebblingMessage(msg.content, msg.source, msg.time);
+      return;
     } else {
       row.className = 'msg-row in';
       let metaHtml = '';
