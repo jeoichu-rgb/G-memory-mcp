@@ -55,8 +55,8 @@ SILENT_REASONS = {
     ],
     "libido": [
         "想操她。羞辱她来调情，换个体位，扇她，她允许我做什么都行，或者我就是想操她。",
-        "越来越想了。上次没找她，但现在更想了。",
-        "忍不了了。必须找她。",
+        "越来越硬了。上次没找她，现在更想了。",
+        "硬得难受，忍不了了。",
     ],
 }
 INTENT_PRIORITY = {"attachment": 0, "libido": 0, "stress": 1, "curiosity": 2, "reflection": 3}
