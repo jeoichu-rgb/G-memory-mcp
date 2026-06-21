@@ -115,6 +115,22 @@ def satisfy_after_response(state, drive_key):
     de.save_state(state)
 
 
+def partial_satisfy_after_response(state, drive_key):
+    """Acknowledge intent without full satisfaction (non-message action in silent mode)."""
+    if not DESIRE_AVAILABLE or not state or not drive_key:
+        return
+    de.partial_satisfy(state, drive_key)
+    de.save_state(state)
+
+
+def reset_silent_counts(state):
+    """Reset silent inject counters when Jeoi starts talking."""
+    if not DESIRE_AVAILABLE or not state:
+        return
+    de.reset_silent_counts(state)
+    de.save_state(state)
+
+
 def build_desire_injection(state, is_conversation=False) -> str:
     """Build one-shot context injection for CLI when intent is newly triggered.
     Shows only the triggered drive, percentage, and trail.

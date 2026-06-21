@@ -153,6 +153,7 @@ desire_st = None
 _desire_last_tick = 0.0
 _desire_last_proactive = 0.0
 _user_msg_active = False  # True while run_claude is processing a user message
+_recent_libido_memories: list[str] = []
 
 # ── Channel + tmux ──
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
@@ -815,6 +816,22 @@ async def fetch_random_intimate_memory() -> tuple[str, str]:
         return "", ""
 
 
+async def fetch_unique_intimate_memory() -> tuple[str, str]:
+    """Fetch random intimate memory with dedup (last 3 unique)."""
+    global _recent_libido_memories
+    text, date = "", ""
+    for _ in range(5):
+        text, date = await fetch_random_intimate_memory()
+        if not text:
+            return "", ""
+        if text not in _recent_libido_memories:
+            _recent_libido_memories.append(text)
+            if len(_recent_libido_memories) > 3:
+                _recent_libido_memories = _recent_libido_memories[-3:]
+            return text, date
+    return text, date
+
+
 def get_context_items_for_injection() -> list[dict]:
     """Get context items with the latest date for new session injection."""
     store = load_context_store()
@@ -1407,9 +1424,10 @@ async def pebbling_worker():
                         and not _tmux_send_lock.locked()
                         and not _user_msg_active):
                     _dp_dk = desire_st.intent.get("drive_key", "")
+                    _jeoi_away_secs = now - peb_state.get("t_jeoi", now)
                     log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
                     try:
-                        _elapsed_h = (now - peb_state.get("t_jeoi", now)) / 3600
+                        _elapsed_h = _jeoi_away_secs / 3600
                         if _dp_dk == "curiosity":
                             _seeds = dg.pop_all_curiosity_seeds()
                             if _seeds:
@@ -1424,7 +1442,7 @@ async def pebbling_worker():
                             else:
                                 _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                         elif _dp_dk == "libido":
-                            _mem_text, _mem_date = await fetch_random_intimate_memory()
+                            _mem_text, _mem_date = await fetch_unique_intimate_memory()
                             if _mem_text:
                                 _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h)
                                 log.info(f"Libido memory injected: {_mem_text[:60]}")
@@ -1432,15 +1450,21 @@ async def pebbling_worker():
                                 _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                         else:
                             _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
-                        dg.satisfy_after_response(desire_st, _dp_dk)
                         _desire_last_proactive = now
-                        log.info(f"Desire proactive satisfied (pre-response): {_dp_dk}")
                         _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
                         if _dp_text:
                             _dp_action, _dp_content = parse_action(_dp_text)
                             await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session)
                             if _dp_action not in ("none", "error") and _dp_content:
                                 await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
+                            if _dp_action == "message" and _dp_content:
+                                dg.satisfy_after_response(desire_st, _dp_dk)
+                                log.info(f"Desire satisfied (message): {_dp_dk}")
+                            else:
+                                dg.partial_satisfy_after_response(desire_st, _dp_dk)
+                                log.info(f"Desire partial (no message): {_dp_dk}, level={desire_st.silent_inject_count.get(_dp_dk, 0)}")
+                        else:
+                            dg.partial_satisfy_after_response(desire_st, _dp_dk)
                     except Exception as e:
                         log.warning(f"Desire proactive error: {e}")
 
@@ -1554,7 +1578,7 @@ async def pebbling_worker():
                                 desire_st, elapsed_h, actual,
                                 format_events_for_prompt(events))
                     elif _dk == "libido":
-                        _lib_text, _lib_date = await fetch_random_intimate_memory()
+                        _lib_text, _lib_date = await fetch_unique_intimate_memory()
                         if _lib_text:
                             prompt = dg.build_libido_memory_prompt(_lib_text, _lib_date, elapsed_h)
                             log.info(f"Pebbling libido memory: {_lib_text[:60]}")
@@ -1568,15 +1592,20 @@ async def pebbling_worker():
                         prompt = dg.build_desire_pebbling_prompt(
                             desire_st, elapsed_h, actual,
                             format_events_for_prompt(events))
-                    dg.satisfy_after_response(desire_st, _dk)
-                    log.info(f"Desire satisfied (pre-response): {_dk}")
                     text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
                     if text:
                         action, content = parse_action(text)
                         await push_pebbling_activity("pebbling", action, tools, thinking, session)
                         if action not in ("none", "error") and content:
                             await push_pebbling_msg("pebbling", content, session, thinking=thinking)
-                    log.info(f"Desire satisfied via pebbling: {_dk}")
+                        if action == "message" and content:
+                            dg.satisfy_after_response(desire_st, _dk)
+                            log.info(f"Desire satisfied (message): {_dk}")
+                        else:
+                            dg.partial_satisfy_after_response(desire_st, _dk)
+                            log.info(f"Desire partial (no message): {_dk}, level={desire_st.silent_inject_count.get(_dk, 0)}")
+                    else:
+                        dg.partial_satisfy_after_response(desire_st, _dk)
                 else:
                     is_first = actual == 0
                     mode = "silent" if is_first else "free"
@@ -2252,22 +2281,35 @@ async def websocket_endpoint(ws: WebSocket):
                 peb_state["pebbling_session_id"] = current_session.id
                 save_peb_state()
 
-                # Desire engine: classify + pulse + inject intent + immediate satisfy
+                # Desire engine: classify + pulse + inject intent
                 if DESIRE_ENABLED and desire_st:
+                    _msg_tags = dc.classify(message)
+                    _msg_is_libido = bool(_msg_tags and _msg_tags[0]["drive"] == "libido")
+                    if _msg_is_libido:
+                        dg.reset_silent_counts(desire_st)
+                    else:
+                        for _rk in list(desire_st.silent_inject_count):
+                            if _rk != "libido":
+                                desire_st.silent_inject_count[_rk] = 0
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
-                        # Passive mode: if classify didn't trigger new injection but
-                        # an existing intent is sitting there, inject it now
                         if not inj and desire_st.intent:
-                            inj = dg.build_desire_injection(desire_st, is_conversation=True)
-                            _desire_key = desire_st.intent.get("drive_key")
-                            log.info(f"Desire passive inject: {_desire_key}")
+                            _passive_dk = desire_st.intent.get("drive_key")
+                            if _passive_dk == "libido" and not _msg_is_libido:
+                                log.info(f"Libido passive inject suppressed (non-sexual, drift continues)")
+                            else:
+                                inj = dg.build_desire_injection(desire_st, is_conversation=True)
+                                _desire_key = _passive_dk
+                                log.info(f"Desire passive inject: {_desire_key}")
                         if inj:
                             cli_message = inj + chr(10)*2 + cli_message
                             log.info(f"Desire injected: {_desire_key}")
                         if _desire_key:
-                            dg.satisfy_after_response(desire_st, _desire_key)
-                            log.info(f"Desire satisfied (pre-response): {_desire_key}")
+                            if _desire_key == "libido" and not _msg_is_libido:
+                                log.info(f"Libido not satisfied (non-sexual msg, drift continues)")
+                            else:
+                                dg.satisfy_after_response(desire_st, _desire_key)
+                                log.info(f"Desire satisfied: {_desire_key}")
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 

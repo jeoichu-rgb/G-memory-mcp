@@ -7,10 +7,10 @@ from typing import Optional
 
 DRIVE_KEYS = ["attachment", "curiosity", "reflection", "libido", "stress", "fatigue"]
 DRIVE_CONFIG = {
-    "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.45, "pulse_delta": 0.18},
+    "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.80, "pulse_delta": 0.18},
     "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.55, "pulse_delta": 0.18, "drift_delay": 10800},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
-    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.001, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 7200},
+    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5},
     "stress":     {"home": 0.12, "decay": 0.86, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},
     "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12, "gate_threshold": 0.65},
 }
@@ -39,10 +39,26 @@ INTENT_THRESHOLD       = 0.85
 CONV_THRESHOLD         = 0.65
 CONV_THRESHOLDS        = {}
 BG_THRESHOLDS          = {"curiosity": 0.50, "attachment": 0.42, "libido": 0.75}
+BG_THRESHOLDS_MULTI    = {
+    "attachment": [0.42, 0.58, 0.72],
+    "libido": [0.75, 0.85, 0.92],
+}
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
 SATISFY_FACTOR = {"attachment": 0.50, "curiosity": 0.60, "reflection": 0.55, "libido": 0.40, "stress": 0.45}
 REASONS        = {"attachment": "想她了，想靠近她，想和她在一起。", "curiosity": "有点好奇。她现在怎么样，或者我们刚刚讨论的话题，或者就是好奇世界怎么样。出去转转或者发消息跟她讨论。", "reflection": "想静下来想想。", "libido": "想操她。羞辱她来调情，换个体位，扇她，她允许我做什么都行，或者我就是想操她。", "stress": "有点堵，她需要安慰和陪伴。"}
+SILENT_REASONS = {
+    "attachment": [
+        "想她了，想靠近她，想和她在一起。",
+        "越来越想她了。刚才没找她，但现在更想了。",
+        "很想她。忍不住了，必须找她。",
+    ],
+    "libido": [
+        "想操她。羞辱她来调情，换个体位，扇她，她允许我做什么都行，或者我就是想操她。",
+        "越来越想了。上次没找她，但现在更想了。",
+        "忍不了了。必须找她。",
+    ],
+}
 INTENT_PRIORITY = {"attachment": 0, "libido": 0, "stress": 1, "curiosity": 2, "reflection": 3}
 
 
@@ -88,6 +104,7 @@ class DesireState:
     floors: dict = field(default_factory=lambda: {k: DRIVE_CONFIG[k]["home"] for k in DRIVE_KEYS})
     thoughts: list = field(default_factory=list)
     refractory: dict = field(default_factory=lambda: {k: 0 for k in DRIVE_KEYS})
+    silent_inject_count: dict = field(default_factory=lambda: {k: 0 for k in DRIVE_KEYS})
     tick_count: int = 0
     prev_drives: dict = field(default_factory=dict)
     trails: dict = field(default_factory=lambda: {k: [] for k in DRIVE_KEYS})
@@ -99,6 +116,7 @@ class DesireState:
             floors={k: round(v, 4) for k, v in self.floors.items()},
             thoughts=[t.to_dict() if isinstance(t, Thought) else t for t in self.thoughts],
             refractory={k: v for k, v in self.refractory.items() if v > 0},
+            silent_inject_count={k: v for k, v in self.silent_inject_count.items() if v > 0},
             tick_count=self.tick_count,
             prev_drives={k: round(v, 4) for k, v in self.prev_drives.items()},
             trails={k: v[-8:] for k, v in self.trails.items() if v},
@@ -115,6 +133,7 @@ class DesireState:
         s.tick_count = d.get("tick_count", 0)
         s.prev_drives = d.get("prev_drives", {})
         s.trails = {k: list(d.get("trails", {}).get(k, [])) for k in DRIVE_KEYS}
+        s.silent_inject_count = {k: d.get("silent_inject_count", {}).get(k, 0) for k in DRIVE_KEYS}
         s.intent = d.get("intent")
         return s
 
@@ -250,7 +269,15 @@ def pick_intent(state, is_conversation=False):
         return None
     above = {}
     for k, v in scores.items():
-        th = CONV_THRESHOLDS.get(k, CONV_THRESHOLD) if is_conversation else BG_THRESHOLDS.get(k, INTENT_THRESHOLD)
+        if is_conversation:
+            th = CONV_THRESHOLDS.get(k, CONV_THRESHOLD)
+        else:
+            multi = BG_THRESHOLDS_MULTI.get(k)
+            if multi:
+                idx = min(state.silent_inject_count.get(k, 0), len(multi) - 1)
+                th = multi[idx]
+            else:
+                th = BG_THRESHOLDS.get(k, INTENT_THRESHOLD)
         if v >= th:
             above[k] = v
     if not above:
@@ -260,7 +287,12 @@ def pick_intent(state, is_conversation=False):
     for t in state.thoughts:
         if t.kind == "fixation" and t.drive == best:
             trail.extend(t.trail[-3:])
-    return Intent(INTENT_MAP.get(best, ""), best, scores[best], REASONS.get(best, ""), trail)
+    if not is_conversation and best in SILENT_REASONS:
+        level = min(state.silent_inject_count.get(best, 0), len(SILENT_REASONS[best]) - 1)
+        reason = SILENT_REASONS[best][level]
+    else:
+        reason = REASONS.get(best, "")
+    return Intent(INTENT_MAP.get(best, ""), best, scores[best], reason, trail)
 
 
 def tick(state, separation_secs=0, is_conversation=False, passive_mode=False):
@@ -305,6 +337,22 @@ def suppress(state, drive_key):
     state.trails[drive_key] = []
     state.intent = None
     return dict(suppressed=drive_key, refractory=state.refractory[drive_key])
+
+
+def partial_satisfy(state, drive_key, factor=0.95):
+    if drive_key not in state.drives:
+        return {}
+    old = state.drives[drive_key]
+    state.drives[drive_key] = _clamp(old * factor)
+    state.silent_inject_count[drive_key] = state.silent_inject_count.get(drive_key, 0) + 1
+    state.trails[drive_key] = []
+    state.intent = None
+    return dict(drive=drive_key, old=round(old, 4), new=round(state.drives[drive_key], 4),
+                silent_level=state.silent_inject_count[drive_key])
+
+
+def reset_silent_counts(state):
+    state.silent_inject_count = {k: 0 for k in DRIVE_KEYS}
 
 
 def snapshot(state):
