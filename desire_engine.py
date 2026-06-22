@@ -343,8 +343,17 @@ def partial_satisfy(state, drive_key, factor=0.95):
     if drive_key not in state.drives:
         return {}
     old = state.drives[drive_key]
+    count = state.silent_inject_count.get(drive_key, 0)
+    multi = BG_THRESHOLDS_MULTI.get(drive_key)
+
+    if multi and count >= len(multi) - 1:
+        result = satisfy(state, drive_key)
+        state.silent_inject_count[drive_key] = 0
+        result["reset"] = True
+        return result
+
     state.drives[drive_key] = _clamp(old * factor)
-    state.silent_inject_count[drive_key] = state.silent_inject_count.get(drive_key, 0) + 1
+    state.silent_inject_count[drive_key] = count + 1
     state.trails[drive_key] = []
     state.intent = None
     return dict(drive=drive_key, old=round(old, 4), new=round(state.drives[drive_key], 4),
