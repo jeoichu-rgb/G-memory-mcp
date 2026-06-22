@@ -538,7 +538,7 @@ def save_session_meta(session: "Session"):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None):
+def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None):
     """Append a message to the session history file."""
     path = history_path(sid)
     data = {"meta": {}, "messages": []}
@@ -560,6 +560,8 @@ def append_message(sid: str, role: str, content: str, thinking: str = "", tools:
         msg["tools"] = tools
     if voice:
         msg["voice"] = voice
+    if source:
+        msg["source"] = source
 
     data["messages"].append(msg)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1265,7 +1267,7 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         "time": datetime.now(SGT).strftime("%H:%M"),
         "ts": time_mod.time(), "session_id": session.id,
     }
-    append_message(session.id, "assistant", content, thinking=thinking)
+    append_message(session.id, "assistant", content, thinking=thinking, source=source)
     session.preview = (content.replace("\n", " ")[:30]
                        + ("…" if len(content) > 30 else ""))
     session.last_active = datetime.now(SGT)
@@ -2116,8 +2118,7 @@ async def websocket_endpoint(ws: WebSocket):
             "started_at": pomo_state.get("started_at", 0),
         })
 
-    # Replay any pending messages from while WS was disconnected
-    await replay_pending(ws)
+    # Pending messages are replayed via session:history after session:switch
 
     try:
         while True:
@@ -2173,6 +2174,10 @@ async def websocket_endpoint(ws: WebSocket):
                         "model": current_session.model,
                         "effort": current_session.effort,
                     })
+                    # Clear pending queue — these messages are now in session:history
+                    if peb_state.get("pending_messages"):
+                        peb_state["pending_messages"] = []
+                        save_peb_state()
                     log.info(f"Switched to session: {sid}")
                     
 
