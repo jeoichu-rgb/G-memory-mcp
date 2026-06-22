@@ -147,6 +147,8 @@ POMODORO_BREAK_MIN = 20
 
 # ── Global state (persisted, independent of WS) ──
 active_ws = None  # WebSocket | None
+_ws_last_activity = 0.0  # last time we received anything from the frontend WS
+_WS_STALE_SECS = 120  # if no client message for this long, treat WS as potentially stale
 peb_state: dict = {}
 pomo_state: dict = {}
 desire_st = None
@@ -1262,10 +1264,11 @@ async def push_system_error(source: str, error_text: str):
 
 async def push_pebbling_msg(source: str, content: str, session: "Session", thinking: str = ""):
     global active_ws
+    now = time_mod.time()
     msg = {
         "source": source, "content": content,
         "time": datetime.now(SGT).strftime("%H:%M"),
-        "ts": time_mod.time(), "session_id": session.id,
+        "ts": now, "session_id": session.id,
     }
     append_message(session.id, "assistant", content, thinking=thinking, source=source)
     session.preview = (content.replace("\n", " ")[:30]
@@ -1273,7 +1276,8 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
     session.last_active = datetime.now(SGT)
     save_session_meta(session)
 
-    sent = False
+    ws_sent = False
+    ws_stale = (now - _ws_last_activity) > _WS_STALE_SECS if _ws_last_activity else True
     if active_ws:
         try:
             peb_ws_msg = {
@@ -1283,16 +1287,17 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
             if thinking:
                 peb_ws_msg["thinking"] = thinking
             await active_ws.send_json(peb_ws_msg)
-            sent = True
+            ws_sent = True
         except Exception:
-            pass
-    if not sent:
+            active_ws = None
+    if not ws_sent:
         peb_state.setdefault("pending_messages", []).append(msg)
         save_peb_state()
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
 
-    # WS 离线时才推 TG 和 Web Push（在线时前端直接显示，不用推）
-    if not sent:
+    if not ws_sent or ws_stale:
+        if ws_stale and ws_sent:
+            log.info(f"WS stale ({now - _ws_last_activity:.0f}s), sending TG+WebPush as backup")
         await send_telegram(content)
         await send_web_push("Erik", content)
 
@@ -1393,6 +1398,24 @@ async def run_pebbling_action(
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
     return action
+
+
+# ── WS keepalive ──
+
+async def ws_keepalive():
+    """Ping the frontend WS every 45s to detect dead connections early."""
+    global active_ws
+    while True:
+        await asyncio.sleep(45)
+        ws = active_ws
+        if ws is None:
+            continue
+        try:
+            await ws.send_json({"event": "ping"})
+        except Exception:
+            log.info("WS keepalive: send failed, marking connection dead")
+            if active_ws is ws:
+                active_ws = None
 
 
 # ── Three-layer worker ──
@@ -2066,6 +2089,7 @@ async def startup_load_sessions():
         if desire_st:
             log.info(f"Desire loaded: tick={desire_st.tick_count}, thoughts={len(desire_st.thoughts)}")
     asyncio.create_task(pebbling_worker())
+    asyncio.create_task(ws_keepalive())
 
     # Push config check
     log.info(f"TG_BOT_TOKEN={'set ('+TG_BOT_TOKEN[:8]+'...)' if TG_BOT_TOKEN else 'EMPTY'}, "
@@ -2086,10 +2110,11 @@ async def startup_load_sessions():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global active_ws, _active_frontend_ws
+    global active_ws, _active_frontend_ws, _ws_last_activity
     await ws.accept()
     active_ws = ws
     _active_frontend_ws = ws
+    _ws_last_activity = time_mod.time()
     log.info("WS client connected")
 
     current_session = None
@@ -2129,6 +2154,7 @@ async def websocket_endpoint(ws: WebSocket):
                 log.warning(f"Bad JSON from client: {raw[:200]}")
                 continue
 
+            _ws_last_activity = time_mod.time()
             event = data.get("event", "")
             log.info(f"← {event} {json.dumps(data, ensure_ascii=False)[:200]}")
 
@@ -2592,10 +2618,12 @@ async def websocket_endpoint(ws: WebSocket):
         log.info("WS client disconnected (pebbling worker continues)")
         if active_ws is ws:
             active_ws = None
+            _ws_last_activity = 0.0
     except Exception as e:
         log.exception(f"WS error: {e}")
         if active_ws is ws:
             active_ws = None
+            _ws_last_activity = 0.0
 
 
 # ══════════════════════════════════════════════
