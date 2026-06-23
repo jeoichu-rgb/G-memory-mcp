@@ -2641,17 +2641,20 @@ function showPebbleStatus(text, cls) {
 function addPebblingMessage(content, source, time) {
   hideEmpty();
   const container = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = 'message assistant';
+  const row = document.createElement('div');
+  row.className = 'msg-row in';
   const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : source === 'desire' ? '欲望' : '送石头';
-  div.innerHTML =
-    '<div class="msg-header">' +
-      '<span class="msg-role">Erik</span>' +
-      '<span class="msg-time" style="opacity:0.5;font-size:0.75em;">🪨 ' + label + ' · ' + (time || '') + '</span>' +
-    '</div>' +
-    '<div class="msg-content">' + markdownToHtml(content) + '</div>';
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
+  row.innerHTML = `
+    <div class="bubble">
+      <div class="msg-meta-blocks"></div>
+      <span class="msg-text">${renderMarkdown(content)}</span>
+      <span class="msg-time">🪨 ${label} · ${time || ''}</span>
+      <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
+      <div class="reactions"></div>
+    </div>`;
+  container.appendChild(row);
+  initLongPress(row.querySelector('.bubble'));
+  scrollToBottom();
 }
 
 function addPebblingActivity(data) {

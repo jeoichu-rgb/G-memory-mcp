@@ -1277,6 +1277,7 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
     save_session_meta(session)
 
     ws_sent = False
+    ws_stale = (now - _ws_last_activity) > _WS_STALE_SECS if _ws_last_activity else True
     if active_ws:
         try:
             peb_ws_msg = {
@@ -1294,11 +1295,11 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         save_peb_state()
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
 
-    # Always send TG+WebPush — pebbling frequency is low (max 8/day),
-    # and WS send_json "succeeding" doesn't guarantee delivery
-    # (mobile WS silently disconnects, TCP buffer absorbs the write)
-    await send_telegram(content)
-    await send_web_push("Erik", content)
+    if not ws_sent or ws_stale:
+        if ws_stale and ws_sent:
+            log.info(f"WS stale ({now - _ws_last_activity:.0f}s), sending TG+WebPush as backup")
+        await send_telegram(content)
+        await send_web_push("Erik", content)
 
 
 async def push_pebbling_activity(source: str, action: str, tools: list,
