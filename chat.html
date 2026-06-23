@@ -1311,6 +1311,10 @@ function handleWSMessage(data) {
       handlePomoStatus(data);
       break;
 
+    case 'ping':
+      wsSend('pong', {});
+      break;
+
     // Pebbling system
     case 'pebbling:status':
       document.getElementById('pebbleToggle').checked = data.enabled;
