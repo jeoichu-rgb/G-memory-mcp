@@ -353,6 +353,10 @@ def partial_satisfy(state, drive_key, factor=0.95):
         return result
 
     state.drives[drive_key] = _clamp(old * factor)
+    cfg = DRIVE_CONFIG[drive_key]
+    if cfg.get("drift", 0) > 0:
+        home = cfg["home"]
+        state.floors[drive_key] = home + (state.floors.get(drive_key, home) - home) * 0.85
     state.silent_inject_count[drive_key] = count + 1
     state.trails[drive_key] = []
     state.intent = None
