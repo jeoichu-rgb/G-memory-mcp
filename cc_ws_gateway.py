@@ -1171,6 +1171,9 @@ async def run_cc_oneshot(
                     elif bt == "tool_use":
                         tool_parts.append(_clean_tool_name(blk.get("name", "")))
                 if msg.get("stop_reason") == "end_turn":
+                    content_types = {b.get("type") for b in msg.get("content", [])}
+                    if content_types == {"thinking"} and not text_parts:
+                        continue
                     done = True
                     break
 
