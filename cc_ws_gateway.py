@@ -2324,12 +2324,6 @@ async def websocket_endpoint(ws: WebSocket):
                 if DESIRE_ENABLED and desire_st:
                     _msg_tags = dc.classify(message)
                     _msg_is_libido = bool(_msg_tags and _msg_tags[0]["drive"] == "libido")
-                    if _msg_is_libido:
-                        dg.reset_silent_counts(desire_st)
-                    else:
-                        for _rk in list(desire_st.silent_inject_count):
-                            if _rk != "libido":
-                                desire_st.silent_inject_count[_rk] = 0
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
                         if not inj and desire_st.intent:
