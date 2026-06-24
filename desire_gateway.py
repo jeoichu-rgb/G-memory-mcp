@@ -145,6 +145,8 @@ def build_desire_injection(state, is_conversation=False) -> str:
     dk = intent.get("drive_key", "")
     score = intent.get("score", 0)
     reason = intent.get("reason", "")
+    if is_conversation and dk in de.CONV_REASONS:
+        reason = de.CONV_REASONS[dk]
     trail = intent.get("trail", [])
     label = de.DRIVE_LABELS.get(dk, dk)
 
