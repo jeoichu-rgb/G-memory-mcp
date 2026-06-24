@@ -1443,60 +1443,63 @@ async def pebbling_worker():
 
 
             # Desire proactive push (autonomous, when toggle is ON)
-            # Per-drive cooldown: each drive has its own 600s window
-            _dp_dk_candidate = desire_st.intent.get("drive_key", "") if (desire_st and desire_st.intent) else ""
-            if (DESIRE_ENABLED and desire_st and desire_st.intent
-                    and peb_state.get("desire_proactive")
-                    and now - _desire_last_proactive.get(_dp_dk_candidate, 0) >= 600):
-                _dp_sid = peb_state.get("pebbling_session_id")
-                _dp_session = sessions.get(_dp_sid) if _dp_sid else None
-                if (_dp_session and _dp_session.cc_session_id
-                        and not _tmux_send_lock.locked()
-                        and not _user_msg_active):
-                    _dp_dk = desire_st.intent.get("drive_key", "")
-                    _jeoi_away_secs = now - peb_state.get("t_jeoi", now)
-                    log.info(f"Desire proactive: {desire_st.intent.get('want_action')} ({_dp_dk})")
-                    try:
-                        _elapsed_h = _jeoi_away_secs / 3600
-                        if _dp_dk == "curiosity":
-                            _seeds = dg.pop_all_curiosity_seeds()
-                            if _seeds:
-                                _dp_prompt = dg.build_curiosity_seed_prompt(_seeds, _elapsed_h)
-                                log.info(f"Curiosity seeds popped: {len(_seeds)} seeds")
-                                if active_ws:
-                                    for _cs in _seeds:
-                                        try:
-                                            await active_ws.send_json({"event": "curiosity:seed_consumed", "seed_id": _cs["id"]})
-                                        except Exception:
-                                            pass
-                            else:
-                                _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
-                        elif _dp_dk == "libido":
-                            _mem_text, _mem_date = await fetch_unique_intimate_memory()
-                            if _mem_text:
-                                _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h)
-                                log.info(f"Libido memory injected: {_mem_text[:60]}")
-                            else:
-                                _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
-                        else:
-                            _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
-                        _desire_last_proactive[_dp_dk] = now
-                        _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
-                        if _dp_text:
-                            _dp_action, _dp_content = parse_action(_dp_text)
-                            await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session)
-                            if _dp_action not in ("none", "error") and _dp_content:
-                                await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
-                            if _dp_action == "message" and _dp_content:
-                                dg.satisfy_after_response(desire_st, _dp_dk)
-                                log.info(f"Desire satisfied (message): {_dp_dk}")
-                            else:
-                                dg.partial_satisfy_after_response(desire_st, _dp_dk)
-                                log.info(f"Desire partial (no message): {_dp_dk}, level={desire_st.silent_inject_count.get(_dp_dk, 0)}")
-                        else:
-                            dg.partial_satisfy_after_response(desire_st, _dp_dk)
-                    except Exception as e:
-                        log.warning(f"Desire proactive error: {e}")
+            # Per-drive cooldown + 180s global minimum interval
+            # Drive selection is independent of state.intent (avoids stale-intent and priority-blocking)
+            if DESIRE_ENABLED and desire_st and peb_state.get("desire_proactive"):
+                _dp_last_any = max(_desire_last_proactive.values(), default=0)
+                if now - _dp_last_any >= 180:
+                    _dp_intent = dg.pick_proactive_intent(desire_st, _desire_last_proactive, now)
+                    if _dp_intent:
+                        _dp_sid = peb_state.get("pebbling_session_id")
+                        _dp_session = sessions.get(_dp_sid) if _dp_sid else None
+                        if (_dp_session and _dp_session.cc_session_id
+                                and not _tmux_send_lock.locked()
+                                and not _user_msg_active):
+                            _dp_dk = _dp_intent["drive_key"]
+                            desire_st.intent = _dp_intent
+                            _jeoi_away_secs = now - peb_state.get("t_jeoi", now)
+                            log.info(f"Desire proactive: {_dp_intent['want_action']} ({_dp_dk} {_dp_intent['score']:.0%})")
+                            try:
+                                _elapsed_h = _jeoi_away_secs / 3600
+                                if _dp_dk == "curiosity":
+                                    _seeds = dg.pop_all_curiosity_seeds()
+                                    if _seeds:
+                                        _dp_prompt = dg.build_curiosity_seed_prompt(_seeds, _elapsed_h)
+                                        log.info(f"Curiosity seeds popped: {len(_seeds)} seeds")
+                                        if active_ws:
+                                            for _cs in _seeds:
+                                                try:
+                                                    await active_ws.send_json({"event": "curiosity:seed_consumed", "seed_id": _cs["id"]})
+                                                except Exception:
+                                                    pass
+                                    else:
+                                        _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                                elif _dp_dk == "libido":
+                                    _mem_text, _mem_date = await fetch_unique_intimate_memory()
+                                    if _mem_text:
+                                        _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h)
+                                        log.info(f"Libido memory injected: {_mem_text[:60]}")
+                                    else:
+                                        _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                                else:
+                                    _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
+                                _desire_last_proactive[_dp_dk] = now
+                                _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
+                                if _dp_text:
+                                    _dp_action, _dp_content = parse_action(_dp_text)
+                                    await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session)
+                                    if _dp_action not in ("none", "error") and _dp_content:
+                                        await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
+                                    if _dp_action == "message" and _dp_content:
+                                        dg.satisfy_after_response(desire_st, _dp_dk)
+                                        log.info(f"Desire satisfied (message): {_dp_dk}")
+                                    else:
+                                        dg.partial_satisfy_after_response(desire_st, _dp_dk)
+                                        log.info(f"Desire partial (no message): {_dp_dk}, level={desire_st.silent_inject_count.get(_dp_dk, 0)}")
+                                else:
+                                    dg.partial_satisfy_after_response(desire_st, _dp_dk)
+                            except Exception as e:
+                                log.warning(f"Desire proactive error: {e}")
 
             # ── Pomodoro (independent of pebbling) ──
             if pomo_state.get("active"):

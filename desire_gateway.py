@@ -131,6 +131,57 @@ def reset_silent_counts(state):
     de.save_state(state)
 
 
+PROACTIVE_PRIORITY = {"attachment": 0, "libido": 1, "stress": 2, "curiosity": 3, "reflection": 4}
+
+
+def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600):
+    """Pick the best drive for proactive push, independent of state.intent.
+    Evaluates all drives above BG threshold, excluding those on cooldown or
+    refractory. Returns an intent dict or None.
+    Proactive priority: attachment > libido > stress > curiosity > reflection.
+    """
+    if not DESIRE_AVAILABLE or not state:
+        return None
+    candidates = []
+    for k in de.DRIVE_KEYS:
+        if k == "fatigue":
+            continue
+        if state.refractory.get(k, 0) > 0:
+            continue
+        if now - cooldowns.get(k, 0) < cooldown_secs:
+            continue
+        score = state.drives.get(k, 0)
+        multi = de.BG_THRESHOLDS_MULTI.get(k)
+        if multi:
+            idx = min(state.silent_inject_count.get(k, 0), len(multi) - 1)
+            th = multi[idx]
+        else:
+            th = de.BG_THRESHOLDS.get(k, de.INTENT_THRESHOLD)
+        if score >= th:
+            candidates.append((k, score))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (PROACTIVE_PRIORITY.get(x[0], 99), -x[1]))
+    best_key, best_score = candidates[0]
+    trail = list(state.trails.get(best_key, []))[-5:]
+    for t in state.thoughts:
+        if isinstance(t, de.Thought) and t.kind == "fixation" and t.drive == best_key:
+            trail.extend(t.trail[-3:])
+    silent = de.SILENT_REASONS.get(best_key)
+    if silent:
+        level = min(state.silent_inject_count.get(best_key, 0), len(silent) - 1)
+        reason = silent[level]
+    else:
+        reason = de.REASONS.get(best_key, "")
+    return {
+        "want_action": de.INTENT_MAP.get(best_key, ""),
+        "drive_key": best_key,
+        "score": best_score,
+        "reason": reason,
+        "trail": trail,
+    }
+
+
 def build_desire_injection(state, is_conversation=False) -> str:
     """Build one-shot context injection for CLI when intent is newly triggered.
     Shows only the triggered drive, percentage, and trail.
