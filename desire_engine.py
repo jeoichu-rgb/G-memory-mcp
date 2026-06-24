@@ -317,6 +317,8 @@ def tick(state, separation_secs=0, is_conversation=False, passive_mode=False):
     intent = pick_intent(state, is_conversation=is_conversation)
     if intent:
         state.intent = intent.to_dict()
+    else:
+        state.intent = None
     return dict(tick=state.tick_count, drive_events=de, thought_events=te,
                 intent=intent.to_dict() if intent else None)
 

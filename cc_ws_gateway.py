@@ -153,7 +153,7 @@ peb_state: dict = {}
 pomo_state: dict = {}
 desire_st = None
 _desire_last_tick = 0.0
-_desire_last_proactive = 0.0
+_desire_last_proactive: dict[str, float] = {}
 _user_msg_active = False  # True while run_claude is processing a user message
 _recent_libido_memories: list[str] = []
 
@@ -1443,9 +1443,11 @@ async def pebbling_worker():
 
 
             # Desire proactive push (autonomous, when toggle is ON)
+            # Per-drive cooldown: each drive has its own 600s window
+            _dp_dk_candidate = desire_st.intent.get("drive_key", "") if (desire_st and desire_st.intent) else ""
             if (DESIRE_ENABLED and desire_st and desire_st.intent
                     and peb_state.get("desire_proactive")
-                    and now - _desire_last_proactive >= 600):
+                    and now - _desire_last_proactive.get(_dp_dk_candidate, 0) >= 600):
                 _dp_sid = peb_state.get("pebbling_session_id")
                 _dp_session = sessions.get(_dp_sid) if _dp_sid else None
                 if (_dp_session and _dp_session.cc_session_id
@@ -1478,7 +1480,7 @@ async def pebbling_worker():
                                 _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                         else:
                             _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
-                        _desire_last_proactive = now
+                        _desire_last_proactive[_dp_dk] = now
                         _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
                         if _dp_text:
                             _dp_action, _dp_content = parse_action(_dp_text)
