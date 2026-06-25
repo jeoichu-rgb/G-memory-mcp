@@ -1477,7 +1477,7 @@ async def pebbling_worker():
                                 elif _dp_dk == "libido":
                                     _mem_text, _mem_date = await fetch_unique_intimate_memory()
                                     if _mem_text:
-                                        _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h)
+                                        _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h, desire_reason=_dp_intent.get("reason", ""))
                                         log.info(f"Libido memory injected: {_mem_text[:60]}")
                                     else:
                                         _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
@@ -1613,7 +1613,8 @@ async def pebbling_worker():
                     elif _dk == "libido":
                         _lib_text, _lib_date = await fetch_unique_intimate_memory()
                         if _lib_text:
-                            prompt = dg.build_libido_memory_prompt(_lib_text, _lib_date, elapsed_h)
+                            _lib_reason = desire_st.intent.get("reason", "") if desire_st.intent else ""
+                            prompt = dg.build_libido_memory_prompt(_lib_text, _lib_date, elapsed_h, desire_reason=_lib_reason)
                             log.info(f"Pebbling libido memory: {_lib_text[:60]}")
                         else:
                             events = get_recent_events(4)

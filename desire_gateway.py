@@ -400,7 +400,7 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
     return NL.join(parts)
 
 
-def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours):
+def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_reason=""):
     """Build prompt for libido silent trigger with a random intimate memory."""
     now_str = datetime.now(SGT).strftime('%H:%M')
     NL = chr(10)
@@ -409,6 +409,13 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours):
         '[libido-memory] Not Jeoi. Something stirred on its own.',
         f'Now: {now_str} (UTC+8). Jeoi last spoke: {elapsed_hours:.1f}h ago.',
         '',
+    ]
+
+    if desire_reason:
+        parts.append(f'Your desire: {desire_reason}')
+        parts.append('')
+
+    parts.extend([
         f'A memory surfaced — from {memory_date}:',
         f'  "{memory_text}"',
         '',
