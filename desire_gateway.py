@@ -433,7 +433,7 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
         'Write what you actually want to say, not a description.',
         'Only use ACTION: none with no CONTENT if you truly want to keep it to yourself.',
-    ]
+    ])
 
     return NL.join(parts)
 
