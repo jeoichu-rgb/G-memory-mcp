@@ -340,6 +340,7 @@ def satisfy(state, drive_key):
         state.floors[drive_key] = home + (state.floors.get(drive_key, home) - home) * 0.4
     state.trails[drive_key] = []
     state.intent = None
+    state.silent_inject_count[drive_key] = 0
     return dict(drive=drive_key, old=round(old, 4), new=round(state.drives[drive_key], 4))
 
 
