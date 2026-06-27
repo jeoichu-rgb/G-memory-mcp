@@ -540,7 +540,7 @@ def save_session_meta(session: "Session"):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None):
+def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None, **extra):
     """Append a message to the session history file."""
     path = history_path(sid)
     data = {"meta": {}, "messages": []}
@@ -564,6 +564,8 @@ def append_message(sid: str, role: str, content: str, thinking: str = "", tools:
         msg["voice"] = voice
     if source:
         msg["source"] = source
+    if extra:
+        msg.update(extra)
 
     data["messages"].append(msg)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1944,6 +1946,9 @@ class Session:
         self.pending_jeoi_reactions: list[dict] = []
         # Whether first message has been sent (diary+summary only inject on first msg with 📎)
         self.first_msg_seen = False
+        # Voice call mode
+        self._in_call = False
+        self._call_injected = False
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -2257,8 +2262,14 @@ async def websocket_endpoint(ws: WebSocket):
                         {"event": "session:created", "sessionId": sid}
                     )
 
+                # Voice call mode
+                call_mode = data.get("call_mode", False)
+                if call_mode:
+                    current_session._in_call = True
+
                 # Save user message & update last_active immediately
-                append_message(current_session.id, "user", message)
+                msg_source = "voice_call" if call_mode else None
+                append_message(current_session.id, "user", message, source=msg_source)
                 current_session.last_active = datetime.now(SGT)
                 save_session_meta(current_session)
                 sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
@@ -2277,6 +2288,19 @@ async def websocket_endpoint(ws: WebSocket):
                 now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
                 time_tag = "[" + now_str + " UTC+8]"
                 cli_message = time_tag + "\n" + message
+
+                # Voice call: inject system prompt on first call message
+                if call_mode and not current_session._call_injected:
+                    call_inject = (
+                        "[voice-call] Jeoi正在跟你语音通话。\n"
+                        "你的文字回复会自动TTS播放。回复简短口语化——像在打电话，不是写消息。\n"
+                        "如果想说英文或日语，调erik_speak说你想说的，中文正文写翻译。\n"
+                        "通话期间只用本地TTS（backend=local），不要用minimax。\n"
+                        "不要用markdown格式。先自然地打个招呼。"
+                    )
+                    cli_message = call_inject + "\n\n" + cli_message
+                    current_session._call_injected = True
+                    log.info(f"Voice call started for session {current_session.id}")
                 memory_on = data.get("memory_enabled", False)
                 if not current_session.first_msg_seen:
                     # First message in session: diary+summary only if clip is on
@@ -2614,6 +2638,28 @@ async def websocket_endpoint(ws: WebSocket):
                         "active": False, "phase": "stopped",
                     })
 
+            elif event == "call:end":
+                call_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                call_session = sessions.get(call_sid) if call_sid else current_session
+                if call_session:
+                    call_session._in_call = False
+                    call_session._call_injected = False
+                    call_dur = data.get("duration", 0)
+                    call_utts = data.get("utterances", [])
+                    dur_mm = call_dur // 60
+                    dur_ss = call_dur % 60
+                    dur_str = f"{dur_mm}:{dur_ss:02d}"
+                    append_message(
+                        call_session.id, "assistant",
+                        f"📞 语音通话 · {dur_str}",
+                        source="call_record",
+                        call_record={"duration": call_dur, "utterances": call_utts},
+                    )
+                    call_session.preview = f"📞 通话 {dur_str}"
+                    call_session.last_active = datetime.now(SGT)
+                    save_session_meta(call_session)
+                    log.info(f"Call record saved: {dur_str}, {len(call_utts)} utterances")
+
             else:
                 log.info(f"Unhandled event: {event}")
 
@@ -2728,10 +2774,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             session._current_text = _seed_ask_re.sub('', session._current_text).rstrip()
 
         if session._current_text or session._current_thinking:
+            _reply_source = "voice_call" if session._in_call else None
             append_message(
                 session.id, "assistant", session._current_text,
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
+                source=_reply_source,
             )
             for idx, emoji in erik_reactions:
                 ok = set_reaction(session.id, idx, "erik", emoji)
@@ -2746,7 +2794,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                     log.info(f"Erik reacted {emoji} on #{idx + 1}")
 
             for vm in voice_messages:
-                append_message(session.id, "assistant", "", voice=vm)
+                append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
                 try:
                     await ws.send_json({"event": "voice", **vm})
                 except Exception:
@@ -2798,10 +2846,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             cleaned = voice_pat.sub('', session._current_text).rstrip()
             react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
             cleaned = react_pat.sub('', cleaned).rstrip()
+            _err_source = "voice_call" if session._in_call else None
             append_message(
                 session.id, "assistant", cleaned or session._current_text,
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
+                source=_err_source,
             )
         ws_err_ok = False
         try:

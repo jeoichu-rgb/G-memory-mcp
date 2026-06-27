@@ -87,6 +87,7 @@ class CheckSecretMiddleware:
             path == "/"
             or path == "/panel"
             or path == "/chat.html"
+            or path == "/call.html"
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
@@ -207,6 +208,39 @@ async def serve_chat(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>chat.html not found</h1>", status_code=500)
+
+@app.get("/call.html")
+async def serve_call(request: Request):
+    try:
+        with open("call.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>call.html not found</h1>", status_code=500)
+
+
+from tts_mcp import _call_minimax_tts, _call_gsvi_tts
+import asyncio as _asyncio
+
+@app.post("/api/tts")
+async def api_tts(request: Request):
+    data = await request.json()
+    text = data.get("text", "")
+    backend = data.get("backend", "minimax")
+    speed = data.get("speed", 1.0)
+    if not text:
+        return JSONResponse(status_code=400, content={"error": "text required"})
+    try:
+        loop = _asyncio.get_event_loop()
+        if backend == "local":
+            result = await loop.run_in_executor(None, lambda: _call_gsvi_tts(text, speed=speed))
+        else:
+            result = await loop.run_in_executor(None, lambda: _call_minimax_tts(text, speed=speed))
+        audio_url = f"/tts-audio/{result['filename']}"
+        duration = round(result["duration_ms"] / 1000, 1)
+        return JSONResponse({"audio_url": audio_url, "duration": duration, "text": text})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 # ── iOS Shortcut pebbling event (proxy to cc_ws_gateway on host) ──
 import json as _json

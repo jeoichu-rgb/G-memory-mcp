@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Erik · Call</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { height:100%; overflow:hidden; background:#060608; color:#e0e0e0; font-family:'DM Mono',monospace; font-size:14px; }
+
+.call-screen {
+  display:flex; flex-direction:column; align-items:center;
+  height:100%; position:relative;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% 30%, rgba(20,20,40,0.5) 0%, transparent 100%),
+    radial-gradient(ellipse 100% 30% at 50% 100%, rgba(12,12,22,0.4) 0%, transparent 100%),
+    #060608;
+}
+
+/* subtle reflection sheen at top */
+.call-screen::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:40%;
+  background:linear-gradient(180deg, rgba(255,255,255,0.015) 0%, transparent 100%);
+  pointer-events:none;
+}
+
+/* ── Avatar ── */
+.avatar-area { margin-top:12vh; display:flex; flex-direction:column; align-items:center; z-index:1; }
+
+.avatar {
+  width:110px; height:110px; border-radius:50%;
+  background:#1a1a2e; display:flex; align-items:center; justify-content:center;
+  font-size:42px; color:#c4a8ff; overflow:hidden;
+  border:2px solid rgba(255,255,255,0.04);
+  box-shadow:0 0 40px rgba(100,80,160,0.08);
+}
+.avatar img { width:100%; height:100%; object-fit:cover; }
+
+/* mirror reflection of avatar */
+.avatar-reflection {
+  width:110px; height:50px; overflow:hidden;
+  transform:scaleY(-1); opacity:0.1; filter:blur(3px);
+  -webkit-mask-image:linear-gradient(to bottom, rgba(0,0,0,0.6) 0%, transparent 100%);
+  mask-image:linear-gradient(to bottom, rgba(0,0,0,0.6) 0%, transparent 100%);
+  margin-top:-4px; border-radius:0 0 50% 50%;
+}
+.avatar-reflection img { width:110px; height:110px; object-fit:cover; }
+
+/* ── Call status & timer ── */
+.call-info { margin-top:14px; text-align:center; z-index:1; }
+.call-status { font-size:12px; color:rgba(255,255,255,0.4); letter-spacing:0.15em; text-transform:uppercase; }
+.call-timer { font-size:15px; color:rgba(255,255,255,0.6); margin-top:3px; font-variant-numeric:tabular-nums; }
+
+/* ── Subtitle area ── */
+.subtitle-area {
+  flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center;
+  padding:0 28px; width:100%; min-height:80px; z-index:1;
+}
+
+.subtitle-original {
+  font-size:16px; color:rgba(255,255,255,0.88); text-align:center;
+  line-height:1.7; max-height:120px; overflow-y:auto; padding:0 8px;
+  transition:opacity 0.3s;
+}
+.subtitle-original:empty { display:none; }
+
+.subtitle-translation {
+  font-size:12px; color:rgba(255,255,255,0.35); text-align:center;
+  line-height:1.5; margin-top:8px; max-height:80px; overflow-y:auto; padding:0 8px;
+}
+.subtitle-translation:empty { display:none; }
+
+/* thinking dots */
+.thinking-dot { display:none; gap:6px; margin-top:16px; }
+.thinking-dot.active { display:flex; }
+.thinking-dot span {
+  width:5px; height:5px; background:rgba(255,255,255,0.25); border-radius:50%;
+  animation:tdot 1.4s ease-in-out infinite;
+}
+.thinking-dot span:nth-child(2) { animation-delay:0.2s; }
+.thinking-dot span:nth-child(3) { animation-delay:0.4s; }
+@keyframes tdot {
+  0%,80%,100% { opacity:0.25; transform:scale(0.8); }
+  40% { opacity:1; transform:scale(1.1); }
+}
+
+/* ── Input area ── */
+.input-area {
+  width:100%; padding:10px 16px; display:flex; align-items:center; gap:8px;
+  background:rgba(255,255,255,0.02); border-top:1px solid rgba(255,255,255,0.04);
+  z-index:1;
+}
+.input-area input {
+  flex:1; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.07);
+  border-radius:20px; padding:10px 16px; color:#e0e0e0; font-family:inherit; font-size:14px; outline:none;
+}
+.input-area input:focus { border-color:rgba(255,255,255,0.14); }
+.input-area input::placeholder { color:rgba(255,255,255,0.2); }
+
+.send-btn {
+  width:36px; height:36px; background:rgba(255,255,255,0.08); border:none;
+  border-radius:50%; color:#e0e0e0; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  font-size:16px; transition:background 0.2s;
+}
+.send-btn:active { background:rgba(255,255,255,0.15); }
+
+/* ── Controls ── */
+.controls { display:flex; gap:48px; padding:16px 0 max(28px, env(safe-area-inset-bottom)); align-items:center; z-index:1; }
+
+.ctrl-btn {
+  display:flex; flex-direction:column; align-items:center; gap:5px;
+  background:none; border:none; color:rgba(255,255,255,0.5); cursor:pointer;
+  font-family:inherit; font-size:10px;
+}
+.ctrl-icon {
+  width:54px; height:54px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+  font-size:22px; transition:transform 0.15s;
+}
+.ctrl-btn:active .ctrl-icon { transform:scale(0.92); }
+.hangup .ctrl-icon { background:#e53935; color:white; }
+
+/* ── Call record overlay ── */
+.record-overlay {
+  display:none; position:fixed; inset:0; background:#080808; z-index:100;
+  flex-direction:column; padding:max(50px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+  overflow-y:auto;
+}
+.record-overlay.show { display:flex; }
+
+.record-header { text-align:center; margin-bottom:20px; }
+.record-header h2 { font-size:15px; font-weight:400; color:rgba(255,255,255,0.7); }
+.record-header .dur { font-size:12px; color:rgba(255,255,255,0.35); margin-top:4px; }
+
+.utt-list { flex:1; display:flex; flex-direction:column; gap:8px; }
+
+.utt-item {
+  display:flex; align-items:center; gap:10px;
+  padding:10px 12px; background:rgba(255,255,255,0.04); border-radius:10px;
+}
+.utt-play {
+  width:30px; height:30px; border-radius:50%; background:rgba(255,255,255,0.08);
+  border:none; color:white; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  flex-shrink:0; font-size:12px;
+}
+.utt-play:active { background:rgba(255,255,255,0.15); }
+.utt-text { flex:1; font-size:12px; color:rgba(255,255,255,0.6); line-height:1.5; }
+.utt-text .tr { opacity:0.5; margin-top:2px; }
+.utt-dur { font-size:11px; color:rgba(255,255,255,0.25); flex-shrink:0; }
+
+.record-actions { margin-top:20px; }
+.btn-back {
+  width:100%; padding:12px; border-radius:10px; border:none;
+  background:rgba(196,168,255,0.15); color:#c4a8ff;
+  font-family:inherit; font-size:13px; cursor:pointer;
+}
+.btn-back:active { background:rgba(196,168,255,0.25); }
+
+/* ── Waveform visualizer (during playback) ── */
+.wave-bar { display:flex; align-items:center; gap:2px; height:20px; margin-top:10px; justify-content:center; }
+.wave-bar.hidden { display:none; }
+.wave-bar span {
+  width:3px; background:rgba(196,168,255,0.4); border-radius:2px;
+  animation:wbar 0.8s ease-in-out infinite alternate;
+}
+.wave-bar span:nth-child(1) { height:8px; animation-delay:0s; }
+.wave-bar span:nth-child(2) { height:14px; animation-delay:0.1s; }
+.wave-bar span:nth-child(3) { height:20px; animation-delay:0.2s; }
+.wave-bar span:nth-child(4) { height:14px; animation-delay:0.3s; }
+.wave-bar span:nth-child(5) { height:8px; animation-delay:0.4s; }
+@keyframes wbar {
+  0% { transform:scaleY(0.4); }
+  100% { transform:scaleY(1); }
+}
+</style>
+</head>
+<body>
+
+<div class="call-screen" id="callScreen">
+  <div class="avatar-area">
+    <div class="avatar" id="avatar">E</div>
+    <div class="avatar-reflection" id="avatarRef"></div>
+  </div>
+
+  <div class="call-info">
+    <div class="call-status" id="callStatus">连接中…</div>
+    <div class="call-timer" id="callTimer">00:00</div>
+  </div>
+
+  <div class="subtitle-area">
+    <div class="subtitle-original" id="subOrig"></div>
+    <div class="subtitle-translation" id="subTrans"></div>
+    <div class="wave-bar hidden" id="waveBar">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <div class="thinking-dot" id="thinkDot"><span></span><span></span><span></span></div>
+  </div>
+
+  <div class="input-area">
+    <input type="text" id="msgInput" placeholder="说点什么…" autocomplete="off">
+    <button class="send-btn" id="sendBtn" onclick="sendMsg()">↑</button>
+  </div>
+
+  <div class="controls">
+    <button class="ctrl-btn hangup" onclick="hangup()">
+      <div class="ctrl-icon">✕</div>
+      <span>挂断</span>
+    </button>
+  </div>
+</div>
+
+<!-- call record overlay (after hangup) -->
+<div class="record-overlay" id="recordOverlay">
+  <div class="record-header">
+    <h2>📞 语音通话</h2>
+    <div class="dur" id="recordDur"></div>
+  </div>
+  <div class="utt-list" id="uttList"></div>
+  <div class="record-actions">
+    <button class="btn-back" onclick="goBack()">返回聊天</button>
+  </div>
+</div>
+
+<script>
+const WS_URL = 'wss://chat.erikssheep.uk/ws';
+const API_BASE = 'https://erikssheep.uk';
+const PW = localStorage.getItem('gmp_pw');
+if (!PW) { location.href = '/'; }
+
+/* ── State ── */
+let ws, sessionId, callStart, timerIv;
+let accumText = '', voiceEvents = [];
+let utterances = [];   // {text, translation, audio_url, duration}
+let audioQ = [];
+let playing = false;
+let callActive = false;
+let firstSend = true;
+
+const audio = new Audio();
+audio.setAttribute('playsinline', '');
+
+/* ── Init ── */
+(function init() {
+  const p = new URLSearchParams(location.search);
+  sessionId = p.get('session') || localStorage.getItem('last-session-id');
+  if (!sessionId) { location.href = '/chat.html'; return; }
+
+  // avatar from localStorage (same key as chat.html)
+  const av = localStorage.getItem('erik-avatar');
+  if (av) {
+    document.getElementById('avatar').innerHTML = '<img src="' + av + '">';
+    document.getElementById('avatarRef').innerHTML = '<img src="' + av + '">';
+  }
+
+  // unlock audio on first gesture (iOS)
+  const unlock = () => {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.connect(ctx.destination); src.start();
+    audio.play().then(() => audio.pause()).catch(() => {});
+    document.removeEventListener('touchstart', unlock);
+    document.removeEventListener('click', unlock);
+  };
+  document.addEventListener('touchstart', unlock, { once: true });
+  document.addEventListener('click', unlock, { once: true });
+
+  // enter key
+  document.getElementById('msgInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.isComposing) sendMsg();
+  });
+
+  connectWS();
+})();
+
+/* ── WS ── */
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    wsSend('session:switch', { sessionId });
+    startCall();
+  };
+  ws.onmessage = e => {
+    try { handleWS(JSON.parse(e.data)); } catch(err) { console.warn('[ws]', err); }
+  };
+  ws.onclose = () => { if (callActive) setTimeout(connectWS, 2000); };
+}
+
+function wsSend(ev, data) {
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ event: ev, ...data }));
+}
+
+/* ── Call lifecycle ── */
+function startCall() {
+  callActive = true;
+  callStart = Date.now();
+  timerIv = setInterval(tickTimer, 1000);
+  document.getElementById('callStatus').textContent = '通话中';
+
+  // "dial" — tell Erik Jeoi is calling
+  wsSend('chat:send', {
+    message: '📞',
+    sessionId,
+    call_mode: true,
+  });
+  showThinking(true);
+}
+
+function tickTimer() {
+  const s = Math.floor((Date.now() - callStart) / 1000);
+  document.getElementById('callTimer').textContent =
+    String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+}
+
+/* ── Send ── */
+function sendMsg() {
+  const inp = document.getElementById('msgInput');
+  const txt = inp.value.trim();
+  if (!txt) return;
+  inp.value = '';
+
+  wsSend('chat:send', { message: txt, sessionId, call_mode: true });
+  showThinking(true);
+  setSub('', '');
+}
+
+/* ── Receive ── */
+function handleWS(d) {
+  switch (d.event || d.type || '') {
+    case 'stream:text':
+      accumText += d.text || '';
+      break;
+    case 'stream:thinking':
+      break; // ignore thinking display during call
+    case 'voice':
+      voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text });
+      break;
+    case 'message:complete':
+      onReplyDone();
+      break;
+    case 'session:created':
+      sessionId = d.sessionId;
+      break;
+    case 'ping':
+      wsSend('pong', {});
+      break;
+  }
+}
+
+async function onReplyDone() {
+  showThinking(false);
+
+  // parse voice markers from text (in case tailer caught them before gateway stripped)
+  const vRe = /<!--voice:(.+?)\|(.+?)\|(.+?)-->/g;
+  let m;
+  while ((m = vRe.exec(accumText)) !== null) {
+    voiceEvents.push({ audio_url: m[1], duration: parseFloat(m[2]), text: m[3] });
+  }
+  // strip markers
+  let cleanText = accumText.replace(vRe, '').replace(/<!--(?:react|curiosity)[^>]*-->/g, '').trim();
+
+  if (voiceEvents.length > 0) {
+    // Erik called erik_speak — use his voice; cleanText is the "translation"
+    for (const v of voiceEvents) {
+      const utt = { text: v.text, translation: cleanText, audio_url: v.audio_url, duration: v.duration };
+      utterances.push(utt);
+      setSub(v.text, cleanText);
+      enqueueAudio(API_BASE + v.audio_url);
+    }
+  } else if (cleanText) {
+    // auto-TTS
+    setSub(cleanText, '');
+    try {
+      const r = await callTTS(cleanText);
+      const utt = { text: cleanText, translation: '', audio_url: r.audio_url, duration: r.duration };
+      utterances.push(utt);
+      enqueueAudio(API_BASE + r.audio_url);
+    } catch(err) {
+      console.error('Auto-TTS failed:', err);
+    }
+  }
+
+  accumText = '';
+  voiceEvents = [];
+}
+
+/* ── TTS API ── */
+async function callTTS(text) {
+  const r = await fetch(API_BASE + '/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-secret': PW },
+    body: JSON.stringify({ text, backend: 'local', speed: 1.0 }),
+  });
+  if (!r.ok) throw new Error('TTS ' + r.status);
+  return r.json();
+}
+
+/* ── Audio queue ── */
+function enqueueAudio(url) {
+  audioQ.push(url);
+  if (!playing) playNext();
+}
+
+function playNext() {
+  if (!audioQ.length) { playing = false; showWave(false); return; }
+  playing = true;
+  showWave(true);
+  audio.src = audioQ.shift();
+  audio.load();
+  audio.play().catch(err => { console.error('play:', err); playing = false; showWave(false); });
+}
+audio.addEventListener('ended', playNext);
+audio.addEventListener('error', () => { playing = false; showWave(false); playNext(); });
+
+/* ── UI helpers ── */
+function setSub(orig, trans) {
+  document.getElementById('subOrig').textContent = orig;
+  document.getElementById('subTrans').textContent = trans;
+}
+function showThinking(on) { document.getElementById('thinkDot').classList.toggle('active', on); }
+function showWave(on) { document.getElementById('waveBar').classList.toggle('hidden', !on); }
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+/* ── Hangup ── */
+function hangup() {
+  callActive = false;
+  clearInterval(timerIv);
+  audio.pause();
+  audioQ = [];
+
+  const dur = Math.floor((Date.now() - callStart) / 1000);
+
+  // save call record to chat history
+  wsSend('call:end', { sessionId, duration: dur, utterances });
+
+  showRecord(dur);
+}
+
+function showRecord(dur) {
+  const mm = Math.floor(dur/60), ss = dur%60;
+  document.getElementById('recordDur').textContent = mm + '分' + String(ss).padStart(2,'0') + '秒';
+
+  const list = document.getElementById('uttList');
+  list.innerHTML = '';
+  for (const u of utterances) {
+    const div = document.createElement('div');
+    div.className = 'utt-item';
+    const durStr = u.duration >= 60
+      ? Math.floor(u.duration/60) + ':' + String(Math.round(u.duration%60)).padStart(2,'0')
+      : '0:' + String(Math.round(u.duration)).padStart(2,'0');
+    div.innerHTML =
+      '<button class="utt-play" data-url="' + esc(API_BASE + u.audio_url) + '" onclick="playUtt(this)">▶</button>' +
+      '<div class="utt-text">' + esc(u.text) +
+        (u.translation ? '<div class="tr">' + esc(u.translation) + '</div>' : '') +
+      '</div>' +
+      '<div class="utt-dur">' + durStr + '</div>';
+    list.appendChild(div);
+  }
+
+  if (!utterances.length) {
+    list.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.25);padding:20px">无语音记录</div>';
+  }
+
+  document.getElementById('callScreen').style.display = 'none';
+  document.getElementById('recordOverlay').classList.add('show');
+}
+
+function playUtt(btn) {
+  audio.src = btn.dataset.url;
+  audio.play().catch(err => console.error(err));
+}
+
+function goBack() {
+  location.href = '/chat.html';
+}
+</script>
+</body>
+</html>

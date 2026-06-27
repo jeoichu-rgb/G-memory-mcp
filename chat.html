@@ -881,6 +881,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="chat-header-status" id="headerStatus">online</div>
       </div>
       <div class="chat-header-actions">
+        <button class="menu-btn" onclick="startCall()" title="语音通话" style="font-size:16px">📞</button>
         <button class="menu-btn" onclick="toggleMcpPanel()" title="MCP 工具">☰</button>
         <select id="modelSelect" onchange="switchModel()">
           <option value="claude-opus-4-6">Opus 4.6</option>
@@ -1625,8 +1626,43 @@ function renderHistory(messages) {
   hideEmpty();
   const msgArea = document.getElementById('messages');
   messages.forEach(msg => {
+    // Hide individual voice_call messages (shown as call record instead)
+    if (msg.source === 'voice_call') return;
+
     const row = document.createElement('div');
     const time = msg.time || '';
+
+    // Call record card
+    if (msg.call_record) {
+      row.className = 'msg-row in';
+      const cr = msg.call_record;
+      const dur = cr.duration || 0;
+      const durStr = Math.floor(dur/60) + ':' + String(dur%60).padStart(2,'0');
+      const utts = cr.utterances || [];
+      let uttsHtml = utts.map(u => {
+        const ud = u.duration || 0;
+        const uds = ud >= 60 ? Math.floor(ud/60)+':'+String(Math.round(ud%60)).padStart(2,'0') : '0:'+String(Math.round(ud)).padStart(2,'0');
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">' +
+          '<button onclick="playCallAudio(this)" data-src="' + escapeHtml(u.audio_url) + '" style="width:28px;height:28px;border-radius:50%;background:var(--accent);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" style="fill:#fff;width:14px;height:14px"><path d="M8 5v14l11-7z"/></svg></button>' +
+          '<div style="flex:1;font-size:12px;line-height:1.4">' + escapeHtml(u.text) +
+            (u.translation ? '<div style="opacity:0.5;margin-top:2px">' + escapeHtml(u.translation) + '</div>' : '') +
+          '</div>' +
+          '<span style="font-size:11px;opacity:0.4;flex-shrink:0">' + uds + '</span>' +
+        '</div>';
+      }).join('');
+      row.innerHTML = '<div class="bubble" style="min-width:200px">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+          '<span style="font-size:18px">📞</span>' +
+          '<div><div style="font-size:13px;font-weight:500">语音通话</div>' +
+          '<div style="font-size:11px;opacity:0.5">' + durStr + ' · ' + utts.length + '条语音</div></div>' +
+        '</div>' +
+        uttsHtml +
+        '<span class="msg-time">' + time + '</span>' +
+        '<div class="reactions"></div></div>';
+      msgArea.appendChild(row);
+      return;
+    }
+
     if (msg.role === 'user') {
       row.className = 'msg-row out';
       row.innerHTML = `
@@ -1896,6 +1932,11 @@ function newSession() {
   document.getElementById('app').classList.add('chat-open');
 }
 
+function startCall() {
+  if (!currentSessionId) return;
+  location.href = '/call.html?session=' + currentSessionId;
+}
+
 function switchSession(id) {
   currentSessionId = id;
   localStorage.setItem('last-session-id', id);
@@ -2124,6 +2165,21 @@ function toggleTranscript(btn) {
 
 function initVoiceBubble(row) {
   // placeholder for future enhancements
+}
+
+function playCallAudio(btn) {
+  const src = btn.dataset.src;
+  if (!src) return;
+  if (sharedAudio.src && sharedAudio.src.endsWith(src) && !sharedAudio.paused) {
+    sharedAudio.pause();
+    btn.querySelector('svg path').setAttribute('d', 'M8 5v14l11-7z');
+    return;
+  }
+  sharedAudio.src = src;
+  sharedAudio.load();
+  btn.querySelector('svg path').setAttribute('d', 'M6 19h4V5H6v14zm8-14v14h4V5h-4z');
+  sharedAudio.play().catch(() => {});
+  sharedAudio.onended = () => { btn.querySelector('svg path').setAttribute('d', 'M8 5v14l11-7z'); };
 }
 
 function renderMarkdown(text) {
