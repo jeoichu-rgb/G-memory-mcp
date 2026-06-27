@@ -295,7 +295,7 @@ function startCall() {
   callActive = true;
   callStart = Date.now();
   timerIv = setInterval(tickTimer, 1000);
-  document.getElementById('callStatus').textContent = '通话中';
+  setStatus('通话中');
 
   // "dial" — tell Erik Jeoi is calling
   wsSend('chat:send', {
@@ -361,6 +361,7 @@ async function onReplyDone() {
 
   if (voiceEvents.length > 0) {
     // Erik called erik_speak — use his voice; cleanText is the "translation"
+    setStatus('说话中……');
     for (const v of voiceEvents) {
       const utt = { text: v.text, translation: cleanText, audio_url: v.audio_url, duration: v.duration };
       utterances.push(utt);
@@ -369,6 +370,7 @@ async function onReplyDone() {
     }
   } else if (cleanText) {
     // auto-TTS
+    setStatus('说话中……');
     setSub(cleanText, '');
     try {
       const r = await callTTS(cleanText);
@@ -402,7 +404,7 @@ function enqueueAudio(url) {
 }
 
 function playNext() {
-  if (!audioQ.length) { playing = false; showWave(false); return; }
+  if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); return; }
   playing = true;
   showWave(true);
   audio.src = audioQ.shift();
@@ -418,6 +420,7 @@ function setSub(orig, trans) {
   document.getElementById('subTrans').textContent = trans;
 }
 function showThinking(on) { document.getElementById('thinkDot').classList.toggle('active', on); }
+function setStatus(txt) { document.getElementById('callStatus').textContent = txt; }
 function showWave(on) { document.getElementById('waveBar').classList.toggle('hidden', !on); }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
@@ -472,7 +475,7 @@ function playUtt(btn) {
 }
 
 function goBack() {
-  location.href = '/chat.html';
+  location.href = '/';
 }
 </script>
 </body>
