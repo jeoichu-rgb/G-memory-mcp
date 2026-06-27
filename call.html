@@ -120,6 +120,13 @@ html, body { height:100%; overflow:hidden; background:#060608; color:#e0e0e0; fo
 .ctrl-btn:active .ctrl-icon { transform:scale(0.92); }
 .hangup .ctrl-icon { background:#e53935; color:white; }
 
+.dial-btn {
+  margin-top:16px; padding:14px 48px; border:none; border-radius:28px;
+  background:#4caf50; color:white; font-size:16px; font-family:inherit;
+  cursor:pointer; letter-spacing:0.1em; transition:transform 0.15s;
+}
+.dial-btn:active { transform:scale(0.95); }
+
 /* ── Call record overlay ── */
 .record-overlay {
   display:none; position:fixed; inset:0; background:#080808; z-index:100;
@@ -185,6 +192,7 @@ html, body { height:100%; overflow:hidden; background:#060608; color:#e0e0e0; fo
   <div class="call-info">
     <div class="call-status" id="callStatus">连接中…</div>
     <div class="call-timer" id="callTimer">00:00</div>
+    <button class="dial-btn" id="dialBtn" onclick="dialClick()" style="display:none;">拨号</button>
   </div>
 
   <div class="subtitle-area">
@@ -252,19 +260,6 @@ audio.setAttribute('playsinline', '');
     document.getElementById('avatarRef').innerHTML = '<img src="' + av + '">';
   }
 
-  // unlock audio on first gesture (iOS)
-  const unlock = () => {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = ctx.createBuffer(1, 1, 22050);
-    const src = ctx.createBufferSource();
-    src.buffer = buf; src.connect(ctx.destination); src.start();
-    audio.play().then(() => audio.pause()).catch(() => {});
-    document.removeEventListener('touchstart', unlock);
-    document.removeEventListener('click', unlock);
-  };
-  document.addEventListener('touchstart', unlock, { once: true });
-  document.addEventListener('click', unlock, { once: true });
-
   // enter key
   document.getElementById('msgInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.isComposing) sendMsg();
@@ -278,7 +273,8 @@ function connectWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen = () => {
     wsSend('session:switch', { sessionId });
-    startCall();
+    setStatus('等待拨号');
+    document.getElementById('dialBtn').style.display = '';
   };
   ws.onmessage = e => {
     try { handleWS(JSON.parse(e.data)); } catch(err) { console.warn('[ws]', err); }
@@ -288,6 +284,18 @@ function connectWS() {
 
 function wsSend(ev, data) {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ event: ev, ...data }));
+}
+
+/* ── Dial (user gesture unlocks audio) ── */
+function dialClick() {
+  document.getElementById('dialBtn').style.display = 'none';
+  // user gesture → unlock audio
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = ctx.createBuffer(1, 1, 22050);
+  const s = ctx.createBufferSource();
+  s.buffer = buf; s.connect(ctx.destination); s.start();
+  audio.play().then(() => audio.pause()).catch(() => {});
+  startCall();
 }
 
 /* ── Call lifecycle ── */
@@ -331,7 +339,13 @@ function handleWS(d) {
       accumText += d.text || '';
       break;
     case 'stream:thinking':
-      break; // ignore thinking display during call
+      break;
+    case 'stream:block':
+      if (d.block && d.block.name && d.block.name.includes('speak')) {
+        setStatus('说话中……');
+        showThinking(false);
+      }
+      break;
     case 'voice':
       voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text });
       break;
@@ -407,12 +421,21 @@ function playNext() {
   if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); return; }
   playing = true;
   showWave(true);
-  audio.src = audioQ.shift();
+  setStatus('说话中……');
+  const url = audioQ.shift();
+  audio.src = url;
+  audio.oncanplaythrough = () => {
+    audio.oncanplaythrough = null;
+    audio.play().catch(err => {
+      console.error('play failed:', err);
+      playNext();
+    });
+  };
+  audio.onerror = () => { console.error('audio load error:', url); playNext(); };
   audio.load();
-  audio.play().catch(err => { console.error('play:', err); playing = false; showWave(false); });
 }
 audio.addEventListener('ended', playNext);
-audio.addEventListener('error', () => { playing = false; showWave(false); playNext(); });
+audio.addEventListener('error', () => { playNext(); });
 
 /* ── UI helpers ── */
 function setSub(orig, trans) {
