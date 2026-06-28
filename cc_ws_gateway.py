@@ -425,8 +425,9 @@ class TranscriptTailer:
         backend = self.session._call_tts_backend
         alt = "minimax" if backend == "local" else "local"
         for b in (backend, alt):
+            timeout = 8 if b == "local" else 12
             try:
-                async with httpx.AsyncClient(timeout=12) as c:
+                async with httpx.AsyncClient(timeout=timeout) as c:
                     r = await c.post(
                         f"{ADMIN_API}/api/tts",
                         json={"text": text, "backend": b, "speed": 1.0},
@@ -444,6 +445,9 @@ class TranscriptTailer:
                         return
             except Exception as e:
                 log.warning(f"Auto-TTS ({b}) failed: {e}")
+                if b == "local":
+                    self.session._call_tts_backend = "minimax"
+                    log.info("Call TTS switched to minimax (local failed)")
         log.error(f"Auto-TTS all backends failed: {text[:50]}")
 
     async def flush_call_tts(self):
