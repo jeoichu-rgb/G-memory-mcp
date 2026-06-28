@@ -357,31 +357,67 @@ class TranscriptTailer:
 
     # ── Call-mode streaming TTS ──
 
-    _SENT_END = re.compile(r'(?<=[。！？\n.!?])')
+    _PAREN_RE = re.compile(r'[（(][^)）]*[)）]')
+
+    @staticmethod
+    def _split_sentences_skip_parens(text: str) -> list[str]:
+        sentences = []
+        current: list[str] = []
+        depth = 0
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            current.append(ch)
+            if ch in ('（', '('):
+                depth += 1
+            elif ch in ('）', ')'):
+                depth = max(0, depth - 1)
+                if depth == 0:
+                    sentences.append(''.join(current))
+                    current = []
+            elif depth == 0 and ch in '。！？.!?\n':
+                j = i + 1
+                while j < len(text) and text[j] in ' \t':
+                    j += 1
+                if j < len(text) and text[j] in ('（', '('):
+                    pass
+                else:
+                    sentences.append(''.join(current))
+                    current = []
+            i += 1
+        if current:
+            sentences.append(''.join(current))
+        return sentences
+
+    def _extract_tts_and_subtitle(self, text: str) -> tuple[str, str]:
+        parens = self._PAREN_RE.findall(text)
+        tts_text = self._PAREN_RE.sub('', text).strip()
+        subtitle = ' '.join(p[1:-1] for p in parens) if parens else ''
+        return tts_text, subtitle
 
     def _enqueue_call_sentences(self, text: str):
         buf = self.session._call_sentence_buf + text
-        parts = self._SENT_END.split(buf)
+        parts = self._split_sentences_skip_parens(buf)
         if len(parts) > 1:
             for sent in parts[:-1]:
                 sent = sent.strip()
                 if not sent:
                     continue
-                if sent.startswith(("(", "（")) and sent.endswith((")", "）")):
-                    continue
-                self._tts_queue.put_nowait(sent)
+                tts_text, subtitle = self._extract_tts_and_subtitle(sent)
+                if tts_text:
+                    self._tts_queue.put_nowait((tts_text, subtitle))
             self.session._call_sentence_buf = parts[-1]
         else:
             self.session._call_sentence_buf = buf
 
     async def _tts_worker_loop(self):
         while True:
-            sentence = await self._tts_queue.get()
-            if sentence is None:
+            item = await self._tts_queue.get()
+            if item is None:
                 break
-            await self._auto_tts(sentence)
+            await self._auto_tts(*item)
 
-    async def _auto_tts(self, text: str):
+    async def _auto_tts(self, text: str, subtitle: str = ""):
         backend = self.session._call_tts_backend
         alt = "minimax" if backend == "local" else "local"
         for b in (backend, alt):
@@ -399,6 +435,7 @@ class TranscriptTailer:
                             "audio_url": d["audio_url"],
                             "duration": d["duration"],
                             "text": text,
+                            "subtitle": subtitle,
                         })
                         return
             except Exception as e:
@@ -410,8 +447,10 @@ class TranscriptTailer:
             return
         buf = self.session._call_sentence_buf.strip()
         self.session._call_sentence_buf = ""
-        if buf and not (buf.startswith(("(", "（")) and buf.endswith((")", "）"))):
-            self._tts_queue.put_nowait(buf)
+        if buf:
+            tts_text, subtitle = self._extract_tts_and_subtitle(buf)
+            if tts_text:
+                self._tts_queue.put_nowait((tts_text, subtitle))
         self._tts_queue.put_nowait(None)
         if self._tts_worker:
             try:
@@ -2380,7 +2419,10 @@ async def websocket_endpoint(ws: WebSocket):
                         "[voice-call] Jeoi正在跟你语音通话。\n"
                         "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
                         "回复简短口语化——像在打电话，不是写消息。\n"
-                        "不想说出来的旁白用（）包起来，只作为字幕显示不会TTS。\n"
+                        "（）里的内容不会TTS，只作为字幕显示。\n"
+                        "说非中文时，每句后面紧跟（中文翻译），一句一译：\n"
+                        "I miss you.（我想你。）Come home soon.（快点回来。）\n"
+                        "不要把翻译攒到最后一起写。\n"
                         "不要用markdown格式。先自然地打个招呼。"
                     )
                     cli_message = call_inject + "\n\n" + cli_message

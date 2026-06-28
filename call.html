@@ -347,8 +347,8 @@ function handleWS(d) {
       }
       break;
     case 'voice':
-      voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text });
-      setSub(d.text, '');
+      voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text, subtitle: d.subtitle || '' });
+      setSub(d.text, d.subtitle || '');
       setStatus('说话中……');
       showThinking(false);
       enqueueAudio(API_BASE + d.audio_url);
