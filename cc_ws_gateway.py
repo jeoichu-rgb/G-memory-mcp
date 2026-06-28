@@ -2902,8 +2902,9 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             session._current_text = _seed_search_re.sub('', session._current_text)
             session._current_text = _seed_ask_re.sub('', session._current_text).rstrip()
 
+        _reply_source = "voice_call" if session._in_call else None
+
         if session._current_text or session._current_thinking:
-            _reply_source = "voice_call" if session._in_call else None
             append_message(
                 session.id, "assistant", session._current_text,
                 thinking=session._current_thinking,
@@ -2922,14 +2923,15 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         pass
                     log.info(f"Erik reacted {emoji} on #{idx + 1}")
 
-            for vm in voice_messages:
-                append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
-                try:
-                    await ws.send_json({"event": "voice", **vm})
-                except Exception:
-                    pass
-                log.info(f"Voice message: {vm['duration']}s")
+        for vm in voice_messages:
+            append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
+            try:
+                await ws.send_json({"event": "voice", **vm})
+            except Exception:
+                pass
+            log.info(f"Voice message: {vm['duration']}s")
 
+        if session._current_text or session._current_thinking or voice_messages:
             if session._current_text:
                 txt = session._current_text.replace(chr(10), " ")[:30]
                 if len(session._current_text) > 30:
