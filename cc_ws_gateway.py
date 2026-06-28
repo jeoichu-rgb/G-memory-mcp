@@ -1320,6 +1320,23 @@ async def run_cc_oneshot(
         log.error(f"run_cc_oneshot error: {e}")
         return "", "", []
 
+# ── Post-call follow-up ──
+
+async def _send_call_followup(session: "Session"):
+    await asyncio.sleep(3)
+    if _user_msg_active:
+        return
+    prompt = (
+        "[system] Jeoi刚挂了电话。你可以发一条消息给她——"
+        "随便说几句，把通话里没说完的补上，或者就简单告个别。"
+        "正常文字消息，不需要TTS格式。如果没什么要说的就回复[无]。"
+    )
+    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=1)
+    if text and "[无]" not in text:
+        session._call_ended_notify = False
+        await push_pebbling_msg("call_followup", text, session, thinking=thinking)
+
+
 # ── Telegram push ──
 
 async def send_telegram(text: str):
@@ -2814,6 +2831,7 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session.last_active = datetime.now(SGT)
                     save_session_meta(call_session)
                     log.info(f"Call record saved: {dur_str}, {len(call_utts)} utterances")
+                    asyncio.create_task(_send_call_followup(call_session))
 
             else:
                 log.info(f"Unhandled event: {event}")

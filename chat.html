@@ -1643,7 +1643,7 @@ function renderHistory(messages) {
       const dur = cr.duration || 0;
       const durStr = Math.floor(dur/60) + ':' + String(dur%60).padStart(2,'0');
       const utts = cr.utterances || [];
-      let uttsHtml = utts.map(u => {
+      const uttItems = utts.map(u => {
         const ud = u.duration || 0;
         const uds = ud >= 60 ? Math.floor(ud/60)+':'+String(Math.round(ud%60)).padStart(2,'0') : '0:'+String(Math.round(ud)).padStart(2,'0');
         return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">' +
@@ -1653,7 +1653,13 @@ function renderHistory(messages) {
           '</div>' +
           '<span style="font-size:11px;opacity:0.4;flex-shrink:0">' + uds + '</span>' +
         '</div>';
-      }).join('');
+      });
+      let uttsHtml = uttItems.slice(0, 2).join('');
+      if (uttItems.length > 2) {
+        const extra = uttItems.length - 2;
+        uttsHtml += '<div class="call-utt-hidden" style="display:none">' + uttItems.slice(2).join('') + '</div>' +
+          '<div style="text-align:center;padding:6px 0"><button class="call-utt-expand" onclick="toggleCallUtts(this)" data-count="' + extra + '" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px">展开 ' + extra + ' 条 ▾</button></div>';
+      }
       row.innerHTML = '<div class="bubble" style="min-width:200px">' +
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
           '<span style="font-size:18px">📞</span>' +
@@ -2169,6 +2175,13 @@ function toggleTranscript(btn) {
 
 function initVoiceBubble(row) {
   // placeholder for future enhancements
+}
+
+function toggleCallUtts(btn) {
+  const hidden = btn.parentElement.previousElementSibling;
+  const show = hidden.style.display === 'none';
+  hidden.style.display = show ? 'block' : 'none';
+  btn.textContent = show ? '收起 ▴' : '展开 ' + btn.dataset.count + ' 条 ▾';
 }
 
 function playCallAudio(btn) {
@@ -2703,7 +2716,7 @@ function addPebblingMessage(content, source, time) {
   const container = document.getElementById('messages');
   const row = document.createElement('div');
   row.className = 'msg-row in';
-  const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : source === 'desire' ? '欲望' : '送石头';
+  const label = source === 'patrol' ? '巡查' : source === 'pomodoro' ? '番茄钟' : source === 'desire' ? '欲望' : source === 'call_followup' ? '📞 通话后' : '送石头';
   row.innerHTML = `
     <div class="bubble">
       <div class="msg-meta-blocks"></div>
