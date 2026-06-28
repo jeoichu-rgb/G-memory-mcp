@@ -348,6 +348,10 @@ function handleWS(d) {
       break;
     case 'voice':
       voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text });
+      setSub(d.text, '');
+      setStatus('说话中……');
+      showThinking(false);
+      enqueueAudio(API_BASE + d.audio_url);
       break;
     case 'message:complete':
       onReplyDone();
@@ -364,32 +368,31 @@ function handleWS(d) {
 async function onReplyDone() {
   showThinking(false);
 
-  // parse voice markers from text (in case tailer caught them before gateway stripped)
+  // parse voice markers from text (fallback for erik_speak MCP calls)
   const vRe = /<!--voice:(.+?)\|(.+?)\|(.+?)-->/g;
   let m;
   while ((m = vRe.exec(accumText)) !== null) {
-    voiceEvents.push({ audio_url: m[1], duration: parseFloat(m[2]), text: m[3] });
+    const url = m[1];
+    if (!voiceEvents.some(v => v.audio_url === url)) {
+      voiceEvents.push({ audio_url: url, duration: parseFloat(m[2]), text: m[3] });
+      enqueueAudio(API_BASE + url);
+    }
   }
-  // strip markers
   let cleanText = accumText.replace(vRe, '').replace(/<!--(?:react|curiosity)[^>]*-->/g, '').trim();
 
   if (voiceEvents.length > 0) {
-    // Erik called erik_speak — use his voice; cleanText is the "translation"
-    setStatus('说话中……');
     for (const v of voiceEvents) {
-      const utt = { text: v.text, translation: cleanText, audio_url: v.audio_url, duration: v.duration };
-      utterances.push(utt);
-      setSub(v.text, cleanText);
-      enqueueAudio(API_BASE + v.audio_url);
+      if (!utterances.some(u => u.audio_url === v.audio_url)) {
+        utterances.push({ text: v.text, translation: cleanText, audio_url: v.audio_url, duration: v.duration });
+      }
     }
   } else if (cleanText) {
-    // auto-TTS
+    // no streaming voice events — auto-TTS fallback
     setStatus('说话中……');
     setSub(cleanText, '');
     try {
       const r = await callTTS(cleanText);
-      const utt = { text: cleanText, translation: '', audio_url: r.audio_url, duration: r.duration };
-      utterances.push(utt);
+      utterances.push({ text: cleanText, translation: '', audio_url: r.audio_url, duration: r.duration });
       enqueueAudio(API_BASE + r.audio_url);
     } catch(err) {
       console.error('Auto-TTS failed:', err);

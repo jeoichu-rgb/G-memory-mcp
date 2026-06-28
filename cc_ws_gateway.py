@@ -73,6 +73,7 @@ DENY_TOOLS = [
 # DeepSeek API for context summarization (same key as claude_memory.py)
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
+GSVI_BASE_URL = os.getenv("GSVI_BASE_URL", "https://gsvi.erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
@@ -221,6 +222,8 @@ class TranscriptTailer:
         self._reply_done = asyncio.Event()
         self._dbg = 0
         self._start_offset = 0
+        self._tts_queue: asyncio.Queue | None = None
+        self._tts_worker: asyncio.Task | None = None
 
     def start(self):
         global _transcript_path_cache
@@ -235,6 +238,9 @@ class TranscriptTailer:
             self._start_offset = self._offset
             self._task = asyncio.create_task(self._run())
             log.info(f"tailer started: {self._path.name} @{self._offset}")
+        if self.session._in_call:
+            self._tts_queue = asyncio.Queue()
+            self._tts_worker = asyncio.create_task(self._tts_worker_loop())
 
     async def wait_done(self, timeout=300):
         try:
@@ -250,6 +256,8 @@ class TranscriptTailer:
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 if self._task and not self._task.done():
                     self._task.cancel()
+        if self._tts_worker and not self._tts_worker.done():
+            self._tts_worker.cancel()
 
     async def _run(self):
         _ticks = 0
@@ -339,11 +347,77 @@ class TranscriptTailer:
                     display = _HIDDEN_MARKER_RE.sub('', text)
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
+                    if self.session._in_call and self._tts_queue:
+                        self._enqueue_call_sentences(text)
 
 
         stop_reason = msg.get("stop_reason", "")
         if stop_reason == "end_turn":
             self._reply_done.set()
+
+    # ── Call-mode streaming TTS ──
+
+    _SENT_END = re.compile(r'(?<=[。！？\n.!?])')
+
+    def _enqueue_call_sentences(self, text: str):
+        buf = self.session._call_sentence_buf + text
+        parts = self._SENT_END.split(buf)
+        if len(parts) > 1:
+            for sent in parts[:-1]:
+                sent = sent.strip()
+                if not sent:
+                    continue
+                if sent.startswith(("(", "（")) and sent.endswith((")", "）")):
+                    continue
+                self._tts_queue.put_nowait(sent)
+            self.session._call_sentence_buf = parts[-1]
+        else:
+            self.session._call_sentence_buf = buf
+
+    async def _tts_worker_loop(self):
+        while True:
+            sentence = await self._tts_queue.get()
+            if sentence is None:
+                break
+            await self._auto_tts(sentence)
+
+    async def _auto_tts(self, text: str):
+        backend = self.session._call_tts_backend
+        alt = "minimax" if backend == "local" else "local"
+        for b in (backend, alt):
+            try:
+                async with httpx.AsyncClient(timeout=12) as c:
+                    r = await c.post(
+                        f"{ADMIN_API}/api/tts",
+                        json={"text": text, "backend": b, "speed": 1.0},
+                        headers={"x-secret": PALACE_SECRET},
+                    )
+                    if r.status_code == 200:
+                        d = r.json()
+                        await self._ws({
+                            "event": "voice",
+                            "audio_url": d["audio_url"],
+                            "duration": d["duration"],
+                            "text": text,
+                        })
+                        return
+            except Exception as e:
+                log.warning(f"Auto-TTS ({b}) failed: {e}")
+        log.error(f"Auto-TTS all backends failed: {text[:50]}")
+
+    async def flush_call_tts(self):
+        if not self._tts_queue:
+            return
+        buf = self.session._call_sentence_buf.strip()
+        self.session._call_sentence_buf = ""
+        if buf and not (buf.startswith(("(", "（")) and buf.endswith((")", "）"))):
+            self._tts_queue.put_nowait(buf)
+        self._tts_queue.put_nowait(None)
+        if self._tts_worker:
+            try:
+                await asyncio.wait_for(self._tts_worker, timeout=30)
+            except asyncio.TimeoutError:
+                log.warning("TTS worker timeout on flush")
 
     async def _ws(self, data):
         if self.ws:
@@ -1949,6 +2023,8 @@ class Session:
         # Voice call mode
         self._in_call = False
         self._call_injected = False
+        self._call_tts_backend = "minimax"
+        self._call_sentence_buf = ""
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -1970,6 +2046,7 @@ class Session:
         self._current_tools = []
         self._result_sent = False
         self._stop_requested = False
+        self._call_sentence_buf = ""
 
 
 sessions: dict[str, Session] = {}
@@ -2289,13 +2366,21 @@ async def websocket_endpoint(ws: WebSocket):
                 time_tag = "[" + now_str + " UTC+8]"
                 cli_message = time_tag + "\n" + message
 
-                # Voice call: inject system prompt on first call message
+                # Voice call: detect TTS backend + inject system prompt
                 if call_mode and not current_session._call_injected:
+                    # Detect GSVI once on dial
+                    try:
+                        async with httpx.AsyncClient(timeout=4) as _hc:
+                            _hr = await _hc.get(GSVI_BASE_URL)
+                            current_session._call_tts_backend = "local" if _hr.status_code < 500 else "minimax"
+                    except Exception:
+                        current_session._call_tts_backend = "minimax"
+                    log.info(f"Call TTS backend: {current_session._call_tts_backend}")
                     call_inject = (
                         "[voice-call] Jeoi正在跟你语音通话。\n"
-                        "你的文字回复会自动TTS播放。回复简短口语化——像在打电话，不是写消息。\n"
-                        "如果想说英文或日语，调erik_speak说你想说的，中文正文写翻译。\n"
-                        "通话期间只用本地TTS（backend=local），不要用minimax。\n"
+                        "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
+                        "回复简短口语化——像在打电话，不是写消息。\n"
+                        "不想说出来的旁白用（）包起来，只作为字幕显示不会TTS。\n"
                         "不要用markdown格式。先自然地打个招呼。"
                     )
                     cli_message = call_inject + "\n\n" + cli_message
@@ -2709,6 +2794,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await tmux_send_message(message)
 
         await tailer.wait_done(timeout=300)
+        if session._in_call:
+            await tailer.flush_call_tts()
         await asyncio.sleep(1)
         await tailer.stop()
 
