@@ -881,7 +881,6 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="chat-header-status" id="headerStatus">online</div>
       </div>
       <div class="chat-header-actions">
-        <button class="menu-btn" onclick="startCall()" title="语音通话" style="font-size:16px">📞</button>
         <button class="menu-btn" onclick="toggleMcpPanel()" title="MCP 工具">☰</button>
         <select id="modelSelect" onchange="switchModel()">
           <option value="claude-opus-4-6">Opus 4.6</option>
@@ -1008,6 +1007,11 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
       </div>
       <div class="panel-menu">
+        <div class="panel-menu-item" onclick="startCall(); closeMcpPanel();">
+          <span class="panel-menu-icon">📞</span>
+          <span class="panel-menu-label">语音通话</span>
+        </div>
+        <div style="border-bottom:1px solid var(--border); margin:4px 16px;"></div>
         <div class="panel-menu-item" onclick="openPanelView('ctx')">
           <span class="panel-menu-label">上下文管理</span>
           <span class="panel-menu-arrow">›</span>
