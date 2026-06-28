@@ -423,32 +423,25 @@ class TranscriptTailer:
 
     async def _auto_tts(self, text: str, subtitle: str = ""):
         backend = self.session._call_tts_backend
-        alt = "minimax" if backend == "local" else "local"
-        for b in (backend, alt):
-            timeout = 8 if b == "local" else 12
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as c:
-                    r = await c.post(
-                        f"{ADMIN_API}/api/tts",
-                        json={"text": text, "backend": b, "speed": 1.0},
-                        headers={"x-secret": PALACE_SECRET},
-                    )
-                    if r.status_code == 200:
-                        d = r.json()
-                        await self._ws({
-                            "event": "voice",
-                            "audio_url": d["audio_url"],
-                            "duration": d["duration"],
-                            "text": text,
-                            "subtitle": subtitle,
-                        })
-                        return
-            except Exception as e:
-                log.warning(f"Auto-TTS ({b}) failed: {e}")
-                if b == "local":
-                    self.session._call_tts_backend = "minimax"
-                    log.info("Call TTS switched to minimax (local failed)")
-        log.error(f"Auto-TTS all backends failed: {text[:50]}")
+        try:
+            async with httpx.AsyncClient(timeout=12) as c:
+                r = await c.post(
+                    f"{ADMIN_API}/api/tts",
+                    json={"text": text, "backend": backend, "speed": 1.0},
+                    headers={"x-secret": PALACE_SECRET},
+                )
+                if r.status_code == 200:
+                    d = r.json()
+                    await self._ws({
+                        "event": "voice",
+                        "audio_url": d["audio_url"],
+                        "duration": d["duration"],
+                        "text": text,
+                        "subtitle": subtitle,
+                    })
+                    return
+        except Exception as e:
+            log.warning(f"Auto-TTS ({backend}) failed: {e}")
 
     async def flush_call_tts(self):
         if not self._tts_queue:
