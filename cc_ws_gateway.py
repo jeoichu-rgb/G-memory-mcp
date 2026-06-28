@@ -442,6 +442,11 @@ class TranscriptTailer:
                     return
         except Exception as e:
             log.warning(f"Auto-TTS ({backend}) failed: {e}")
+        if backend == "local":
+            self.session._call_tts_backend = "minimax"
+            log.info("Call TTS: local→minimax (local failed mid-call)")
+            await self._ws({"event": "call:backend_switch", "from": "local", "to": "minimax"})
+            await self._auto_tts(text, subtitle)
 
     async def flush_call_tts(self):
         if not self._tts_queue:
@@ -2080,6 +2085,7 @@ class Session:
         self._call_tts_backend = "minimax"
         self._call_sentence_buf = ""
         self._call_stop = asyncio.Event()
+        self._call_ended_notify = False
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -2445,6 +2451,10 @@ async def websocket_endpoint(ws: WebSocket):
                     cli_message = call_inject + "\n\n" + cli_message
                     current_session._call_injected = True
                     log.info(f"Voice call started for session {current_session.id}")
+                if current_session._call_ended_notify:
+                    cli_message = "[call-ended] Jeoi刚才挂断了通话，现在是正常聊天模式。\n\n" + cli_message
+                    current_session._call_ended_notify = False
+                    log.info("Injected call-ended notification")
                 memory_on = data.get("memory_enabled", False)
                 if not current_session.first_msg_seen:
                     # First message in session: diary+summary only if clip is on
@@ -2788,6 +2798,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if call_session:
                     call_session._in_call = False
                     call_session._call_injected = False
+                    call_session._call_ended_notify = True
                     call_dur = data.get("duration", 0)
                     call_utts = data.get("utterances", [])
                     dur_mm = call_dur // 60

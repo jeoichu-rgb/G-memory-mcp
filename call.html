@@ -354,6 +354,12 @@ function handleWS(d) {
       showThinking(false);
       enqueueAudio(API_BASE + d.audio_url);
       break;
+    case 'call:backend_switch':
+      if (callActive) {
+        setStatus('TTS已切换到 ' + (d.to === 'minimax' ? 'MiniMax（云端）' : 'Local'));
+        setTimeout(() => { if (callActive) setStatus('通话中'); }, 4000);
+      }
+      break;
     case 'message:complete':
       onReplyDone();
       break;
