@@ -412,8 +412,12 @@ class TranscriptTailer:
 
     async def _tts_worker_loop(self):
         while True:
+            if self.session._call_stop.is_set():
+                break
             item = await self._tts_queue.get()
             if item is None:
+                break
+            if self.session._call_stop.is_set():
                 break
             await self._auto_tts(*item)
 
@@ -445,12 +449,13 @@ class TranscriptTailer:
     async def flush_call_tts(self):
         if not self._tts_queue:
             return
-        buf = self.session._call_sentence_buf.strip()
-        self.session._call_sentence_buf = ""
-        if buf:
-            tts_text, subtitle = self._extract_tts_and_subtitle(buf)
-            if tts_text:
-                self._tts_queue.put_nowait((tts_text, subtitle))
+        if not self.session._call_stop.is_set():
+            buf = self.session._call_sentence_buf.strip()
+            self.session._call_sentence_buf = ""
+            if buf:
+                tts_text, subtitle = self._extract_tts_and_subtitle(buf)
+                if tts_text:
+                    self._tts_queue.put_nowait((tts_text, subtitle))
         self._tts_queue.put_nowait(None)
         if self._tts_worker:
             try:
@@ -1992,6 +1997,19 @@ async def internal_channel_ws(ws: WebSocket):
 
 _active_frontend_ws: "WebSocket | None" = None
 
+@app.post("/internal/call-stop")
+async def call_stop_signal(request: Request):
+    """Frontend calls this on hangup to immediately stop TTS worker."""
+    data = await request.json()
+    sid = data.get("sessionId", "")
+    s = sessions.get(sid)
+    if s:
+        s._call_stop.set()
+        log.info(f"Call stop signal for session {sid}")
+        return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "no_session"}, status_code=404)
+
+
 @app.post("/internal/thinking")
 async def receive_thinking(request: Request):
     """Receive thinking text from CC CLI Stop hook."""
@@ -2064,6 +2082,7 @@ class Session:
         self._call_injected = False
         self._call_tts_backend = "minimax"
         self._call_sentence_buf = ""
+        self._call_stop = asyncio.Event()
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -2407,6 +2426,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Voice call: detect TTS backend + inject system prompt
                 if call_mode and not current_session._call_injected:
+                    current_session._call_stop.clear()
                     # Detect GSVI once on dial
                     try:
                         async with httpx.AsyncClient(timeout=4) as _hc:

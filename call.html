@@ -347,6 +347,7 @@ function handleWS(d) {
       }
       break;
     case 'voice':
+      if (!callActive) break;
       voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text, subtitle: d.subtitle || '' });
       setSub(d.text, d.subtitle || '');
       setStatus('说话中……');
@@ -457,6 +458,13 @@ function hangup() {
   clearInterval(timerIv);
   audio.pause();
   audioQ = [];
+
+  // stop TTS worker immediately (HTTP bypasses WS event queue)
+  fetch(WS_URL.replace('wss://', 'https://').replace('/ws', '') + '/internal/call-stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  }).catch(() => {});
 
   const dur = Math.floor((Date.now() - callStart) / 1000);
 
