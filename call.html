@@ -404,10 +404,9 @@ function handleWS(d) {
     case 'voice':
       if (!callActive) break;
       voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text, subtitle: d.subtitle || '' });
-      setSub(d.text, d.subtitle || '');
       setStatus('说话中……');
       showThinking(false);
-      enqueueAudio(API_BASE + d.audio_url);
+      enqueueAudio(API_BASE + d.audio_url, d.text, d.subtitle || '');
       break;
     case 'call:backend_switch':
       if (callActive) {
@@ -437,7 +436,7 @@ async function onReplyDone() {
     const url = m[1];
     if (!voiceEvents.some(v => v.audio_url === url)) {
       voiceEvents.push({ audio_url: url, duration: parseFloat(m[2]), text: m[3] });
-      enqueueAudio(API_BASE + url);
+      enqueueAudio(API_BASE + url, m[3], '');
     }
   }
   let cleanText = accumText.replace(vRe, '').replace(/<!--(?:react|curiosity)[^>]*-->/g, '').trim();
@@ -455,7 +454,7 @@ async function onReplyDone() {
     try {
       const r = await callTTS(cleanText);
       utterances.push({ text: cleanText, translation: '', audio_url: r.audio_url, duration: r.duration });
-      enqueueAudio(API_BASE + r.audio_url);
+      enqueueAudio(API_BASE + r.audio_url, cleanText, '');
     } catch(err) {
       console.error('Auto-TTS failed:', err);
     }
@@ -477,8 +476,8 @@ async function callTTS(text) {
 }
 
 /* ── Audio queue ── */
-function enqueueAudio(url) {
-  audioQ.push(url);
+function enqueueAudio(url, text, subtitle) {
+  audioQ.push({url, text: text || '', subtitle: subtitle || ''});
   if (!playing) playNext();
 }
 
@@ -487,8 +486,9 @@ function playNext() {
   playing = true;
   showWave(true);
   setStatus('说话中……');
-  const url = audioQ.shift();
-  audio.src = url;
+  const item = audioQ.shift();
+  setSub(item.text, item.subtitle);
+  audio.src = item.url;
   audio.oncanplaythrough = () => {
     audio.oncanplaythrough = null;
     audio.play().catch(err => {
@@ -496,7 +496,7 @@ function playNext() {
       playNext();
     });
   };
-  audio.onerror = () => { console.error('audio load error:', url); playNext(); };
+  audio.onerror = () => { console.error('audio load error:', item.url); playNext(); };
   audio.load();
 }
 audio.addEventListener('ended', playNext);
