@@ -477,30 +477,55 @@ async function callTTS(text) {
 
 /* ── Audio queue ── */
 function enqueueAudio(url, text, subtitle) {
-  audioQ.push({url, text: text || '', subtitle: subtitle || ''});
+  const item = {url, text: text || '', subtitle: subtitle || '', blobUrl: null, ready: false, error: false};
+  audioQ.push(item);
+  fetch(url).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.blob();
+  }).then(blob => {
+    item.blobUrl = URL.createObjectURL(blob);
+    item.ready = true;
+    if (!playing) playNext();
+  }).catch(err => {
+    console.error('preload error:', url, err);
+    item.error = true;
+    if (!playing) playNext();
+  });
   if (!playing) playNext();
 }
 
 function playNext() {
+  while (audioQ.length && audioQ[0].error) audioQ.shift();
   if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); return; }
+  const item = audioQ[0];
+  if (!item.ready) { playing = false; return; }
+  audioQ.shift();
   playing = true;
   showWave(true);
   setStatus('说话中……');
-  const item = audioQ.shift();
   setSub(item.text, item.subtitle);
-  audio.src = item.url;
+  audio.src = item.blobUrl;
   audio.oncanplaythrough = () => {
     audio.oncanplaythrough = null;
     audio.play().catch(err => {
       console.error('play failed:', err);
+      URL.revokeObjectURL(item.blobUrl);
       playNext();
     });
   };
-  audio.onerror = () => { console.error('audio load error:', item.url); playNext(); };
+  audio.onerror = () => { console.error('audio play error'); URL.revokeObjectURL(item.blobUrl); playNext(); };
   audio.load();
 }
-audio.addEventListener('ended', playNext);
-audio.addEventListener('error', () => { playNext(); });
+audio.addEventListener('ended', () => {
+  const prev = audio.src;
+  if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  playNext();
+});
+audio.addEventListener('error', () => {
+  const prev = audio.src;
+  if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  playNext();
+});
 
 /* ── UI helpers ── */
 function setSub(orig, trans) {
