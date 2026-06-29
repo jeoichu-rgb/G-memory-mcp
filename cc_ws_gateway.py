@@ -411,17 +411,58 @@ class TranscriptTailer:
             self.session._call_sentence_buf = buf
 
     async def _tts_worker_loop(self):
+        PREFETCH = 2
+        pending = []
+        eof = False
+
+        def _fill():
+            nonlocal eof
+            while not eof and len(pending) < PREFETCH + 1:
+                try:
+                    item = self._tts_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if item is None:
+                    eof = True
+                    break
+                text, subtitle = item
+                pending.append((asyncio.create_task(self._call_tts_api(text)), text, subtitle))
+
         while True:
             if self.session._call_stop.is_set():
                 break
-            item = await self._tts_queue.get()
-            if item is None:
-                break
-            if self.session._call_stop.is_set():
-                break
-            await self._auto_tts(*item)
 
-    async def _auto_tts(self, text: str, subtitle: str = ""):
+            if not pending and not eof:
+                item = await self._tts_queue.get()
+                if item is None:
+                    break
+                if self.session._call_stop.is_set():
+                    break
+                text, subtitle = item
+                pending.append((asyncio.create_task(self._call_tts_api(text)), text, subtitle))
+
+            _fill()
+
+            if not pending:
+                break
+
+            task, text, subtitle = pending.pop(0)
+            result = await task
+            if result and not self.session._call_stop.is_set():
+                await self._ws({
+                    "event": "voice",
+                    "audio_url": result["audio_url"],
+                    "duration": result["duration"],
+                    "text": text,
+                    "subtitle": subtitle,
+                })
+
+            _fill()
+
+        for entry in pending:
+            entry[0].cancel()
+
+    async def _call_tts_api(self, text: str) -> dict | None:
         backend = self.session._call_tts_backend
         try:
             async with httpx.AsyncClient(timeout=12) as c:
@@ -431,22 +472,15 @@ class TranscriptTailer:
                     headers={"x-secret": PALACE_SECRET},
                 )
                 if r.status_code == 200:
-                    d = r.json()
-                    await self._ws({
-                        "event": "voice",
-                        "audio_url": d["audio_url"],
-                        "duration": d["duration"],
-                        "text": text,
-                        "subtitle": subtitle,
-                    })
-                    return
+                    return r.json()
         except Exception as e:
-            log.warning(f"Auto-TTS ({backend}) failed: {e}")
+            log.warning(f"TTS API ({backend}) failed: {e}")
         if backend == "local":
             self.session._call_tts_backend = "minimax"
             log.info("Call TTS: local→minimax (local failed mid-call)")
             await self._ws({"event": "call:backend_switch", "from": "local", "to": "minimax"})
-            await self._auto_tts(text, subtitle)
+            return await self._call_tts_api(text)
+        return None
 
     async def flush_call_tts(self):
         if not self._tts_queue:
