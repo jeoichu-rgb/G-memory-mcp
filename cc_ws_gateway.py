@@ -411,59 +411,48 @@ class TranscriptTailer:
             self.session._call_sentence_buf = buf
 
     async def _tts_worker_loop(self):
-        PREFETCH = 2
-        pending = []
-        eof = False
+        slots = asyncio.Queue()
 
-        def _fill():
-            nonlocal eof
-            while not eof and len(pending) < PREFETCH + 1:
-                try:
-                    item = self._tts_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if item is None:
-                    eof = True
-                    break
-                text, subtitle = item
-                pending.append((asyncio.create_task(self._call_tts_api(text)), text, subtitle))
-
-        while True:
-            if self.session._call_stop.is_set():
-                break
-
-            if not pending and not eof:
+        async def feeder():
+            seq = 0
+            while True:
                 item = await self._tts_queue.get()
-                if item is None:
-                    break
-                if self.session._call_stop.is_set():
+                if item is None or self.session._call_stop.is_set():
+                    await slots.put(None)
                     break
                 text, subtitle = item
-                pending.append((asyncio.create_task(self._call_tts_api(text)), text, subtitle))
+                seq += 1
+                log.info(f"TTS feeder: #{seq} started → {text[:30]}")
+                task = asyncio.create_task(self._call_tts_api(text, seq))
+                await slots.put((task, text, subtitle, seq))
 
-            _fill()
+        async def sender():
+            while True:
+                entry = await slots.get()
+                if entry is None or self.session._call_stop.is_set():
+                    break
+                task, text, subtitle, seq = entry
+                result = await task
+                if result and not self.session._call_stop.is_set():
+                    log.info(f"TTS sender: #{seq} sending voice → {text[:30]}")
+                    await self._ws({
+                        "event": "voice",
+                        "audio_url": result["audio_url"],
+                        "duration": result["duration"],
+                        "text": text,
+                        "subtitle": subtitle,
+                    })
 
-            if not pending:
-                break
+        feeder_task = asyncio.create_task(feeder())
+        try:
+            await sender()
+        finally:
+            if not feeder_task.done():
+                feeder_task.cancel()
 
-            task, text, subtitle = pending.pop(0)
-            result = await task
-            if result and not self.session._call_stop.is_set():
-                await self._ws({
-                    "event": "voice",
-                    "audio_url": result["audio_url"],
-                    "duration": result["duration"],
-                    "text": text,
-                    "subtitle": subtitle,
-                })
-
-            _fill()
-
-        for entry in pending:
-            entry[0].cancel()
-
-    async def _call_tts_api(self, text: str) -> dict | None:
+    async def _call_tts_api(self, text: str, seq: int = 0) -> dict | None:
         backend = self.session._call_tts_backend
+        t0 = time_mod.time()
         try:
             async with httpx.AsyncClient(timeout=12) as c:
                 r = await c.post(
@@ -472,14 +461,15 @@ class TranscriptTailer:
                     headers={"x-secret": PALACE_SECRET},
                 )
                 if r.status_code == 200:
+                    log.info(f"TTS API #{seq}: {time_mod.time()-t0:.2f}s ({backend}) → {text[:30]}")
                     return r.json()
         except Exception as e:
-            log.warning(f"TTS API ({backend}) failed: {e}")
+            log.warning(f"TTS API #{seq} ({backend}) failed: {e}")
         if backend == "local":
             self.session._call_tts_backend = "minimax"
             log.info("Call TTS: local→minimax (local failed mid-call)")
             await self._ws({"event": "call:backend_switch", "from": "local", "to": "minimax"})
-            return await self._call_tts_api(text)
+            return await self._call_tts_api(text, seq)
         return None
 
     async def flush_call_tts(self):
