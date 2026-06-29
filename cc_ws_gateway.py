@@ -1601,7 +1601,7 @@ async def pebbling_worker():
                             try:
                                 _elapsed_h = _jeoi_away_secs / 3600
                                 if _dp_dk == "curiosity":
-                                    _seeds = dg.pop_all_curiosity_seeds()
+                                    _seeds = dg.pop_all_curiosity_seeds() if _jeoi_away_secs >= de.CURIOSITY_SEED_SILENCE_SECS else []
                                     if _seeds:
                                         _dp_prompt = dg.build_curiosity_seed_prompt(_seeds, _elapsed_h)
                                         log.info(f"Curiosity seeds popped: {len(_seeds)} seeds")
@@ -1734,7 +1734,7 @@ async def pebbling_worker():
                              f"({desire_st.intent.get('want_action')}), "
                              f"elapsed={elapsed_h:.1f}h")
                     if _dk == "curiosity":
-                        _peb_seeds = dg.pop_all_curiosity_seeds()
+                        _peb_seeds = dg.pop_all_curiosity_seeds() if elapsed_jeoi >= de.CURIOSITY_SEED_SILENCE_SECS else []
                         if _peb_seeds:
                             prompt = dg.build_curiosity_seed_prompt(_peb_seeds, elapsed_h)
                             log.info(f"Pebbling curiosity seeds: {len(_peb_seeds)} seeds")
