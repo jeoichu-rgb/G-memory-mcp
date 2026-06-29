@@ -1316,6 +1316,10 @@ function handleWSMessage(data) {
       handlePomoStatus(data);
       break;
 
+    case 'call:incoming':
+      location.href = '/call.html?session=' + (data.sessionId || currentSessionId) + '&incoming=true';
+      break;
+
     case 'ping':
       wsSend('pong', {});
       break;

@@ -120,6 +120,11 @@ html, body { height:100%; overflow:hidden; background:#060608; color:#e0e0e0; fo
 .ctrl-btn:active .ctrl-icon { transform:scale(0.92); }
 .hangup .ctrl-icon { background:#e53935; color:white; }
 
+.incoming-controls {
+  display:flex; gap:80px; padding:16px 0 max(28px, env(safe-area-inset-bottom));
+  align-items:center; z-index:1;
+}
+
 .dial-btn {
   margin-top:16px; padding:14px 48px; border:none; border-radius:28px;
   background:#4caf50; color:white; font-size:16px; font-family:inherit;
@@ -209,6 +214,17 @@ html, body { height:100%; overflow:hidden; background:#060608; color:#e0e0e0; fo
     <button class="send-btn" id="sendBtn" onclick="sendMsg()">↑</button>
   </div>
 
+  <div class="incoming-controls" id="incomingControls" style="display:none;">
+    <button class="ctrl-btn reject" onclick="rejectCall()">
+      <div class="ctrl-icon" style="background:#e53935;color:white;">✕</div>
+      <span>拒绝</span>
+    </button>
+    <button class="ctrl-btn accept" onclick="acceptCall()">
+      <div class="ctrl-icon" style="background:#4caf50;color:white;">✓</div>
+      <span>接听</span>
+    </button>
+  </div>
+
   <div class="controls">
     <button class="ctrl-btn hangup" onclick="hangup()">
       <div class="ctrl-icon">✕</div>
@@ -243,6 +259,8 @@ let audioQ = [];
 let playing = false;
 let callActive = false;
 let firstSend = true;
+let isIncoming = false;
+let incomingTimeout = null;
 
 const audio = new Audio();
 audio.setAttribute('playsinline', '');
@@ -252,18 +270,26 @@ audio.setAttribute('playsinline', '');
   const p = new URLSearchParams(location.search);
   sessionId = p.get('session') || localStorage.getItem('last-session-id');
   if (!sessionId) { location.href = '/chat.html'; return; }
+  isIncoming = p.get('incoming') === 'true';
 
-  // avatar from localStorage (same key as chat.html)
   const av = localStorage.getItem('erik-avatar');
   if (av) {
     document.getElementById('avatar').innerHTML = '<img src="' + av + '">';
     document.getElementById('avatarRef').innerHTML = '<img src="' + av + '">';
   }
 
-  // enter key
   document.getElementById('msgInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.isComposing) sendMsg();
   });
+
+  if (isIncoming) {
+    setStatus('来电');
+    document.getElementById('dialBtn').style.display = 'none';
+    document.getElementById('incomingControls').style.display = 'flex';
+    document.querySelector('.controls').style.display = 'none';
+    document.querySelector('.input-area').style.display = 'none';
+    incomingTimeout = setTimeout(() => rejectCall('timeout'), 180000);
+  }
 
   connectWS();
 })();
@@ -273,8 +299,10 @@ function connectWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen = () => {
     wsSend('session:switch', { sessionId });
-    setStatus('等待拨号');
-    document.getElementById('dialBtn').style.display = '';
+    if (!isIncoming) {
+      setStatus('等待拨号');
+      document.getElementById('dialBtn').style.display = '';
+    }
   };
   ws.onmessage = e => {
     try { handleWS(JSON.parse(e.data)); } catch(err) { console.warn('[ws]', err); }
@@ -298,6 +326,34 @@ function dialClick() {
   startCall();
 }
 
+/* ── Incoming call: accept / reject ── */
+function acceptCall() {
+  if (incomingTimeout) { clearTimeout(incomingTimeout); incomingTimeout = null; }
+  document.getElementById('incomingControls').style.display = 'none';
+  document.querySelector('.controls').style.display = 'flex';
+  document.querySelector('.input-area').style.display = 'flex';
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const buf = ctx.createBuffer(1, 1, 22050);
+  const s = ctx.createBufferSource();
+  s.buffer = buf; s.connect(ctx.destination); s.start();
+  audio.play().then(() => audio.pause()).catch(() => {});
+
+  callActive = true;
+  callStart = Date.now();
+  timerIv = setInterval(tickTimer, 1000);
+  setStatus('通话中');
+  showThinking(true);
+
+  wsSend('call:accept', { sessionId });
+}
+
+function rejectCall(reason) {
+  if (incomingTimeout) { clearTimeout(incomingTimeout); incomingTimeout = null; }
+  wsSend('call:reject', { sessionId, reason: reason || 'rejected' });
+  location.href = '/';
+}
+
 /* ── Call lifecycle ── */
 function startCall() {
   callActive = true;
@@ -305,7 +361,6 @@ function startCall() {
   timerIv = setInterval(tickTimer, 1000);
   setStatus('通话中');
 
-  // "dial" — tell Erik Jeoi is calling
   wsSend('chat:send', {
     message: '📞',
     sessionId,

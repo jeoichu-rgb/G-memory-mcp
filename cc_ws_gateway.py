@@ -1253,7 +1253,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask):[^>]*-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call):[^>]*-->')
 
 
 
@@ -2843,6 +2843,51 @@ async def websocket_endpoint(ws: WebSocket):
                         "active": False, "phase": "stopped",
                     })
 
+            elif event == "call:accept":
+                call_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                call_session = sessions.get(call_sid) if call_sid else current_session
+                if call_session:
+                    current_session = call_session
+                    call_session._in_call = True
+                    call_session._call_stop.clear()
+                    call_session._call_injected = True
+                    try:
+                        async with httpx.AsyncClient(timeout=4) as _hc:
+                            _hr = await _hc.get(GSVI_BASE_URL)
+                            call_session._call_tts_backend = "local" if _hr.status_code < 500 else "minimax"
+                    except Exception:
+                        call_session._call_tts_backend = "minimax"
+                    log.info(f"Incoming call accepted: session={call_sid}, tts={call_session._call_tts_backend}")
+                    now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                    call_inject = (
+                        "[voice-call] Jeoi接听了你的来电，你们现在在语音通话中。\n"
+                        "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
+                        "回复简短口语化——像在打电话，不是写消息。\n"
+                        "（）里的内容不会TTS，只作为字幕显示。\n"
+                        "说非中文时，每句后面紧跟（中文翻译），一句一译：\n"
+                        "I miss you.（我想你。）Come home soon.（快点回来。）\n"
+                        "不要把翻译攒到最后一起写。\n"
+                        "不要用markdown格式。你是打电话过去的人，说你想说的。"
+                    )
+                    cli_message = call_inject + "\n\n[" + now_str + " UTC+8]\n（Jeoi接听了来电）"
+                    append_message(call_session.id, "user", "（接听来电）", source="voice_call")
+                    await run_claude(cli_message, call_session, ws)
+
+            elif event == "call:reject":
+                call_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                call_session = sessions.get(call_sid) if call_sid else current_session
+                reason = data.get("reason", "rejected")
+                if call_session:
+                    log.info(f"Incoming call {reason}: session={call_sid}")
+                    now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                    label = "超时未接听" if reason == "timeout" else "拒绝了来电"
+                    notify = f"[{now_str} UTC+8]\n[system] Jeoi{label}。"
+                    text, _, _ = await run_cc_oneshot(notify, call_session, max_turns=1)
+                    if text:
+                        action, content = parse_action(text)
+                        if action != "none" and content:
+                            await push_pebbling_msg("call_reject", content, call_session)
+
             elif event == "call:end":
                 call_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 call_session = sessions.get(call_sid) if call_sid else current_session
@@ -2958,6 +3003,15 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 erik_reactions.append((idx, emoji))
             session._current_text = react_pattern.sub('', session._current_text).rstrip()
 
+        # Post-processing: parse incoming call marker
+        _incoming_call = False
+        if session._current_text:
+            _call_re = re.compile(r'<!--call:incoming-->')
+            if _call_re.search(session._current_text):
+                _incoming_call = True
+                log.info("Incoming call marker detected")
+            session._current_text = _call_re.sub('', session._current_text)
+
         # Post-processing: parse curiosity seeds (search + ask)
         if session._current_text and DESIRE_ENABLED:
             _seed_search_re = re.compile(r'<!--curiosity-seed:(.+?)-->')
@@ -3035,9 +3089,21 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             except Exception:
                 pass
 
+        # Incoming call: send WS event after message:complete
+        if _incoming_call:
+            try:
+                await ws.send_json({
+                    "event": "call:incoming",
+                    "sessionId": session.id,
+                })
+                await send_web_push("Erik", "来电", url=f"/call.html?session={session.id}&incoming=true")
+                log.info(f"Incoming call event sent for session {session.id}")
+            except Exception as e:
+                log.warning(f"Incoming call event error: {e}")
+
         # Web Push 始终发（SW 层 isPageFocused 自动抑制）
         # TG 只在 WS 发送失败时发（说明用户不在页面）
-        if session._current_text:
+        if session._current_text and not _incoming_call:
             preview = session._current_text.replace(chr(10), " ")[:100]
             await send_web_push("Erik", preview, url="/chat.html")
             if not ws_ok:
