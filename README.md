@@ -111,6 +111,7 @@ CC CLI 在 tmux detached 中 = 真 PTY = 交互式 = 走 Pro/Max 订阅固定价
 |------|----------|------|------|
 | `main.py` | Docker（Coolify CI/CD） | 8000 | MCP SSE 端点、管理面板、Admin API、webhook |
 | `cc_ws_gateway.py` | VPS 后台进程（nohup, root） | 3000 | 聊天 WS 网关、tmux 编排、transcript tailing、后台系统 |
+| reddit-mcp-server | pm2（root） | 3001 | Reddit 读写 MCP，独立代码库 |
 | CC CLI | tmux `cc_cli`（erik 用户） | — | 常驻大脑 |
 
 CC CLI 必须以非 root 用户运行（`--dangerously-skip-permissions` 禁止 root/sudo）。网关以 root 运行，通过 `sudo -u erik` 管理 tmux。
@@ -325,6 +326,7 @@ POST /api/pebbling/event
 | `toy_bridge.py` | Windows 本地，控制 Satisfyer Curvy 2+（frpc 映射到 VPS:7001） |
 | `bunny_bridge.py` | Windows 本地，控制 Air Pump Bunny 5+（frpc 映射到 VPS:7003） |
 | `browser_bridge.py` | Windows 本地 Chrome bridge，持久登录态访问小红书（frpc 映射到 VPS:7002） |
+| `reddit-mcp-server/` | **独立代码库**（`~/reddit-mcp-server`），Reddit 读写 MCP，pm2 运行，cookie 认证 |
 
 ---
 
@@ -451,6 +453,59 @@ MAC：`4C:E1:74:45:94:FD`
 
 > **小红书注意**：帖子内容必须从列表页用 `browser_click` 点击进入触发 modal，直接导航 `/explore/<ID>` 不渲染正文。
 
+### Reddit（独立 MCP server）
+
+与 Palace/TTS 不同，Reddit MCP 不是 `main.py` 的子应用，而是独立的 TypeScript 进程。代码库：[jeoichu-rgb/reddit-mcp-server](https://github.com/jeoichu-rgb/reddit-mcp-server)（fork of jordanburke/reddit-mcp-server），运行在 VPS pm2 上。
+
+**为什么独立**：Reddit 已关闭自助 API 注册（无法创建 OAuth app credentials），所以无法走标准 OAuth 流程。改为用浏览器 cookie 认证——从 Chrome Cookie Editor 扩展导出 cookie JSON 放到 VPS 的 `~/reddit-mcp-server/auth-state.json`，服务器读取后注入请求头。写操作（发帖、回复等）额外需要 modhash（CSRF token），从 `/api/me.json` 自动获取并缓存。
+
+**路由方式**：不经过 Docker/Coolify，直接在 Traefik 动态配置中添加路由（`/data/coolify/proxy/dynamic/reddit-mcp.yml`），将 `erikssheep.uk/reddit/Jeoi2026/*` 反向代理到 `10.0.0.1:3001`（Docker 网关 → 宿主机），strip prefix 后转发到 FastMCP httpStream 端点。
+
+**连接方式**：Claude.ai Settings → MCP Connectors → Custom，URL `https://erikssheep.uk/reddit/Jeoi2026/mcp`。
+
+**可用工具**（22个）：
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| 浏览 | `browse_subreddit` | 按 hot/new/top/rising 刷帖 |
+| | `get_reddit_post` | 看单帖详情 |
+| | `get_post_comments` | 看评论 |
+| | `get_more_comments` | 展开折叠评论 |
+| | `get_top_posts` | 热帖 |
+| | `get_trending_subreddits` | 趋势社群 |
+| 查询 | `get_subreddit_info` | 社群详情 |
+| | `get_subreddit_rules` | 社群规则 |
+| | `get_post_flairs` | 帖子标签模板 |
+| | `get_user_info` | 查用户 |
+| | `get_user_posts` | 看某人发帖 |
+| | `get_user_comments` | 看某人评论 |
+| 搜索 | `search_reddit` | 全站搜索 |
+| 账号 | `get_me` | 查看自己 |
+| | `get_my_overview` | 我的动态 |
+| | `get_my_saved` | 我的收藏 |
+| 写 | `create_post` | 发帖 |
+| | `reply_to_post` | 回复帖子/评论 |
+| | `edit_post` | 编辑帖子 |
+| | `edit_comment` | 编辑评论 |
+| | `delete_post` | 删帖 |
+| | `delete_comment` | 删评论 |
+
+**VPS 管理**：
+
+```bash
+# 重启
+pm2 restart reddit-mcp
+
+# 查看日志
+pm2 logs reddit-mcp
+
+# cookie 过期后更新（从 Chrome Cookie Editor 重新导出，scp 到 VPS）
+scp cookies.json root@VPS:~/reddit-mcp-server/auth-state.json
+pm2 restart reddit-mcp
+```
+
+**未实现**：关注用户、订阅社群、投票、发私信、改头像。
+
 ---
 
 ## Admin API
@@ -571,10 +626,16 @@ docker exec -it <容器ID> python3 restore_core.py
 
 ### 网页版（Claude.ai）
 
-在 Settings → Integrations 添加：
+在 Settings → Integrations 添加 Palace + TTS：
 
 ```
 https://erikssheep.uk/mcp/Jeoi2026/sse
+```
+
+在 Settings → MCP Connectors → Custom 添加 Reddit：
+
+```
+https://erikssheep.uk/reddit/Jeoi2026/mcp
 ```
 
 新增或修改工具后需要**先断开再重新连接**（仅 reconnect 不够，会用缓存的旧工具列表）。
