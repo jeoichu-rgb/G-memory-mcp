@@ -134,11 +134,13 @@ def reset_silent_counts(state):
 PROACTIVE_PRIORITY = {"attachment": 0, "libido": 1, "stress": 2, "curiosity": 3, "reflection": 4}
 
 
-def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600):
+def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600, jeoi_away_secs: float = 0):
     """Pick the best drive for proactive push, independent of state.intent.
     Evaluates all drives above BG threshold, excluding those on cooldown or
     refractory. Returns an intent dict or None.
     Proactive priority: attachment > libido > stress > curiosity > reflection.
+    Curiosity is skipped when Jeoi spoke recently (< CURIOSITY_SEED_SILENCE_SECS);
+    it keeps rising and will trigger once she's been away long enough.
     """
     if not DESIRE_AVAILABLE or not state:
         return None
@@ -149,6 +151,8 @@ def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: flo
         if state.refractory.get(k, 0) > 0:
             continue
         if now - cooldowns.get(k, 0) < cooldown_secs:
+            continue
+        if k == "curiosity" and jeoi_away_secs < de.CURIOSITY_SEED_SILENCE_SECS:
             continue
         score = state.drives.get(k, 0)
         multi = de.BG_THRESHOLDS_MULTI.get(k)

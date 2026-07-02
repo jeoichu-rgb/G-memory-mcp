@@ -222,9 +222,13 @@ desire_proactive 触发
   │   （无"最近有说话就跳过"的限制——无论 Jeoi 是否活跃都会触发）
   │
   ├─ drive_key == "curiosity"？
-  │     → pop_all_curiosity_seeds(24h)
-  │     → 构建分组提示词（搜索种子 + 提问种子）
-  │     → 若池为空则回退到通用主动提示词
+  │     → 前置检查：Jeoi 上次说话不足 30 分钟？
+  │         是 → 跳过本次触发（不消耗冷却、不满足）
+  │              好奇心继续涨，180 秒后再检查
+  │              若 Jeoi 中间说话了 → 对话通路触发种植 seeds
+  │         否 → pop_all_curiosity_seeds(24h)
+  │              → 构建分组提示词（搜索种子 + 提问种子）
+  │              → 若池为空则回退到通用主动提示词
   │
   ├─ drive_key == "libido"？
   │     → fetch_unique_intimate_memory()（去重，最近 3 条不重复）
@@ -290,6 +294,7 @@ pebbling_worker 触发（每 3 小时）
 ### 消费（沉默中）
 
 当好奇在沉默模式中触发时（主动推送或 pebbling）：
+0. 前置检查：Jeoi 上次说话不足 30 分钟 → 跳过，好奇心继续涨，不消耗冷却。若 Jeoi 中间说话了，对话中好奇触发自然切换到种植模式。
 1. `pop_all_curiosity_seeds(max_age_hours=24)` — 拉取过去 24 小时内的全部种子
 2. 种子按类型分组构建组合提示词：
    - "你想查的东西：1. ... 2. ..."

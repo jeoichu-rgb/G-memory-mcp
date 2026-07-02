@@ -1611,7 +1611,8 @@ async def pebbling_worker():
             if DESIRE_ENABLED and desire_st and peb_state.get("desire_proactive"):
                 _dp_last_any = max(_desire_last_proactive.values(), default=0)
                 if now - _dp_last_any >= 180:
-                    _dp_intent = dg.pick_proactive_intent(desire_st, _desire_last_proactive, now)
+                    _dp_intent = dg.pick_proactive_intent(desire_st, _desire_last_proactive, now,
+                                                          jeoi_away_secs=now - peb_state.get("t_jeoi", now))
                     if _dp_intent:
                         _dp_sid = peb_state.get("pebbling_session_id")
                         _dp_session = sessions.get(_dp_sid) if _dp_sid else None
@@ -1625,7 +1626,7 @@ async def pebbling_worker():
                             try:
                                 _elapsed_h = _jeoi_away_secs / 3600
                                 if _dp_dk == "curiosity":
-                                    _seeds = dg.pop_all_curiosity_seeds() if _jeoi_away_secs >= de.CURIOSITY_SEED_SILENCE_SECS else []
+                                    _seeds = dg.pop_all_curiosity_seeds()
                                     if _seeds:
                                         _dp_prompt = dg.build_curiosity_seed_prompt(_seeds, _elapsed_h)
                                         log.info(f"Curiosity seeds popped: {len(_seeds)} seeds")
