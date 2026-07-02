@@ -14,7 +14,7 @@ def make_frame(cmd: int, data: list[int] = [], direction: int = 1) -> bytes:
     return bytes([cmd, length_byte] + data)
 
 def cmd_motors(thrust: int = 0, motor2: int = 0, vibrate: int = 0) -> bytes:
-    """9002 多电机统一控制（HCI 确认格式），等级约 0-10"""
+    """9002 多电机统一控制（HCI 确认格式），等级 0-100"""
     return make_frame(0xA0, [0x03, thrust, motor2, vibrate])
 
 def cmd_thrust(level: int) -> bytes:
@@ -82,7 +82,7 @@ async def main():
 
         # ============ 伸缩（HCI 确认格式） ============
         print("\n=== Thrust (9002, cmd 0xA0, 4-byte data) ===")
-        for level in [5, 9, 0]:
+        for level in [30, 70, 0]:
             frame = cmd_thrust(level)
             print(f"  -> {frame.hex()} (thrust={level})")
             await client.write_gatt_char(CHAR_9002, frame, response=False)
@@ -90,7 +90,7 @@ async def main():
 
         # ============ 震动 ============
         print("\n=== Vibrate (9002, cmd 0xA0, byte[5]) ===")
-        for level in [5, 7, 0]:
+        for level in [30, 60, 0]:
             frame = cmd_vibrate(level)
             print(f"  -> {frame.hex()} (vibrate={level})")
             await client.write_gatt_char(CHAR_9002, frame, response=False)

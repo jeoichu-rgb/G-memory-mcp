@@ -158,7 +158,7 @@ byte[2..] = data                                 // 数据字节
 
 | cmd | 函数名 | 功能 | 数据格式 |
 |-----|--------|------|---------|
-| 0xA0 | writeMotor | 多电机统一控制 | `[0x03, thrust, motor2, vibrate]`，等级约 0-10 |
+| 0xA0 | writeMotor | 多电机统一控制 | `[0x03, thrust, motor2, vibrate]`，等级 0-100 |
 | 0xA2 | writePowerOff | 关机 | 空（无数据） |
 
 ### ⚠️ 关于 writeExtend (cmd 0xA3)
@@ -178,13 +178,16 @@ byte[4] = motor2_level                // 第二电机（待确认具体功能，
 byte[5] = vibrate_level               // 震动等级
 ```
 
-等级范围：约 0-10（HCI 抓包观察到最大值 9，非 0-100）。
+等级范围：0-100（HCI 抓包确认，APP 滑块拉满时发送 0x64=100）。
 
 ### HCI 抓包证据
 
 ```
-伸缩 level=9:    [A0, A0, 03, 09, 00, 00]   // 仅伸缩
-震动 level=7:    [A0, A0, 03, 00, 00, 07]   // 仅震动
+伸缩 level=98:   [A0, A0, 03, 62, 00, 00]   // 仅伸缩（接近最大）
+伸缩 level=34:   [A0, A0, 03, 22, 00, 00]   // 仅伸缩（中低档）
+震动 level=100:  [A0, A0, 03, 00, 00, 64]   // 仅震动（最大）
+震动 level=28:   [A0, A0, 03, 00, 00, 1C]   // 仅震动（中档）
+伸缩+震动:       [A0, A0, 03, 0F, 00, 10]   // thrust=15, vibrate=16
 全部停止:        [A0, A0, 03, 00, 00, 00]   // 停止
 关机:            [A2, 80]                    // writePowerOff（未变）
 ```
@@ -391,7 +394,7 @@ def make_frame(cmd: int, data: list[int] = [], direction: int = 1) -> bytes:
 # ===== 9002 多电机控制（HCI 抓包确认格式） =====
 
 def cmd_motors(thrust: int = 0, motor2: int = 0, vibrate: int = 0) -> bytes:
-    """多电机统一控制，等级约 0-10"""
+    """多电机统一控制，等级 0-100"""
     return make_frame(0xA0, [0x03, thrust, motor2, vibrate])
 
 def cmd_thrust(level: int) -> bytes:
@@ -502,7 +505,7 @@ if __name__ == "__main__":
 3. ✅ 伸缩和震动已确认可控
 4. **待做：确认 motor2（byte[4]）的具体功能** — 可能是吮吸或拓展
 5. **待做：HCI 抓包验证吮吸命令** — 9001 cmd 0x2E 的数据格式是否也与反编译不同
-6. **待做：确认等级范围** — HCI 观察到 0-9，需测试是否支持更高值
+6. ✅ ~~确认等级范围~~ → 0-100（HCI 抓包确认：thrust 最大 0x62=98，vibrate 最大 0x64=100）
 7. 确认 writeHeatingSetting / writeLightSetting / writeTravelLock 的数据格式
 8. 确认 writePressureStatus 的实际 cmd（反编译中为 0x148，超出字节范围）
 9. 解析压力传感器数据格式（MixDeviceSensorModel::fromBytes）
