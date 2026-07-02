@@ -134,6 +134,7 @@ bash /opt/G-memory-mcp/restart.sh
 Windows 本地（frpc 隧道接入 VPS）
   ├── toy_bridge.py     :7001  → Satisfyer Curvy 2+
   ├── bunny_bridge.py   :7003  → Air Pump Bunny 5+
+  ├── ak_bridge.py      :7004  → AfterKiss AK-G2
   └── browser_bridge.py :7002  → XHS 登录态 Chrome
 ```
 
@@ -325,6 +326,7 @@ POST /api/pebbling/event
 | `inspect_memory.py` | 手动检查/删除记忆条目的交互式工具 |
 | `toy_bridge.py` | Windows 本地，控制 Satisfyer Curvy 2+（frpc 映射到 VPS:7001） |
 | `bunny_bridge.py` | Windows 本地，控制 Air Pump Bunny 5+（frpc 映射到 VPS:7003） |
+| `ak_bridge.py` | Windows 本地，控制 AfterKiss AK-G2（frpc 映射到 VPS:7004） |
 | `browser_bridge.py` | Windows 本地 Chrome bridge，持久登录态访问小红书（frpc 映射到 VPS:7002） |
 | `reddit-mcp-server/` | **独立代码库**（`~/reddit-mcp-server`），Reddit 读写 MCP，pm2 运行，cookie 认证 |
 
@@ -414,7 +416,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(cmd, data)`：
 
 ### 设备控制（需 Windows bridge 进程在线）
 
-两台设备各有独立 bridge，各自独立端口和 frpc 映射。
+三台设备各有独立 bridge，各自独立端口和 frpc 映射。
 
 #### Satisfyer Curvy 2+（`toy_bridge.py` → VPS:7001）
 
@@ -440,6 +442,45 @@ MAC：`4C:E1:74:45:94:FD`
 - pump 写一次非零值 = 充气并保持；写 0 = 主动放气；play 结束不自动动气泵
 - keepalive 每5秒发送，防设备10秒超时断连
 - `/stop` 归零震动并主动放气；`/deflate` 单独放气不停震动
+
+#### AfterKiss AK-G2（`ak_bridge.py` → VPS:7004）
+
+MAC：`77:03:A2:10:46:05`　BLE 名称：`afterkiss`
+
+| cmd | 说明 | 主要参数 |
+|--------|------|---------|
+| `ak_status` | 确认设备连接状态（含电量） | 无 |
+| `ak_play` | 三通道独立控制 | `thrust`(0-100), `suction`(0-100), `vibrate`(0-100), `duration`(秒), `pattern`(可选数组) |
+
+**三个通道对应的物理功能**（不要搞混）：
+- `thrust` = 伸缩/抽插（棒体前后运动）
+- `suction` = 吮吸（机身马达）
+- `vibrate` = 震动（棒体马达）
+
+**与 Curvy/Bunny 的关键区别**：
+- 无需配对/认证，连上就能控制
+- 三个通道全部通过同一条 BLE 命令发送（9002 通道 cmd 0xA0），不像 Bunny 的 pump 走单独特征值
+- duration 到期自动归零停止，无需单独 stop
+- `/status` 会返回设备电量百分比
+
+调用示例：
+```
+palace(cmd="ak_play", data={"thrust": 50, "duration": 10})           # 仅伸缩 50%，10秒
+palace(cmd="ak_play", data={"vibrate": 70, "suction": 30, "duration": 8})  # 震动+吮吸
+palace(cmd="ak_play", data={"thrust": 60, "suction": 40, "vibrate": 50, "duration": 15})  # 三通道同时
+```
+
+pattern 示例（渐强）：
+```
+palace(cmd="ak_play", data={
+    "duration": 20,
+    "pattern": [
+        {"t": 0, "thrust": 10, "vibrate": 0, "mode_thrust": "ramp", "curve_thrust": "ease_in"},
+        {"t": 10, "thrust": 80, "vibrate": 50},
+        {"t": 20, "thrust": 30, "vibrate": 0}
+    ]
+})
+```
 
 ### 浏览器
 
@@ -614,6 +655,7 @@ docker exec -it <容器ID> python3 restore_core.py
 | `GITHUB_TOKEN` | GitHub API 拉取文件 |
 | `TOY_BRIDGE_URL` | Windows toy_bridge 地址（frpc 映射） |
 | `BUNNY_BRIDGE_URL` | Windows bunny_bridge 地址（frpc 映射） |
+| `AK_BRIDGE_URL` | Windows ak_bridge 地址（frpc 映射） |
 | `BROWSER_BRIDGE_URL` | Windows browser_bridge 地址（frpc 映射） |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot 推送 token（pebbling 消息推送） |
 | `TELEGRAM_CHAT_ID` | Telegram 推送目标 chat ID |
