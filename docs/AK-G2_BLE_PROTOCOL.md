@@ -174,7 +174,7 @@ byte[0] = 0xA0                        // cmd
 byte[1] = 0xA0                        // direction=1, length=4
 byte[2] = 0x03                        // 电机数量（固定值 3）
 byte[3] = thrust_level                // 伸缩/抽插等级
-byte[4] = motor2_level                // 第二电机（待确认具体功能，可能是吮吸）
+byte[4] = suction_level               // 吮吸等级（原 motor2，HCI 抓包确认）
 byte[5] = vibrate_level               // 震动等级
 ```
 
