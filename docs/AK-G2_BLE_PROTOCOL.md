@@ -137,21 +137,59 @@ byte[2..] = data                                 // 数据字节
 
 收发完美对称。日志字符串 `"on op received: {data}, cmd = 0x{cmd}, action = {action}, length = {length}"` 进一步印证。
 
-## 9002 (Function) 通道 —— 已确认
+## GATT Handle 映射（HCI 抓包确认）
+
+通过 Android HCI snoop log 抓包确认的 ATT Handle 映射：
+
+| Handle | 对应 | 说明 |
+|--------|------|------|
+| 0x000E | 9001 value | Op 通道，ATT Write Request |
+| 0x000F | 9001 CCCD | 通知开关（写 `01 00` 启用） |
+| 0x0011 | 9002 value | Function 通道，ATT Write Command |
+| 0x0012 | 9002 CCCD | 通知开关（写 `01 00` 启用） |
+
+## 9002 (Function) 通道 —— ✅ HCI 抓包实测确认
 
 ### 写入方式
 
-`writeWithoutResponse`（射后不管，无 GATT 级 ACK）。写入 `field_8b`（"9002" 特征值）。
+`writeWithoutResponse`（ATT Write Command, opcode 0x52）。写入 Handle 0x0011。
 
 ### 命令表
 
 | cmd | 函数名 | 功能 | 数据格式 |
 |-----|--------|------|---------|
-| 0xA0 | writeMotor | 伸缩/抽插 | `[level]` 或 `[level1, level2]`，0-100 |
+| 0xA0 | writeMotor | 多电机统一控制 | `[0x03, thrust, motor2, vibrate]`，等级约 0-10 |
 | 0xA2 | writePowerOff | 关机 | 空（无数据） |
-| 0xA3 | writeExtend | 震动 | `[level]`，0-100（推测） |
 
-### 汇编证据
+### ⚠️ 关于 writeExtend (cmd 0xA3)
+
+反编译中存在独立的 writeExtend 函数（cmd 0xA3），但 HCI 抓包显示官方 APP **未使用** cmd 0xA3，
+而是通过 cmd 0xA0 的 4 字节数据格式统一控制所有电机（伸缩、震动等）。
+cmd 0xA3 可能是旧版接口或备用接口，实际以 0xA0 多电机格式为准。
+
+### cmd 0xA0 多电机数据格式（HCI 抓包确认）
+
+```
+byte[0] = 0xA0                        // cmd
+byte[1] = 0xA0                        // direction=1, length=4
+byte[2] = 0x03                        // 电机数量（固定值 3）
+byte[3] = thrust_level                // 伸缩/抽插等级
+byte[4] = motor2_level                // 第二电机（待确认具体功能，可能是吮吸）
+byte[5] = vibrate_level               // 震动等级
+```
+
+等级范围：约 0-10（HCI 抓包观察到最大值 9，非 0-100）。
+
+### HCI 抓包证据
+
+```
+伸缩 level=9:    [A0, A0, 03, 09, 00, 00]   // 仅伸缩
+震动 level=7:    [A0, A0, 03, 00, 00, 07]   // 仅震动
+全部停止:        [A0, A0, 03, 00, 00, 00]   // 停止
+关机:            [A2, 80]                    // writePowerOff（未变）
+```
+
+### 汇编证据（仅供参考，以 HCI 实测为准）
 
 ```arm64
 // writeMotor
@@ -162,18 +200,9 @@ byte[2..] = data                                 // 数据字节
 0x169c38c: movz x2, #0xa2          // cmd = 0xA2
 0x169c390: bl   _handleFunction
 
-// writeExtend
+// writeExtend（官方 APP 未使用，可能是旧接口）
 0x16cd7c8: movz x2, #0xa3          // cmd = 0xA3
 0x16cd7cc: bl   _handleFunction
-```
-
-### 发送示例
-
-```
-伸缩 level=50:   [0xA0, 0x88, 0x32]     // cmd, len=1+方向, 50
-伸缩 停止:       [0xA0, 0x88, 0x00]     // cmd, len=1+方向, 0
-震动 level=50:   [0xA3, 0x88, 0x32]     // cmd, len=1+方向, 50
-关机:            [0xA2, 0x80]           // cmd, len=0+方向
 ```
 
 ## 9001 (Op) 通道 —— 已确认
@@ -288,19 +317,22 @@ byte[2..] = data                                 // 数据字节
 
 ## 设备功能与 BLE 命令完整对照
 
-| 功能 | 物理按键 | BLE 函数 | 通道 | 帧格式 | 状态 |
-|------|---------|----------|------|--------|------|
-| 伸缩（抽插） | A加速 B减速 | writeMotor | 9002 | `[0xA0, 0x88, level]` | ✅ 已确认 |
-| 震动（棒子马达） | D | writeExtend | 9002 | `[0xA3, 0x88, level]` | ✅ cmd确认 |
-| 关机 | F长按 | writePowerOff | 9002 | `[0xA2, 0x80]` | ✅ cmd确认 |
-| 吮吸（机身马达） | D同键 | writeMotorLevel | 9001 | `[0x2e, 0x88, level]` | ✅ cmd确认 |
-| 加热开关 | C | writeHeatingStatus | 9001 | `[0x26, 0x88, 0x01/0x00]` | ✅ cmd确认 |
-| 加热设置 | — | writeHeatingSetting | 9001 | `[0x22, 0x80+, data...]` | ✅ cmd确认 |
-| 灯光 | — | writeLightSetting | 9001 | `[0x24, 0x80+, data...]` | ✅ cmd确认 |
-| 旅行锁 | — | writeTravelLock | 9001 | `[0x20, 0x80+, data...]` | ✅ cmd确认 |
-| 压力感应 | E | 设备推送 | 9001 通知 | cmd 0x14a | 来源确认 |
-| 电量 | — | 设备推送 | 9001 通知 | `[0x14, 0x88, level]` | ✅ 已确认 |
-| 心跳 | — | 设备推送 | 9001 通知 | `[0x15, 0x88, XX]` | ✅ 已确认 |
+| 功能 | 物理按键 | 通道 | 帧格式 | 状态 |
+|------|---------|------|--------|------|
+| 伸缩（抽插） | A加速 B减速 | 9002 | `[A0, A0, 03, level, 00, 00]` | ✅ HCI实测 |
+| 震动（棒子马达） | D | 9002 | `[A0, A0, 03, 00, 00, level]` | ✅ HCI实测 |
+| 伸缩+震动同时 | — | 9002 | `[A0, A0, 03, thrust, 00, vibe]` | ✅ HCI实测 |
+| 全部停止 | — | 9002 | `[A0, A0, 03, 00, 00, 00]` | ✅ HCI实测 |
+| 关机 | F长按 | 9002 | `[A2, 80]` | ✅ cmd确认 |
+| 吮吸（机身马达） | D同键 | 9001 | `[2E, 88, level]` | 待HCI验证 |
+| 加热开关 | C | 9001 | `[26, 88, 01/00]` | 待HCI验证 |
+| 加热设置 | — | 9001 | `[22, 80+, data...]` | 待HCI验证 |
+| 灯光 | — | 9001 | `[24, 80+, data...]` | 待HCI验证 |
+| 旅行锁 | — | 9001 | `[20, 80+, data...]` | 待HCI验证 |
+| 中间电机（motor2） | ？ | 9002 | `[A0, A0, 03, 00, level, 00]` | 待确认功能 |
+| 压力感应 | E | 9001 通知 | cmd 0x14a | 来源确认 |
+| 电量 | — | 9001 通知 | `[14, 88, level]` | ✅ HCI实测 |
+| 心跳 | — | 9001 通知 | `[15, 88, XX]` | ✅ HCI实测 |
 
 ## Java 层 CRC 代码（V2 不使用）
 
@@ -329,13 +361,20 @@ public static byte[] a(byte cmd, byte[] data) {
 
 在 `D:\Eric\afterkiss_iv.py` 中进行了 74+ 次尝试，全部返回 `01 08 01`。
 
-失败原因（全部踩中）：
-1. **写错特征值**：往 "9001"（op）写电机命令，应该走 "9002"（function）
-2. **帧格式错误**：发送 AES 加密数据和裸字节，设备期望 `[cmd, encoded_len, data...]`
-3. **误判为 CRC 失败**：以为 9001 需要 CRC 封包，实际 V2 两个通道都不用 CRC
-4. **误判 challenge**：以为 `01 20 XX XX XX XX` 是 challenge 需要回应，实际是设备状态消息（cmd=0x01, action=0, length=4）
+### 根本原因（2026-07-02 HCI 抓包确认）
 
-## 测试脚本
+**数据格式错误。** 我们发送 `[A0, 88, 32]`（cmd + direction=1/length=1 + 单字节等级），
+但设备期望 `[A0, A0, 03, thrust, motor2, vibrate]`（cmd + direction=1/length=4 + 4字节多电机数据）。
+
+反编译得到的 `writeMotor` 函数签名写着 `[level]` 或 `[level1, level2]`，
+但实际官方 APP 使用 4 字节数据 `[0x03, thrust, motor2, vibrate]`，第一字节 0x03 为电机数量。
+
+### 历史失败原因（部分仍然成立）
+1. **帧格式错误（核心）**：数据长度不对，1 字节 vs 4 字节
+2. **写错特征值**：早期往 "9001"（op）写电机命令，应该走 "9002"（function）
+3. **误判 challenge**：以为 `01 20 XX XX XX XX` 是 challenge 需要回应，实际是设备状态消息
+
+## 测试脚本（HCI 抓包验证后更新）
 
 ```python
 import asyncio
@@ -346,71 +385,48 @@ CHAR_9001 = "00009001-0000-1000-8000-00805f9b34fb"
 CHAR_9002 = "00009002-0000-1000-8000-00805f9b34fb"
 
 def make_frame(cmd: int, data: list[int] = [], direction: int = 1) -> bytes:
-    """统一帧格式，两个通道共用"""
     length_byte = (direction << 7) | (len(data) << 3)
     return bytes([cmd, length_byte] + data)
 
-# ===== 9002 快捷函数（fire-and-forget） =====
+# ===== 9002 多电机控制（HCI 抓包确认格式） =====
 
-def cmd_motor(level: int) -> bytes:
-    """伸缩/抽插电机 (0-100)"""
-    return make_frame(0xA0, [level])
+def cmd_motors(thrust: int = 0, motor2: int = 0, vibrate: int = 0) -> bytes:
+    """多电机统一控制，等级约 0-10"""
+    return make_frame(0xA0, [0x03, thrust, motor2, vibrate])
+
+def cmd_thrust(level: int) -> bytes:
+    return cmd_motors(thrust=level)
 
 def cmd_vibrate(level: int) -> bytes:
-    """震动 (0-100)"""
-    return make_frame(0xA3, [level])
+    return cmd_motors(vibrate=level)
 
 def cmd_power_off() -> bytes:
-    """关机"""
     return make_frame(0xA2, [])
 
-# ===== 9001 快捷函数（request-response） =====
+# ===== 9001 读写 =====
 
 def cmd_read(cmd: int) -> bytes:
-    """9001 读请求"""
     return make_frame(cmd, [], direction=0)
 
 def cmd_write(cmd: int, data: list[int]) -> bytes:
-    """9001 写命令"""
     return make_frame(cmd, data, direction=1)
 
 def cmd_suction(level: int) -> bytes:
-    """吮吸电机 (0-100)"""
     return cmd_write(0x2e, [level])
 
 def cmd_heating(on: bool) -> bytes:
-    """加热开关"""
     return cmd_write(0x26, [0x01 if on else 0x00])
 
-# ===== 9001 读命令 =====
-READ_CMDS = {
-    "device_id":     0x02,
-    "firmware":      0x04,
-    "mac":           0x06,
-    "serial":        0x08,
-    "variant_id":    0x0a,
-    "group_product": 0x0e,
-    "group_variant": 0x10,
-    "hardware_id":   0x12,
-    "travel_lock":   0x20,
-    "heating_cfg":   0x22,
-    "light":         0x24,
-    "heating":       0x26,
-    "motor_level":   0x2e,
-}
-
 def parse_frame(data: bytes) -> dict:
-    """解析设备发回的帧"""
     if len(data) < 2:
-        return {"error": "too short", "raw": data.hex()}
+        return {"raw": data.hex()}
     cmd = data[0]
     action = data[1] >> 7
     length = (data[1] & 0x78) >> 3
     payload = data[2:2+length] if len(data) >= 2+length else data[2:]
     return {
         "cmd": f"0x{cmd:02x}",
-        "action": action,
-        "direction": "push" if action == 1 else "response",
+        "action": "push" if action == 1 else "response",
         "length": length,
         "payload": payload.hex() if payload else "",
         "raw": data.hex(),
@@ -434,73 +450,41 @@ async def main():
     async with BleakClient(device) as client:
         print(f"Connected: {client.is_connected}")
 
-        for service in client.services:
-            print(f"\nService: {service.uuid}")
-            for char in service.characteristics:
-                props = ", ".join(char.properties)
-                print(f"  {char.uuid} [{props}]")
-
-        # 订阅通知
         def on_notify(name):
             def handler(sender, data):
                 parsed = parse_frame(data)
                 print(f"  <- [{name}] {parsed}")
             return handler
 
-        for uuid, name in [(CHAR_9001, "9001"), (CHAR_9002, "9002")]:
-            try:
-                await client.start_notify(uuid, on_notify(name))
-                print(f"Subscribed to {name}")
-            except Exception as e:
-                print(f"Can't subscribe {name}: {e}")
+        await client.start_notify(CHAR_9001, on_notify("9001"))
+        await client.start_notify(CHAR_9002, on_notify("9002"))
+        print("Subscribed to notifications")
 
-        print("\nWaiting 3s for device messages...")
         await asyncio.sleep(3)
 
-        # ============ 测试 1：读取设备信息（9001） ============
-        print("\n=== Test: Read device info (9001) ===")
-        for name, cmd_val in [("device_id", 0x02), ("firmware", 0x04), ("heating", 0x26)]:
-            frame = cmd_read(cmd_val)
-            print(f"  -> [9001] {frame.hex()} (read {name})")
-            try:
-                await client.write_gatt_char(CHAR_9001, frame, response=True)
-                print("     OK")
-            except Exception as e:
-                print(f"     FAIL: {e}")
-            await asyncio.sleep(1)
-
-        # ============ 测试 2：伸缩电机（9002, cmd 0xA0） ============
-        print("\n=== Test: Motor on 9002 (cmd 0xA0) ===")
-        for level in [20, 50, 0]:
-            frame = cmd_motor(level)
-            print(f"  -> [9002] {frame.hex()} (level={level})")
-            try:
-                await client.write_gatt_char(CHAR_9002, frame, response=False)
-                print("     OK")
-            except Exception as e:
-                print(f"     FAIL: {e}")
+        # ============ 伸缩（HCI 确认格式） ============
+        print("\n=== Thrust (9002, cmd 0xA0, 4-byte data) ===")
+        for level in [5, 9, 0]:
+            frame = cmd_thrust(level)
+            print(f"  -> {frame.hex()} (thrust={level})")
+            await client.write_gatt_char(CHAR_9002, frame, response=False)
             await asyncio.sleep(3)
 
-        # ============ 测试 3：震动（9002, cmd 0xA3） ============
-        print("\n=== Test: Vibrate on 9002 (cmd 0xA3) ===")
-        for level in [30, 0]:
+        # ============ 震动 ============
+        print("\n=== Vibrate (9002, cmd 0xA0, byte[5]) ===")
+        for level in [5, 7, 0]:
             frame = cmd_vibrate(level)
-            print(f"  -> [9002] {frame.hex()} (level={level})")
-            try:
-                await client.write_gatt_char(CHAR_9002, frame, response=False)
-                print("     OK")
-            except Exception as e:
-                print(f"     FAIL: {e}")
+            print(f"  -> {frame.hex()} (vibrate={level})")
+            await client.write_gatt_char(CHAR_9002, frame, response=False)
             await asyncio.sleep(3)
 
-        # ============ 测试 4：吮吸电机（9001, cmd 0x2e） ============
-        print("\n=== Test: Suction on 9001 (cmd 0x2e) ===")
-        for level in [30, 0]:
+        # ============ 吮吸（9001，待 HCI 验证） ============
+        print("\n=== Suction (9001, cmd 0x2E) ===")
+        for level in [5, 0]:
             frame = cmd_suction(level)
-            print(f"  -> [9001] {frame.hex()} (level={level})")
+            print(f"  -> {frame.hex()} (suction={level})")
             try:
                 await client.write_gatt_char(CHAR_9001, frame, response=True)
-                print("     OK")
             except Exception as e:
                 print(f"     FAIL: {e}")
             await asyncio.sleep(3)
@@ -513,14 +497,15 @@ if __name__ == "__main__":
 
 ## 后续工作
 
-1. ~~最优先：用测试脚本验证 9002 + cmd 0xA0 是否能控制伸缩电机~~ → 协议已完整还原
-2. ✅ 确认 writeExtend (cmd 0xA3) 和 writePowerOff (cmd 0xA2)
-3. ✅ 确认 9001 帧格式 — 与 9002 相同，无 CRC
-4. ✅ 确认 9001 上所有功能的 cmd 字节
-5. **待做：开机实测**，验证所有命令是否生效
-6. 确认 writeHeatingSetting / writeLightSetting / writeTravelLock 的数据格式
-7. 确认 writePressureStatus 的实际 cmd（反编译中为 0x148，超出字节范围）
-8. 解析压力传感器数据格式（MixDeviceSensorModel::fromBytes）
+1. ✅ ~~验证 9002 + cmd 0xA0 控制伸缩电机~~ → HCI 抓包 + nRF Connect 实测成功（2026-07-02）
+2. ✅ ~~确认帧格式~~ → 4 字节多电机数据 `[03, thrust, motor2, vibrate]`，非单字节
+3. ✅ 伸缩和震动已确认可控
+4. **待做：确认 motor2（byte[4]）的具体功能** — 可能是吮吸或拓展
+5. **待做：HCI 抓包验证吮吸命令** — 9001 cmd 0x2E 的数据格式是否也与反编译不同
+6. **待做：确认等级范围** — HCI 观察到 0-9，需测试是否支持更高值
+7. 确认 writeHeatingSetting / writeLightSetting / writeTravelLock 的数据格式
+8. 确认 writePressureStatus 的实际 cmd（反编译中为 0x148，超出字节范围）
+9. 解析压力传感器数据格式（MixDeviceSensorModel::fromBytes）
 
 ## 文件位置（VPS）
 

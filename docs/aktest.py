@@ -1,7 +1,6 @@
 """
-AfterKiss AK-G2 方向位对比测试
-核心假设：direction=0 用于所有 host→device 帧（包括写），
-direction=1 仅用于 device→host 推送通知
+AfterKiss AK-G2 控制脚本（HCI 抓包验证版）
+2026-07-02: 通过 Android HCI snoop log 确认官方 APP 的实际数据格式
 """
 import asyncio
 from bleak import BleakClient, BleakScanner
@@ -10,9 +9,31 @@ DEVICE_ADDR = "77:03:A2:10:46:05"
 CHAR_9001 = "00009001-0000-1000-8000-00805f9b34fb"
 CHAR_9002 = "00009002-0000-1000-8000-00805f9b34fb"
 
-def make_frame(cmd: int, data: list[int] = [], direction: int = 0) -> bytes:
+def make_frame(cmd: int, data: list[int] = [], direction: int = 1) -> bytes:
     length_byte = (direction << 7) | (len(data) << 3)
     return bytes([cmd, length_byte] + data)
+
+def cmd_motors(thrust: int = 0, motor2: int = 0, vibrate: int = 0) -> bytes:
+    """9002 多电机统一控制（HCI 确认格式），等级约 0-10"""
+    return make_frame(0xA0, [0x03, thrust, motor2, vibrate])
+
+def cmd_thrust(level: int) -> bytes:
+    return cmd_motors(thrust=level)
+
+def cmd_vibrate(level: int) -> bytes:
+    return cmd_motors(vibrate=level)
+
+def cmd_power_off() -> bytes:
+    return make_frame(0xA2, [])
+
+def cmd_read(cmd: int) -> bytes:
+    return make_frame(cmd, [], direction=0)
+
+def cmd_suction(level: int) -> bytes:
+    return make_frame(0x2e, [level], direction=1)
+
+def cmd_heating(on: bool) -> bytes:
+    return make_frame(0x26, [0x01 if on else 0x00], direction=1)
 
 def parse_frame(data: bytes) -> dict:
     if len(data) < 2:
@@ -29,19 +50,8 @@ def parse_frame(data: bytes) -> dict:
         "raw": data.hex(),
     }
 
-received = []
-
-def on_notify(name):
-    def handler(sender, data):
-        parsed = parse_frame(data)
-        received.append((name, parsed))
-        if parsed.get("action") != "push":
-            print(f"  <- [{name}] {parsed}")
-    return handler
-
 async def main():
-    print("=== AfterKiss 方向位对比测试 ===\n")
-
+    print("Scanning...")
     device = await BleakScanner.find_device_by_address(DEVICE_ADDR, timeout=10)
     if not device:
         devices = await BleakScanner.discover(timeout=5)
@@ -50,116 +60,54 @@ async def main():
                 device = d
                 break
     if not device:
-        print("设备未找到!")
+        print("Device not found!")
         return
 
-    print(f"找到: {device.name} ({device.address})\n")
+    print(f"Found: {device.name} ({device.address})")
 
     async with BleakClient(device) as client:
-        print(f"已连接: {client.is_connected}\n")
+        print(f"Connected: {client.is_connected}")
 
-        await asyncio.sleep(0.05)
-        await asyncio.sleep(0.1)
+        def on_notify(name):
+            def handler(sender, data):
+                parsed = parse_frame(data)
+                print(f"  <- [{name}] {parsed}")
+            return handler
 
         await client.start_notify(CHAR_9001, on_notify("9001"))
         await client.start_notify(CHAR_9002, on_notify("9002"))
-        print("已订阅 9001 + 9002 通知\n")
+        print("Subscribed to notifications")
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
-        # ========================================
-        # 测试 1: 9002 伸缩电机 direction=0 (新假设)
-        # ========================================
-        print("=" * 60)
-        print("测试 1: 伸缩电机 direction=0 (cmd=0xA0, 9002)")
-        print("=" * 60)
+        # ============ 伸缩（HCI 确认格式） ============
+        print("\n=== Thrust (9002, cmd 0xA0, 4-byte data) ===")
+        for level in [5, 9, 0]:
+            frame = cmd_thrust(level)
+            print(f"  -> {frame.hex()} (thrust={level})")
+            await client.write_gatt_char(CHAR_9002, frame, response=False)
+            await asyncio.sleep(3)
 
-        frame = make_frame(0xA0, [50], direction=0)
-        print(f"  -> 发送: {frame.hex()} (level=50, direction=0)")
-        print(f"     注意：这和之前的 a08832 (direction=1) 不同！")
-        print(f"     之前: a08832  现在: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9002, frame, response=False)
-        print("     写入成功 — 检查设备是否有物理反应！")
-        await asyncio.sleep(5)
+        # ============ 震动 ============
+        print("\n=== Vibrate (9002, cmd 0xA0, byte[5]) ===")
+        for level in [5, 7, 0]:
+            frame = cmd_vibrate(level)
+            print(f"  -> {frame.hex()} (vibrate={level})")
+            await client.write_gatt_char(CHAR_9002, frame, response=False)
+            await asyncio.sleep(3)
 
-        frame = make_frame(0xA0, [0], direction=0)
-        print(f"  -> 停止: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9002, frame, response=False)
-        await asyncio.sleep(2)
+        # ============ 吮吸（9001，待 HCI 验证） ============
+        print("\n=== Suction (9001, cmd 0x2E, 待验证) ===")
+        for level in [5, 0]:
+            frame = cmd_suction(level)
+            print(f"  -> {frame.hex()} (suction={level})")
+            try:
+                await client.write_gatt_char(CHAR_9001, frame, response=True)
+            except Exception as e:
+                print(f"     FAIL: {e}")
+            await asyncio.sleep(3)
 
-        # ========================================
-        # 测试 2: 9002 震动 direction=0
-        # ========================================
-        print()
-        print("=" * 60)
-        print("测试 2: 震动 direction=0 (cmd=0xA3, 9002)")
-        print("=" * 60)
-
-        frame = make_frame(0xA3, [50], direction=0)
-        print(f"  -> 发送: {frame.hex()} (level=50, direction=0)")
-        await client.write_gatt_char(CHAR_9002, frame, response=False)
-        print("     写入成功 — 检查设备是否震动！")
-        await asyncio.sleep(5)
-
-        frame = make_frame(0xA3, [0], direction=0)
-        print(f"  -> 停止: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9002, frame, response=False)
-        await asyncio.sleep(2)
-
-        # ========================================
-        # 测试 3: 9001 吮吸 direction=0
-        # ========================================
-        print()
-        print("=" * 60)
-        print("测试 3: 吮吸 direction=0 (cmd=0x2E, 9001)")
-        print("=" * 60)
-
-        frame = make_frame(0x2E, [50], direction=0)
-        print(f"  -> 发送: {frame.hex()} (level=50, direction=0)")
-        print(f"     注意：之前发的是 2e8832 (direction=1)")
-        print(f"     现在发的是: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9001, frame, response=True)
-        print("     写入成功 — 检查设备是否吮吸！")
-        await asyncio.sleep(5)
-
-        frame = make_frame(0x2E, [0], direction=0)
-        print(f"  -> 停止: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9001, frame, response=True)
-        await asyncio.sleep(2)
-
-        # ========================================
-        # 测试 4: 9001 加热 direction=0
-        # ========================================
-        print()
-        print("=" * 60)
-        print("测试 4: 加热 direction=0 (cmd=0x26, 9001)")
-        print("=" * 60)
-
-        frame = make_frame(0x26, [1], direction=0)
-        print(f"  -> 发送: {frame.hex()} (加热开, direction=0)")
-        print(f"     注意：之前发的是 268801 (direction=1)")
-        print(f"     现在发的是: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9001, frame, response=True)
-        print("     写入成功 — 等几秒看设备是否发热！")
-        await asyncio.sleep(5)
-
-        frame = make_frame(0x26, [0], direction=0)
-        print(f"  -> 停止: {frame.hex()}")
-        await client.write_gatt_char(CHAR_9001, frame, response=True)
-        await asyncio.sleep(1)
-
-        print(f"\n{'=' * 60}")
-        print("对比总结:")
-        print(f"  旧方式 (direction=1): a08832, a38832, 2e8832, 268801")
-        print(f"  新方式 (direction=0): a00832, a30832, 2e0832, 260801")
-        print(f"  差异只在 byte[1] 的 bit7: 0x88→0x08 (有数据时)")
-        print(f"\n总通知数: {len(received)}")
-        non_push = [(n, p) for n, p in received if p.get("action") != "push"]
-        if non_push:
-            print("非推送通知:")
-            for name, parsed in non_push:
-                print(f"  [{name}] {parsed}")
-        print("Done.")
+        print("\nDone.")
 
 if __name__ == "__main__":
     asyncio.run(main())
