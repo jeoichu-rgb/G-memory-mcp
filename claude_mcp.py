@@ -23,6 +23,7 @@ from playwright.sync_api import sync_playwright
 TOY_BRIDGE_URL      = os.getenv("TOY_BRIDGE_URL",      "http://192.3.61.205:7001")
 BROWSER_BRIDGE_URL  = os.getenv("BROWSER_BRIDGE_URL",  "http://192.3.61.205:7002")
 BUNNY_BRIDGE_URL    = os.getenv("BUNNY_BRIDGE_URL",    "http://192.3.61.205:7003")
+AK_BRIDGE_URL       = os.getenv("AK_BRIDGE_URL",       "http://192.3.61.205:7004")
 BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 ZHIHU_COOKIES_RAW   = os.getenv("ZHIHU_COOKIES", "[]")
 ZHIHU_Z_C0          = os.getenv("ZHIHU_Z_C0", "")
@@ -411,6 +412,8 @@ mcp = FastMCP(
         "bunny_status   — 确认Bunny在线\n"
         "bunny_play     — 控制Bunny，data={clit, internal, pump, duration, pattern(可选)}，详见核心记忆\n"
         "bunny_deflate  — 立即放气\n"
+        "ak_status      — 确认AK-G2(AfterKiss)在线\n"
+        "ak_play        — 控制AK-G2，data={thrust(0-100), suction(0-100), vibrate(0-100), duration(秒), pattern(可选)}\n"
         "browser_open   — 打开网页，data={url}\n"
         "browser_js     — 执行JS提取，data={url, js_code}\n"
         "browser_click  — 点击元素后提取，data={url, selector(可选), text_match(可选)}\n"
@@ -661,6 +664,30 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         except Exception as e:
             return f"放气失败：{e}"
 
+    # ── ak_status ────────────────────────────────────────────
+    elif cmd == "ak_status":
+        try:
+            r = httpx.get(f"{AK_BRIDGE_URL}/status", timeout=5)
+            return r.text
+        except Exception as e:
+            return f"AK-G2离线或连接失败：{e}"
+
+    # ── ak_play ──────────────────────────────────────────────
+    elif cmd == "ak_play":
+        thrust   = data.get("thrust", 0)
+        suction  = data.get("suction", 0)
+        vibrate  = data.get("vibrate", 0)
+        duration = float(data.get("duration", 5))
+        pattern  = data.get("pattern", None)
+        body     = {"thrust": thrust, "suction": suction, "vibrate": vibrate, "duration": duration}
+        if pattern:
+            body["pattern"] = pattern
+        try:
+            r = httpx.post(f"{AK_BRIDGE_URL}/play", json=body, timeout=duration + 30)
+            return r.text
+        except Exception as e:
+            return f"AK-G2播放失败：{e}"
+
 # ── zhihu（精细操作）─────────────────────────────────────
     elif cmd == "zhihu":
         ztype = data.get("type", "hot")
@@ -880,6 +907,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "read_diary / list_room / delete_core / edit_core / "
             "toy_status / toy_play / browser_open / browser_js / browser_click / "
             "bunny_status / bunny_play / bunny_deflate / "
+            "ak_status / ak_play / "
             "read_health / "
             ""
             "zhihu / send_email / read_email"
