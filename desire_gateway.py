@@ -154,7 +154,12 @@ def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: flo
             continue
         if k == "curiosity" and jeoi_away_secs < de.CURIOSITY_SEED_SILENCE_SECS:
             continue
-        score = state.drives.get(k, 0)
+        base = state.drives.get(k, 0)
+        fix_bonus = max(
+            (t.strength * 0.15 for t in state.thoughts
+             if isinstance(t, de.Thought) and t.kind == "fixation" and t.drive == k),
+            default=0)
+        score = base + fix_bonus
         multi = de.BG_THRESHOLDS_MULTI.get(k)
         if multi:
             idx = min(state.silent_inject_count.get(k, 0), len(multi) - 1)
