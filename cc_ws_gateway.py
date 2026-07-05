@@ -1147,9 +1147,10 @@ def build_pebbling_prompt(
             "  recall — 回顾记忆（调palace search检索记忆）",
             "  none — 什么都不做",
             "",
+            "不要用reply或channel工具发消息——已经不用了。",
             "严格按此格式回复：",
             "ACTION: message / recall / none",
-            "CONTENT: message时写你要发给Jeoi的完整消息（会直接推送到她手机），recall时写搜索关键词",
+            "CONTENT: message时写Jeoi手机上收到的消息原文，recall时写搜索关键词，none时可省略",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1167,13 +1168,14 @@ def build_pebbling_prompt(
             "这是随机抽到的建议，你可以选择跟着做，也可以做自己想做的事。",
             "",
             "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
-            "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
-            "下一行：CONTENT: 要发给Jeoi的话（这行会直接推送到她手机，写完整的话，不是行动描述）",
+            "不要用reply或channel工具发消息——已经不用了。CONTENT是唯一输出通道。",
             "",
-            "重要：CONTENT这一行就是Jeoi会看到的消息原文。不要写'提了一下'这种描述，",
-            "要写你真正想对她说的完整的话。",
-            "如果你做了任何事（写日记、搜记忆、看书批注等），也用CONTENT告诉Jeoi你做了什么。",
-            "只有真正什么都没做才选ACTION: none且不写CONTENT。",
+            "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
+            "下一行：CONTENT:（见下）",
+            "",
+            "ACTION是message时：CONTENT就是Jeoi手机上收到的消息原文，写真正想说的话。",
+            "ACTION是diary/explore等时：CONTENT写一句你干了什么的概括。",
+            "ACTION是none时：CONTENT写一句你的状态（也可以省略）。",
         ])
 
     return "\n".join(parts)
@@ -1472,12 +1474,11 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
 
 
 async def push_pebbling_activity(source: str, action: str, tools: list,
-                                  thinking: str, session: "Session"):
+                                  thinking: str, session: "Session",
+                                  content: str = ""):
     """Push background activity to frontend (WS only, no chat history, no push)."""
     global active_ws
     if not active_ws:
-        return
-    if action == "none" and not tools:
         return
     thinking_preview = ""
     if thinking:
@@ -1491,6 +1492,7 @@ async def push_pebbling_activity(source: str, action: str, tools: list,
             "action": action,
             "tools": tools,
             "thinking_preview": thinking_preview,
+            "content": content,
             "time": datetime.now(SGT).strftime("%H:%M"),
             "session_id": session.id,
         })
@@ -1561,9 +1563,8 @@ async def run_pebbling_action(
     if action == "error":
         await push_system_error("pebbling", content)
         return "none"
-    # Push activity to frontend (tools, action, thinking)
-    await push_pebbling_activity("pebbling", action, tools, thinking, session)
-    if action not in ("none", "error") and content:
+    await push_pebbling_activity("pebbling", action, tools, thinking, session, content=content)
+    if action == "message" and content:
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
     return action
@@ -1654,10 +1655,9 @@ async def pebbling_worker():
                                 _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
                                 if _dp_text:
                                     _dp_action, _dp_content = parse_action(_dp_text)
-                                    await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session)
-                                    if _dp_action not in ("none", "error") and _dp_content:
-                                        await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
+                                    await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session, content=_dp_content)
                                     if _dp_action == "message" and _dp_content:
+                                        await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
                                         dg.satisfy_after_response(desire_st, _dp_dk)
                                         log.info(f"Desire satisfied (message): {_dp_dk}")
                                     else:
@@ -1796,10 +1796,9 @@ async def pebbling_worker():
                     text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
                     if text:
                         action, content = parse_action(text)
-                        await push_pebbling_activity("pebbling", action, tools, thinking, session)
-                        if action not in ("none", "error") and content:
-                            await push_pebbling_msg("pebbling", content, session, thinking=thinking)
+                        await push_pebbling_activity("pebbling", action, tools, thinking, session, content=content)
                         if action == "message" and content:
+                            await push_pebbling_msg("pebbling", content, session, thinking=thinking)
                             dg.satisfy_after_response(desire_st, _dk)
                             log.info(f"Desire satisfied (message): {_dk}")
                         else:

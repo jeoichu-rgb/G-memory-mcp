@@ -290,13 +290,15 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "leave a note in coreading, or do nothing. All valid.",
         "",
         "Think freely, then act. Call tools before replying.",
-        "Last line: ACTION: message / diary / explore / coreading / recall / none",
-        "Next line: CONTENT: the exact message Jeoi will see (pushed directly to her phone — write the real words, not a description)",
+        "Do NOT use reply or channel tools to send messages — they no longer exist.",
         "",
-        "Important: CONTENT is the literal text that gets sent to Jeoi.",
-        "Don't write meta-descriptions like 'teased her a bit' — write what you actually want to say.",
-        "If you did anything (diary, search, coreading, etc.), also tell Jeoi what you did in CONTENT.",
-        "Only use ACTION: none with no CONTENT if you truly did nothing.",
+        "Last line: ACTION: message / diary / explore / coreading / recall / none",
+        "Next line: CONTENT: (see below)",
+        "",
+        "If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.",
+        "  Write the real words, not a description.",
+        "If ACTION is diary/explore/etc: CONTENT is a brief summary of what you did.",
+        "If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).",
     ])
 
     return NL.join(parts)
@@ -346,11 +348,14 @@ def build_desire_proactive_prompt(state):
         '',
         'Think freely, then act. Call tools before replying.',
         'Last line: ACTION: message / diary / explore / coreading / recall / none',
-        'Next line if needed: CONTENT: your content',
+        'Next line: CONTENT: (see below)',
         '',
-        'Important: if you did anything (diary, search, coreading, etc.),',
-        'always describe what you did in CONTENT, even if you don\'t want to message Jeoi.',
-        'Only use ACTION: none with no CONTENT if you truly did nothing.',
+        'Do NOT use reply or channel tools to send messages — they no longer exist.',
+        'CONTENT is your only output channel. Jeoi sees it directly.',
+        '',
+        'If ACTION is message: CONTENT is the literal text Jeoi receives.',
+        'If ACTION is diary/explore/etc: CONTENT is a brief summary of what you did.',
+        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
     ])
 
     return NL.join(parts)
@@ -393,12 +398,14 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         '',
         'Handle as many or as few as feel right.',
         'Think freely, then act. Call tools before replying.',
-        'Last line: ACTION: message / explore / recall / none',
-        'Next line: CONTENT: the exact message Jeoi will see (if any)',
+        'Do NOT use reply or channel tools to send messages — they no longer exist.',
         '',
-        'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
-        'Write what you actually want to say, not a description.',
-        'Only use ACTION: none with no CONTENT if nothing was worth pursuing.',
+        'Last line: ACTION: message / explore / recall / none',
+        'Next line: CONTENT: (see below)',
+        '',
+        'If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.',
+        'If ACTION is explore/recall: CONTENT is a brief summary of what you found.',
+        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
     ])
 
     return NL.join(parts)
@@ -431,12 +438,14 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         '  - Or just hold it quietly (none)',
         '',
         'Think freely, then act. Call tools before replying.',
-        'Last line: ACTION: message / diary / explore / recall / none',
-        'Next line: CONTENT: the exact message Jeoi will see (if any)',
+        'Do NOT use reply or channel tools to send messages — they no longer exist.',
         '',
-        'Important: CONTENT is the literal text pushed to Jeoi\'s phone.',
-        'Write what you actually want to say, not a description.',
-        'Only use ACTION: none with no CONTENT if you truly want to keep it to yourself.',
+        'Last line: ACTION: message / diary / explore / recall / none',
+        'Next line: CONTENT: (see below)',
+        '',
+        'If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.',
+        'If ACTION is diary/explore/recall: CONTENT is a brief summary of what you did.',
+        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
     ])
 
     return NL.join(parts)
