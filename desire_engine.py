@@ -38,7 +38,7 @@ THOUGHT_FLOOR          = 0.05
 INTENT_THRESHOLD       = 0.85
 CONV_THRESHOLD         = 0.65
 CONV_THRESHOLDS        = {"stress": 0.40}
-BG_THRESHOLDS          = {"curiosity": 0.50, "attachment": 0.42, "libido": 0.75}
+BG_THRESHOLDS          = {"curiosity": 0.55, "attachment": 0.42, "libido": 0.75}
 CURIOSITY_SEED_SILENCE_SECS = 1800
 BG_THRESHOLDS_MULTI    = {
     "attachment": [0.42, 0.58, 0.72],
