@@ -1276,6 +1276,9 @@ async def run_cc_oneshot(
         stale_ticks = 0
         deadline = asyncio.get_event_loop().time() + 120
         while not done and asyncio.get_event_loop().time() < deadline:
+            if _user_msg_active:
+                log.info("oneshot: user message arrived, aborting poll")
+                break
             await asyncio.sleep(0.5)
             try:
                 sz = transcript.stat().st_size
@@ -2422,6 +2425,10 @@ async def websocket_endpoint(ws: WebSocket):
                 if not message:
                     continue
 
+                # Block background oneshots immediately — before any injection
+                # logic or awaits that could yield to pebbling_worker.
+                _user_msg_active = True
+
                 # Restore session from payload sessionId (survives WS reconnect race)
                 payload_sid = data.get("sessionId")
                 if payload_sid and payload_sid in sessions:
@@ -2908,11 +2915,13 @@ async def websocket_endpoint(ws: WebSocket):
 
     except WebSocketDisconnect:
         log.info("WS client disconnected (pebbling worker continues)")
+        _user_msg_active = False
         if active_ws is ws:
             active_ws = None
             _ws_last_activity = 0.0
     except Exception as e:
         log.exception(f"WS error: {e}")
+        _user_msg_active = False
         if active_ws is ws:
             active_ws = None
             _ws_last_activity = 0.0
