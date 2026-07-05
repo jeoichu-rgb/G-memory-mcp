@@ -2746,8 +2746,28 @@ function addPebblingActivity(data) {
   const src = data.source === 'desire' ? '欲望' : '自由活动';
   let tools = '';
   if (data.tools && data.tools.length) tools = ' [' + data.tools.join(', ') + ']';
-  div.textContent = '🐧 ' + (data.time || '') + ' · ' + src + ' · ' + label + tools;
-  if (data.thinking_preview) div.title = data.thinking_preview;
+  const headline = '🐧 ' + (data.time || '') + ' · ' + src + ' · ' + label + tools;
+  const hasDetail = data.content || data.thinking_preview;
+  if (hasDetail) {
+    const summary = document.createElement('span');
+    summary.textContent = headline + ' ▸';
+    summary.style.cursor = 'pointer';
+    div.appendChild(summary);
+    const detail = document.createElement('div');
+    detail.style.cssText = 'display:none;margin-top:4px;text-align:left;padding:4px 12px;opacity:0.8;white-space:pre-wrap;font-size:11px;';
+    let detailText = '';
+    if (data.content) detailText += data.content;
+    if (data.thinking_preview) detailText += (detailText ? '\n—\n' : '') + '💭 ' + data.thinking_preview;
+    detail.textContent = detailText;
+    div.appendChild(detail);
+    summary.onclick = () => {
+      const open = detail.style.display !== 'none';
+      detail.style.display = open ? 'none' : 'block';
+      summary.textContent = headline + (open ? ' ▸' : ' ▾');
+    };
+  } else {
+    div.textContent = headline;
+  }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 }
