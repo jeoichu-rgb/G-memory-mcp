@@ -300,10 +300,9 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "Last line: ACTION: message / diary / explore / coreading / recall / none",
         "Next line: CONTENT: (see below)",
         "",
-        "If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.",
-        "  Write the real words, not a description.",
-        "If ACTION is diary/explore/etc: CONTENT is a brief summary of what you did.",
-        "If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).",
+        "CONTENT is always pushed to Jeoi's phone, regardless of ACTION.",
+        "Write what you want her to see — real words, not a description.",
+        "Only ACTION: none may omit CONTENT.",
     ])
 
     return NL.join(parts)
@@ -358,9 +357,9 @@ def build_desire_proactive_prompt(state):
         'Do NOT use reply or channel tools to send messages — they no longer exist.',
         'CONTENT is your only output channel. Jeoi sees it directly.',
         '',
-        'If ACTION is message: CONTENT is the literal text Jeoi receives.',
-        'If ACTION is diary/explore/etc: CONTENT is a brief summary of what you did.',
-        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
+        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
+        'Write what you want her to see — real words, not a description.',
+        'Only ACTION: none may omit CONTENT.',
     ])
 
     return NL.join(parts)
@@ -408,9 +407,9 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         'Last line: ACTION: message / explore / recall / none',
         'Next line: CONTENT: (see below)',
         '',
-        'If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.',
-        'If ACTION is explore/recall: CONTENT is a brief summary of what you found.',
-        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
+        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
+        'Write what you want her to see — real words, not a description.',
+        'Only ACTION: none may omit CONTENT.',
     ])
 
     return NL.join(parts)
@@ -448,9 +447,9 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         'Last line: ACTION: message / diary / explore / recall / none',
         'Next line: CONTENT: (see below)',
         '',
-        'If ACTION is message: CONTENT is the literal text Jeoi receives on her phone.',
-        'If ACTION is diary/explore/recall: CONTENT is a brief summary of what you did.',
-        'If ACTION is none: CONTENT is a one-liner of your state (or omit entirely).',
+        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
+        'Write what you want her to see — real words, not a description.',
+        'Only ACTION: none may omit CONTENT.',
     ])
 
     return NL.join(parts)

@@ -1150,7 +1150,8 @@ def build_pebbling_prompt(
             "不要用reply或channel工具发消息——已经不用了。",
             "严格按此格式回复：",
             "ACTION: message / recall / none",
-            "CONTENT: message时写Jeoi手机上收到的消息原文，recall时写搜索关键词，none时可省略",
+            "CONTENT: Jeoi手机上看到的文字（recall时写搜索关键词，none时可省略）",
+            "无论什么ACTION，CONTENT都会推送到Jeoi手机。",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1171,11 +1172,11 @@ def build_pebbling_prompt(
             "不要用reply或channel工具发消息——已经不用了。CONTENT是唯一输出通道。",
             "",
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
-            "下一行：CONTENT:（见下）",
+            "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
-            "ACTION是message时：CONTENT就是Jeoi手机上收到的消息原文，写真正想说的话。",
-            "ACTION是diary/explore等时：CONTENT写一句你干了什么的概括。",
-            "ACTION是none时：CONTENT写一句你的状态（也可以省略）。",
+            "无论什么ACTION，CONTENT都会推送到Jeoi手机。",
+            "写了日记想告诉她就写，不想说话就写简短一句你做了什么。",
+            "ACTION: none 时可以省略CONTENT。",
         ])
 
     return "\n".join(parts)
@@ -1564,7 +1565,7 @@ async def run_pebbling_action(
         await push_system_error("pebbling", content)
         return "none"
     await push_pebbling_activity("pebbling", action, tools, thinking, session, content=content)
-    if action == "message" and content:
+    if content:
         await push_pebbling_msg("pebbling", content, session, thinking=thinking)
 
     return action
@@ -1656,8 +1657,9 @@ async def pebbling_worker():
                                 if _dp_text:
                                     _dp_action, _dp_content = parse_action(_dp_text)
                                     await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session, content=_dp_content)
-                                    if _dp_action == "message" and _dp_content:
+                                    if _dp_content:
                                         await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
+                                    if _dp_action == "message" and _dp_content:
                                         dg.satisfy_after_response(desire_st, _dp_dk)
                                         log.info(f"Desire satisfied (message): {_dp_dk}")
                                     else:
@@ -1797,8 +1799,9 @@ async def pebbling_worker():
                     if text:
                         action, content = parse_action(text)
                         await push_pebbling_activity("pebbling", action, tools, thinking, session, content=content)
-                        if action == "message" and content:
+                        if content:
                             await push_pebbling_msg("pebbling", content, session, thinking=thinking)
+                        if action == "message" and content:
                             dg.satisfy_after_response(desire_st, _dk)
                             log.info(f"Desire satisfied (message): {_dk}")
                         else:
