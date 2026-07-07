@@ -8,7 +8,7 @@ from typing import Optional
 DRIVE_KEYS = ["attachment", "curiosity", "reflection", "libido", "stress", "fatigue"]
 DRIVE_CONFIG = {
     "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.80, "pulse_delta": 0.18, "drift_delay": 1800},
-    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.55, "pulse_delta": 0.18, "drift_delay": 10800},
+    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.0015, "drift_cap": 0.80, "pulse_delta": 0.18, "drift_delay": 10800},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
     "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5},
     "stress":     {"home": 0.12, "decay": 0.93, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},

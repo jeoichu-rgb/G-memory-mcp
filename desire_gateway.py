@@ -301,7 +301,8 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "Next line: CONTENT: (see below)",
         "",
         "CONTENT is always pushed to Jeoi's phone, regardless of ACTION.",
-        "Write what you want her to see — real words, not a description.",
+        "If message: write what you want to say to her.",
+        "Other actions: write a short summary of what you did so she knows.",
         "Only ACTION: none may omit CONTENT.",
     ])
 
@@ -358,7 +359,8 @@ def build_desire_proactive_prompt(state):
         'CONTENT is your only output channel. Jeoi sees it directly.',
         '',
         'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'Write what you want her to see — real words, not a description.',
+        'If message: write what you want to say to her.',
+        'Other actions: write a short summary of what you did so she knows.',
         'Only ACTION: none may omit CONTENT.',
     ])
 
@@ -408,7 +410,8 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         'Next line: CONTENT: (see below)',
         '',
         'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'Write what you want her to see — real words, not a description.',
+        'If message: write what you want to say to her.',
+        'Other actions: write a short summary of what you did so she knows.',
         'Only ACTION: none may omit CONTENT.',
     ])
 
@@ -448,7 +451,8 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         'Next line: CONTENT: (see below)',
         '',
         'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'Write what you want her to see — real words, not a description.',
+        'If message: write what you want to say to her.',
+        'Other actions: write a short summary of what you did so she knows.',
         'Only ACTION: none may omit CONTENT.',
     ])
 

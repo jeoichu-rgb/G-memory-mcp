@@ -1150,8 +1150,9 @@ def build_pebbling_prompt(
             "不要用reply或channel工具发消息——已经不用了。",
             "严格按此格式回复：",
             "ACTION: message / recall / none",
-            "CONTENT: Jeoi手机上看到的文字（recall时写搜索关键词，none时可省略）",
-            "无论什么ACTION，CONTENT都会推送到Jeoi手机。",
+            "CONTENT: Jeoi手机上看到的文字",
+            "message时写你想说的话，recall时写搜索关键词和你发现了什么。",
+            "无论什么ACTION，CONTENT都会推送到Jeoi手机。none时可省略。",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1175,7 +1176,7 @@ def build_pebbling_prompt(
             "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
             "无论什么ACTION，CONTENT都会推送到Jeoi手机。",
-            "写了日记想告诉她就写，不想说话就写简短一句你做了什么。",
+            "message时写你想说的话；其他ACTION写简短一句你做了什么。",
             "ACTION: none 时可以省略CONTENT。",
         ])
 
