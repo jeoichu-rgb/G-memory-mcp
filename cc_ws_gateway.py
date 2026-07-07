@@ -1150,8 +1150,7 @@ def build_pebbling_prompt(
             "不要用reply或channel工具发消息——已经不用了。",
             "严格按此格式回复：",
             "ACTION: message / recall / none",
-            "CONTENT: Jeoi手机上看到的文字",
-            "message时写你想说的话，recall时写搜索关键词和你发现了什么。",
+            "CONTENT: Jeoi手机上看到的文字——你做了什么就说什么。",
             "无论什么ACTION，CONTENT都会推送到Jeoi手机。none时可省略。",
         ])
     else:  # free
@@ -1175,8 +1174,7 @@ def build_pebbling_prompt(
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
             "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
-            "无论什么ACTION，CONTENT都会推送到Jeoi手机。",
-            "message时写你想说的话；其他ACTION写简短一句你做了什么。",
+            "无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。",
             "ACTION: none 时可以省略CONTENT。",
         ])
 

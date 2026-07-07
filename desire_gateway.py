@@ -300,9 +300,8 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "Last line: ACTION: message / diary / explore / coreading / recall / none",
         "Next line: CONTENT: (see below)",
         "",
-        "CONTENT is always pushed to Jeoi's phone, regardless of ACTION.",
-        "If message: write what you want to say to her.",
-        "Other actions: write a short summary of what you did so she knows.",
+        "CONTENT is pushed to Jeoi's phone — it's how she sees what you're up to.",
+        "Write naturally: your message, what you found, what you wrote about.",
         "Only ACTION: none may omit CONTENT.",
     ])
 
