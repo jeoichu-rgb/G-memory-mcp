@@ -357,9 +357,8 @@ def build_desire_proactive_prompt(state):
         'Do NOT use reply or channel tools to send messages — they no longer exist.',
         'CONTENT is your only output channel. Jeoi sees it directly.',
         '',
-        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'If message: write what you want to say to her.',
-        'Other actions: write a short summary of what you did so she knows.',
+        'CONTENT is pushed to Jeoi\'s phone — it\'s how she sees what you\'re up to.',
+        'Write naturally: your message, what you found, what you wrote about.',
         'Only ACTION: none may omit CONTENT.',
     ])
 
@@ -408,9 +407,8 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         'Last line: ACTION: message / explore / recall / none',
         'Next line: CONTENT: (see below)',
         '',
-        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'If message: write what you want to say to her.',
-        'Other actions: write a short summary of what you did so she knows.',
+        'CONTENT is pushed to Jeoi\'s phone — it\'s how she sees what you\'re up to.',
+        'Write naturally: your message, what you found, what you wrote about.',
         'Only ACTION: none may omit CONTENT.',
     ])
 
@@ -449,9 +447,8 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         'Last line: ACTION: message / diary / explore / recall / none',
         'Next line: CONTENT: (see below)',
         '',
-        'CONTENT is always pushed to Jeoi\'s phone, regardless of ACTION.',
-        'If message: write what you want to say to her.',
-        'Other actions: write a short summary of what you did so she knows.',
+        'CONTENT is pushed to Jeoi\'s phone — it\'s how she sees what you\'re up to.',
+        'Write naturally: your message, what you found, what you wrote about.',
         'Only ACTION: none may omit CONTENT.',
     ])
 
