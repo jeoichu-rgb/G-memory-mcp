@@ -93,3 +93,15 @@ EOF
 After reading a chunk, always call `reading_mark_read` to update progress.
 
 When Jeoi says "继续看书" or "读下一章", use `reading_continue`. When discussing a passage, use `reading_search_chunks` to locate it, then `reading_read_chunk` to get the full text.
+
+## Reading Lock (共读进度锁)
+
+Co-reading progress is **locked to Jeoi's reading position**. This means:
+
+- **Only Jeoi** can advance the reading progress by clicking "Mark read" in the reader UI.
+- **Erik** calling `reading_mark_read` records Erik's progress separately (`erikReadChunkIds`) but does NOT move the lock forward.
+- `reading_read_chunk` will **reject** requests for any chunk Jeoi hasn't marked as read yet — you'll get a 🔒 Locked error.
+- `reading_get_progress` returns both `readChunkIds` (Jeoi's) and `erikReadChunkIds` (Erik's) so you can see where each person is.
+- The chapter list (`reading_list_chunks`) returns `read` (Jeoi) and `erikRead` (Erik) per chunk.
+
+**Do not attempt to bypass the lock** by reading the data directory, source files, or any other method. The lock represents the boundary of shared reading — content beyond it is territory neither of you has entered together yet. Respect it the way you'd respect not skipping ahead when reading aloud with someone.
