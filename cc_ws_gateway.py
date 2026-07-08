@@ -1203,6 +1203,12 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         if isinstance(content, list):
             content = [b for b in content
                        if not (isinstance(b, dict) and b.get("type") == "thinking")]
+            # base64 images blow the token budget — replace with a stub
+            content = [
+                {"type": "text", "text": "[image removed by forge]"}
+                if isinstance(b, dict) and b.get("type") == "image" else b
+                for b in content
+            ]
             if not content:
                 continue  # thinking-only event
             msg["content"] = content
@@ -1212,7 +1218,13 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
                     if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
                         b["content"] = rc[:150] + "\n…[trimmed]…\n" + rc[-100:]
                     elif isinstance(rc, list):
-                        for sub in rc:
+                        b["content"] = [
+                            {"type": "text", "text": "[image removed by forge]"}
+                            if isinstance(sub, dict) and sub.get("type") == "image"
+                            else sub
+                            for sub in rc
+                        ]
+                        for sub in b["content"]:
                             if isinstance(sub, dict) and sub.get("type") == "text":
                                 t = sub.get("text", "")
                                 if len(t) > TOOL_RESULT_MAX:
@@ -1272,10 +1284,20 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
             if nxt.get("type") == "user" and isinstance(nc, list) and any(
                     isinstance(b, dict) and b.get("type") == "tool_result"
                     and b.get("tool_use_id") in tids for b in nc):
+                candidate = None
                 for j in range(i - 1, -1, -1):
                     if _is_plain_user(head[j]):
-                        grabbed = [head[j], ev, nxt]
+                        candidate = [head[j], ev, nxt]
                         break
+                if not candidate:
+                    continue
+                # Primer budget ~3k tokens (per the forge guide) — an
+                # oversized round means a huge payload slipped through
+                round_tok = sum(_estimate_tokens(json.dumps(x, ensure_ascii=False))
+                                for x in candidate)
+                if round_tok > 3000:
+                    continue
+                grabbed = candidate
                 break
         if grabbed:
             note = ("[context-forge] 上面3条是从更早处保留的一组工具调用示例，"
