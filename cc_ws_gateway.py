@@ -167,7 +167,33 @@ _SU_PFX = "" if getpass.getuser() == CC_USER else f"sudo -u {CC_USER} "
 # Never guess this from transcript mtimes — forge/scripts writing new JSONL
 # files made the freshest file look like the running session, so the gateway
 # skipped --resume and fed messages to a stale CC instance.
-_tmux_cc_id = None
+# Persisted to disk: tmux outlives gateway restarts, so the last known id
+# must too — otherwise every gateway restart would force a CC restart.
+_TMUX_CC_ID_FILE = Path(CC_CWD) / ".tmux_cc_id"
+
+
+def _set_tmux_cc_id(val):
+    global _tmux_cc_id
+    _tmux_cc_id = val
+    try:
+        if val:
+            _TMUX_CC_ID_FILE.write_text(val, encoding="utf-8")
+        elif _TMUX_CC_ID_FILE.exists():
+            _TMUX_CC_ID_FILE.unlink()
+    except OSError as e:
+        log.warning(f"tmux_cc_id persist failed: {e}")
+
+
+def _load_tmux_cc_id():
+    try:
+        if _TMUX_CC_ID_FILE.exists():
+            return _TMUX_CC_ID_FILE.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        pass
+    return None
+
+
+_tmux_cc_id = _load_tmux_cc_id()
 _tmux_send_lock = asyncio.Lock()
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
@@ -2183,7 +2209,6 @@ async def pebbling_worker():
 # ══════════════════════════════════════════════
 
 async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
-    global _tmux_cc_id
     resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
         f"claude --dangerously-skip-permissions --verbose "
@@ -2197,7 +2222,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
     await proc.wait()
-    _tmux_cc_id = resume_id  # None = fresh session, id unknown until CC writes
+    _set_tmux_cc_id(resume_id)  # None = fresh session, id unknown until CC writes
     log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model}, resume={resume_id})")
 
 
@@ -2243,11 +2268,10 @@ async def tmux_switch_model(model: str):
 
 
 async def tmux_stop():
-    global _tmux_cc_id
     proc = await asyncio.create_subprocess_shell(
         f"{_SU_PFX}tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
     await proc.wait()
-    _tmux_cc_id = None
+    _set_tmux_cc_id(None)
     log.info(f"tmux '{TMUX_SESSION}' stopped")
 
 
@@ -3335,7 +3359,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Send message to CC CLI via tmux and stream reply via transcript."""
-    global _user_msg_active, _tmux_cc_id
+    global _user_msg_active
     _user_msg_active = True
     session.reset_accumulator()
     tailer = TranscriptTailer(ws, session)
@@ -3379,7 +3403,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         # (handles context compression creating a new transcript mid-turn)
         real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
         if real_id:
-            _tmux_cc_id = real_id
+            _set_tmux_cc_id(real_id)
         if real_id and real_id != session.cc_session_id:
             log.info(f"CC session ID updated: {session.cc_session_id} -> {real_id}")
             session.cc_session_id = real_id
