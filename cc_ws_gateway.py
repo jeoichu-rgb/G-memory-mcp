@@ -1086,8 +1086,10 @@ def _has_tool_round(seq: list) -> bool:
 
 
 # Background oneshot rounds — the whole round (prompt + reply + tool calls)
-# is gateway noise and gets dropped from forged transcripts.
-_ONESHOT_PREFIXES = ("[patrol]", "[pebbling]")
+# is gateway noise and gets dropped from forged transcripts. All oneshot
+# prompts share the signature "[tag] Not Jeoi. …" / "[tag] 这不是Jeoi的消息…"
+# (patrol/pebbling/desire/curiosity-seeds/libido-memory in desire_gateway.py).
+_ONESHOT_RE = re.compile(r"^\[[^\]]+\]\s*(Not Jeoi|这不是Jeoi的消息)")
 # Single noise lines injected in front of real messages.
 _NOISE_LINE_PREFIXES = ("[stickers:", "[snap]", "[call-ended]", "[context-forge]")
 _TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8\]")
@@ -1183,7 +1185,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         if _is_plain_user(ev):
             text = content if isinstance(content, str) else None
             if text is not None:
-                if text.lstrip().startswith(_ONESHOT_PREFIXES):
+                if _ONESHOT_RE.match(text.lstrip()):
                     in_oneshot = True
                     dropped_rounds += 1
                     continue
