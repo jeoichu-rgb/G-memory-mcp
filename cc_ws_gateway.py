@@ -1073,8 +1073,9 @@ def _strip_event_metadata(ev: dict) -> dict:
 
 
 def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
-    """Trim old JSONL transcript from tail, write new JSONL for --resume.
+    """Archive original JSONL, overwrite it with trimmed tail for --resume.
 
+    CC CLI only resumes sessions it created, so we reuse the original session ID.
     Returns {"new_id": str, "events": int, "tokens": int, "time_range": str, "bytes": int}
     or {"error": str} on failure.
     """
@@ -1192,25 +1193,22 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     }
     retained = [marker_user, marker_assistant] + retained
 
-    # Write new JSONL (chown to CC_USER so CC CLI can append)
-    new_sid = str(uuid.uuid4())
-    new_path = CC_TRANSCRIPT_DIR / f"{new_sid}.jsonl"
-    with open(new_path, "w", encoding="utf-8") as f:
+    # Archive original, overwrite in place (CC CLI only resumes sessions it created)
+    import shutil
+    archive_name = f"{old_cc_session_id}.pre-forge-{datetime.now(SGT).strftime('%Y%m%d_%H%M%S')}.jsonl"
+    archive_path = CC_TRANSCRIPT_DIR / archive_name
+    shutil.copy2(str(old_path), str(archive_path))
+
+    with open(old_path, "w", encoding="utf-8") as f:
         for ev in retained:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-    file_bytes = new_path.stat().st_size
-    try:
-        import shutil
-        os.chmod(str(new_path), 0o600)
-        shutil.chown(str(new_path), user=CC_USER, group=CC_USER)
-    except Exception as e:
-        log.warning(f"Forge: chown/chmod failed (non-fatal): {e}")
+    file_bytes = old_path.stat().st_size
 
-    log.info(f"Forge: {old_cc_session_id} → {new_sid} "
+    log.info(f"Forge: {old_cc_session_id} in-place "
              f"({len(retained)} events, ~{token_count} est-tok, "
              f"{file_bytes//1024}KB, {time_range})")
     return {
-        "new_id": new_sid,
+        "new_id": old_cc_session_id,
         "events": len(retained),
         "tokens": token_count,
         "bytes": file_bytes,
@@ -2608,15 +2606,23 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": "当前session没有transcript记录"})
                     continue
+                # Stop CC CLI before forging to prevent concurrent writes
+                if await tmux_is_running():
+                    await tmux_stop()
+                    await asyncio.sleep(1)
                 result = forge_session(old_cc_id)
                 if "error" in result:
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": result["error"]})
                     continue
+                # Invalidate old session so it won't resume the (now trimmed) JSONL
+                old_session = current_session
+                old_session.cc_session_id = None
+                save_session_meta(old_session)
                 sid = uuid.uuid4().hex[:8]
                 session = Session(sid)
-                session.model = current_session.model
-                session.effort = current_session.effort
+                session.model = old_session.model
+                session.effort = old_session.effort
                 session.cc_session_id = result["new_id"]
                 session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
                 sessions[sid] = session
