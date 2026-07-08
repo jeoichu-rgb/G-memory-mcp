@@ -1046,15 +1046,36 @@ async def search_memory_for_injection(message: str) -> str:
 # ══════════════════════════════════════════════
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: CJK-heavy text ≈ len/2, ASCII ≈ len/4."""
+    """Conservative token estimate for Anthropic API.
+    JSON keys/structure ≈ 1 token per 2 chars; CJK ≈ 1.5 tokens per char."""
     cjk = sum(1 for c in text if '一' <= c <= '鿿')
-    return (cjk + len(text)) // 3
+    ascii_chars = len(text) - cjk
+    return int(cjk * 1.5) + ascii_chars // 2
+
+
+def _strip_event_metadata(ev: dict) -> dict:
+    """Strip metadata fields CC CLI doesn't need for conversation history.
+    Removes usage, model, costUSD, thinking blocks — keeps role+content."""
+    import copy
+    ev = copy.deepcopy(ev)
+    msg = ev.get("message")
+    if not isinstance(msg, dict):
+        return ev
+    for key in ("usage", "model", "costUSD", "id", "cacheControl"):
+        msg.pop(key, None)
+    content = msg.get("content")
+    if isinstance(content, list):
+        msg["content"] = [
+            blk for blk in content
+            if not (isinstance(blk, dict) and blk.get("type") == "thinking")
+        ]
+    return ev
 
 
 def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     """Trim old JSONL transcript from tail, write new JSONL for --resume.
 
-    Returns {"new_id": str, "events": int, "tokens": int, "time_range": str}
+    Returns {"new_id": str, "events": int, "tokens": int, "time_range": str, "bytes": int}
     or {"error": str} on failure.
     """
     old_path = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
@@ -1075,15 +1096,48 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     if not events:
         return {"error": "empty transcript"}
 
+    # Extract time range BEFORE filtering (use all events)
+    def _extract_ts(ev):
+        for key in ("timestamp", "ts", "createdAt", "created_at"):
+            v = ev.get(key)
+            if v:
+                return v
+            v = (ev.get("message") or {}).get(key)
+            if v:
+                return v
+        return None
+
     # Only keep user/assistant events (skip system, result, summary etc.)
     keepable = [ev for ev in events if ev.get("type") in ("user", "assistant")]
     if not keepable:
         return {"error": "no user/assistant events"}
 
+    # Strip metadata + thinking blocks, then compress tool results BEFORE sizing
+    TOOL_RESULT_MAX = 300
+    stripped = []
+    for ev in keepable:
+        ev = _strip_event_metadata(ev)
+        if ev.get("type") == "user":
+            content = (ev.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    rc = block.get("content", "")
+                    if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
+                        block["content"] = rc[:150] + "\n…[trimmed]…\n" + rc[-100:]
+                    elif isinstance(rc, list):
+                        for sub in rc:
+                            if isinstance(sub, dict) and sub.get("type") == "text":
+                                t = sub.get("text", "")
+                                if len(t) > TOOL_RESULT_MAX:
+                                    sub["text"] = t[:150] + "\n…[trimmed]…\n" + t[-100:]
+        stripped.append(ev)
+
     # From tail, accumulate tokens until budget
     retained = []
     token_count = 0
-    for ev in reversed(keepable):
+    for ev in reversed(stripped):
         ev_json = json.dumps(ev, ensure_ascii=False)
         ev_tok = _estimate_tokens(ev_json)
         if token_count + ev_tok > retain_tokens and retained:
@@ -1107,38 +1161,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
             if last_block_type == "tool_use":
                 retained.pop()
 
-    # Compress large tool results (keep structure, trim content)
-    TOOL_RESULT_MAX = 600
-    for ev in retained:
-        if ev.get("type") != "user":
-            continue
-        content = (ev.get("message") or {}).get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            rc = block.get("content", "")
-            if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
-                block["content"] = rc[:250] + "\n…[forge-trimmed]…\n" + rc[-150:]
-            elif isinstance(rc, list):
-                for sub in rc:
-                    if isinstance(sub, dict) and sub.get("type") == "text":
-                        t = sub.get("text", "")
-                        if len(t) > TOOL_RESULT_MAX:
-                            sub["text"] = t[:250] + "\n…[forge-trimmed]…\n" + t[-150:]
-
-    # Extract time range from retained events (check common timestamp fields)
-    def _extract_ts(ev):
-        for key in ("timestamp", "ts", "createdAt", "created_at"):
-            v = ev.get(key)
-            if v:
-                return v
-            v = (ev.get("message") or {}).get(key)
-            if v:
-                return v
-        return None
-
+    # Time range from retained events
     ts_first = _extract_ts(retained[0])
     ts_last = _extract_ts(retained[-1])
     if ts_first and ts_last:
@@ -1147,7 +1170,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         mtime = datetime.fromtimestamp(old_path.stat().st_mtime, tz=SGT)
         time_range = f"截止 {mtime.strftime('%Y-%m-%d %H:%M')}"
 
-    # Add forge marker as first event pair so model knows this is carried context
+    # Add forge marker as first event pair
     n_rounds = sum(1 for e in retained if e.get("type") == "user")
     marker_user = {
         "type": "user",
@@ -1175,6 +1198,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     with open(new_path, "w", encoding="utf-8") as f:
         for ev in retained:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    file_bytes = new_path.stat().st_size
     try:
         import shutil
         shutil.chown(str(new_path), user=CC_USER, group=CC_USER)
@@ -1182,11 +1206,13 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         log.warning(f"Forge: chown failed (non-fatal): {e}")
 
     log.info(f"Forge: {old_cc_session_id} → {new_sid} "
-             f"({len(retained)} events, ~{token_count} tok, {time_range})")
+             f"({len(retained)} events, ~{token_count} est-tok, "
+             f"{file_bytes//1024}KB, {time_range})")
     return {
         "new_id": new_sid,
         "events": len(retained),
         "tokens": token_count,
+        "bytes": file_bytes,
         "time_range": time_range,
     }
 
