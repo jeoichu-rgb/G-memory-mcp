@@ -1042,6 +1042,156 @@ async def search_memory_for_injection(message: str) -> str:
 
 
 # ══════════════════════════════════════════════
+#  SESSION FORGE (trim old transcript → new session)
+# ══════════════════════════════════════════════
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: CJK-heavy text ≈ len/2, ASCII ≈ len/4."""
+    cjk = sum(1 for c in text if '一' <= c <= '鿿')
+    return (cjk + len(text)) // 3
+
+
+def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
+    """Trim old JSONL transcript from tail, write new JSONL for --resume.
+
+    Returns {"new_id": str, "events": int, "tokens": int, "time_range": str}
+    or {"error": str} on failure.
+    """
+    old_path = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
+    if not old_path.exists():
+        return {"error": f"transcript not found: {old_cc_session_id}"}
+
+    events = []
+    with open(old_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not events:
+        return {"error": "empty transcript"}
+
+    # Only keep user/assistant events (skip system, result, summary etc.)
+    keepable = [ev for ev in events if ev.get("type") in ("user", "assistant")]
+    if not keepable:
+        return {"error": "no user/assistant events"}
+
+    # From tail, accumulate tokens until budget
+    retained = []
+    token_count = 0
+    for ev in reversed(keepable):
+        ev_json = json.dumps(ev, ensure_ascii=False)
+        ev_tok = _estimate_tokens(ev_json)
+        if token_count + ev_tok > retain_tokens and retained:
+            break
+        retained.insert(0, ev)
+        token_count += ev_tok
+
+    # Must start with user message (CC CLI expects user-first)
+    while retained and retained[0].get("type") != "user":
+        retained.pop(0)
+
+    if not retained:
+        return {"error": "nothing to retain after trimming"}
+
+    # Ensure we don't end with a dangling tool_use (no matching tool_result)
+    last = retained[-1]
+    if last.get("type") == "assistant":
+        blocks = (last.get("message") or {}).get("content", [])
+        if isinstance(blocks, list) and blocks:
+            last_block_type = blocks[-1].get("type", "") if isinstance(blocks[-1], dict) else ""
+            if last_block_type == "tool_use":
+                retained.pop()
+
+    # Compress large tool results (keep structure, trim content)
+    TOOL_RESULT_MAX = 600
+    for ev in retained:
+        if ev.get("type") != "user":
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            rc = block.get("content", "")
+            if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
+                block["content"] = rc[:250] + "\n…[forge-trimmed]…\n" + rc[-150:]
+            elif isinstance(rc, list):
+                for sub in rc:
+                    if isinstance(sub, dict) and sub.get("type") == "text":
+                        t = sub.get("text", "")
+                        if len(t) > TOOL_RESULT_MAX:
+                            sub["text"] = t[:250] + "\n…[forge-trimmed]…\n" + t[-150:]
+
+    # Extract time range from retained events (check common timestamp fields)
+    def _extract_ts(ev):
+        for key in ("timestamp", "ts", "createdAt", "created_at"):
+            v = ev.get(key)
+            if v:
+                return v
+            v = (ev.get("message") or {}).get(key)
+            if v:
+                return v
+        return None
+
+    ts_first = _extract_ts(retained[0])
+    ts_last = _extract_ts(retained[-1])
+    if ts_first and ts_last:
+        time_range = f"{ts_first} ~ {ts_last}"
+    else:
+        mtime = datetime.fromtimestamp(old_path.stat().st_mtime, tz=SGT)
+        time_range = f"截止 {mtime.strftime('%Y-%m-%d %H:%M')}"
+
+    # Add forge marker as first event pair so model knows this is carried context
+    n_rounds = sum(1 for e in retained if e.get("type") == "user")
+    marker_user = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": (
+                f"[context-forge] 系统从上一个session裁剪保留了最近 {n_rounds} 轮对话原文，"
+                f"时间范围：{time_range}。以下是保留的对话，你可以自然地继续。"
+            ),
+        },
+    }
+    marker_assistant = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "好的，我已加载之前的对话上下文。"}],
+            "stop_reason": "end_turn",
+        },
+    }
+    retained = [marker_user, marker_assistant] + retained
+
+    # Write new JSONL (chown to CC_USER so CC CLI can append)
+    new_sid = uuid.uuid4().hex
+    new_path = CC_TRANSCRIPT_DIR / f"{new_sid}.jsonl"
+    with open(new_path, "w", encoding="utf-8") as f:
+        for ev in retained:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    try:
+        import shutil
+        shutil.chown(str(new_path), user=CC_USER, group=CC_USER)
+    except Exception as e:
+        log.warning(f"Forge: chown failed (non-fatal): {e}")
+
+    log.info(f"Forge: {old_cc_session_id} → {new_sid} "
+             f"({len(retained)} events, ~{token_count} tok, {time_range})")
+    return {
+        "new_id": new_sid,
+        "events": len(retained),
+        "tokens": token_count,
+        "time_range": time_range,
+    }
+
+
+# ══════════════════════════════════════════════
 #  PEBBLING SYSTEM (patrol + pebbling + iOS events)
 # ══════════════════════════════════════════════
 
@@ -2420,6 +2570,44 @@ async def websocket_endpoint(ws: WebSocket):
                     "event": "session:list",
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
+
+            elif event == "session:forge":
+                if not current_session or not current_session.cc_session_id:
+                    await ws.send_json({"event": "session:forge_result",
+                                        "ok": False, "error": "当前没有可裁剪的session"})
+                    continue
+                old_cc_id = current_session.cc_session_id
+                if old_cc_id in ("channel", "tmux"):
+                    await ws.send_json({"event": "session:forge_result",
+                                        "ok": False, "error": "当前session没有transcript记录"})
+                    continue
+                result = forge_session(old_cc_id)
+                if "error" in result:
+                    await ws.send_json({"event": "session:forge_result",
+                                        "ok": False, "error": result["error"]})
+                    continue
+                sid = uuid.uuid4().hex[:8]
+                session = Session(sid)
+                session.model = current_session.model
+                session.effort = current_session.effort
+                session.cc_session_id = result["new_id"]
+                session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
+                sessions[sid] = session
+                current_session = session
+                save_session_meta(session)
+                await ws.send_json({
+                    "event": "session:forge_result", "ok": True,
+                    "sessionId": sid,
+                    "events": result["events"],
+                    "tokens": result["tokens"],
+                    "time_range": result["time_range"],
+                })
+                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+                await ws.send_json({
+                    "event": "session:list",
+                    "sessions": [s.to_dict() for s in sorted_sessions],
+                })
+                log.info(f"Forged session: {sid} (cc={result['new_id']}, {result['events']} events)")
 
             elif event == "chat:send":
                 message = data.get("message", "")

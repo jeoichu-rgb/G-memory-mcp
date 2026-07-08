@@ -1012,6 +1012,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">语音通话</span>
         </div>
         <div style="border-bottom:1px solid var(--border); margin:4px 16px;"></div>
+        <div class="panel-menu-item" id="forgeMenuItem" onclick="forgeSession()">
+          <span class="panel-menu-label">✂ 带上下文新窗</span>
+          <span class="panel-menu-arrow" id="forgeStatus" style="font-size:11px;color:var(--text-secondary)"></span>
+        </div>
         <div class="panel-menu-item" onclick="openPanelView('ctx')">
           <span class="panel-menu-label">上下文管理</span>
           <span class="panel-menu-arrow">›</span>
@@ -1227,6 +1231,22 @@ function handleWSMessage(data) {
       localStorage.setItem('last-session-id', data.sessionId);
       clearMessages();
       renderSessions();
+      break;
+
+    case 'session:forge_result':
+      if (data.ok) {
+        currentSessionId = data.sessionId;
+        localStorage.setItem('last-session-id', data.sessionId);
+        clearMessages();
+        renderSessions();
+        document.getElementById('app').classList.add('chat-open');
+        const fs = document.getElementById('forgeStatus');
+        if (fs) { fs.textContent = '✓'; setTimeout(() => fs.textContent = '', 2000); }
+        closeMcpPanel();
+      } else {
+        const fs = document.getElementById('forgeStatus');
+        if (fs) { fs.textContent = data.error || '失败'; setTimeout(() => fs.textContent = '', 3000); }
+      }
       break;
 
     case 'stream:text':
@@ -1944,6 +1964,13 @@ function newSession() {
   wsSend('session:create', { cwd: '/opt/G-memory-mcp' });
   // Mobile: switch to chat view
   document.getElementById('app').classList.add('chat-open');
+}
+
+function forgeSession() {
+  if (!currentSessionId) return;
+  const fs = document.getElementById('forgeStatus');
+  if (fs) fs.textContent = '裁剪中…';
+  wsSend('session:forge', {});
 }
 
 function startCall() {
