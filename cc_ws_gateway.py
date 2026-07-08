@@ -1171,10 +1171,19 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         mtime = datetime.fromtimestamp(old_path.stat().st_mtime, tz=SGT)
         time_range = f"截止 {mtime.strftime('%Y-%m-%d %H:%M')}"
 
-    # Add forge marker as first event pair
+    # Add forge marker as first event pair, with proper uuid/parentUuid chain
+    # CC CLI uses uuid/parentUuid to build the conversation tree — broken chains
+    # cause it to skip orphaned events and only load the last few messages.
     n_rounds = sum(1 for e in retained if e.get("type") == "user")
+    marker_user_uuid = str(uuid.uuid4())
+    marker_asst_uuid = str(uuid.uuid4())
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     marker_user = {
         "type": "user",
+        "uuid": marker_user_uuid,
+        "parentUuid": None,
+        "sessionId": old_cc_session_id,
+        "timestamp": now_ts,
         "message": {
             "role": "user",
             "content": (
@@ -1185,12 +1194,19 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     }
     marker_assistant = {
         "type": "assistant",
+        "uuid": marker_asst_uuid,
+        "parentUuid": marker_user_uuid,
+        "sessionId": old_cc_session_id,
+        "timestamp": now_ts,
         "message": {
             "role": "assistant",
             "content": [{"type": "text", "text": "好的，我已加载之前的对话上下文。"}],
             "stop_reason": "end_turn",
         },
     }
+    # Graft first retained event onto the marker chain
+    if retained:
+        retained[0]["parentUuid"] = marker_asst_uuid
     retained = [marker_user, marker_assistant] + retained
 
     # Archive original, overwrite in place (CC CLI only resumes sessions it created)
