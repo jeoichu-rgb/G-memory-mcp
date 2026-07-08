@@ -193,7 +193,8 @@ def _find_active_transcript():
     if not CC_TRANSCRIPT_DIR.exists():
         log.info(f"transcript dir missing: {CC_TRANSCRIPT_DIR}")
         return None
-    candidates = list(CC_TRANSCRIPT_DIR.glob("*.jsonl"))
+    candidates = [p for p in CC_TRANSCRIPT_DIR.glob("*.jsonl")
+                  if ".pre-forge-" not in p.name]
     if not candidates:
         return None
     best = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -1053,31 +1054,48 @@ def _estimate_tokens(text: str) -> int:
     return int(cjk * 1.5) + ascii_chars // 2
 
 
-def _strip_event_metadata(ev: dict) -> dict:
-    """Strip metadata fields CC CLI doesn't need for conversation history.
-    Removes usage, model, costUSD, thinking blocks — keeps role+content."""
-    import copy
-    ev = copy.deepcopy(ev)
-    msg = ev.get("message")
-    if not isinstance(msg, dict):
-        return ev
-    for key in ("usage", "model", "costUSD", "id", "cacheControl"):
-        msg.pop(key, None)
-    content = msg.get("content")
+def _is_plain_user(ev: dict) -> bool:
+    """User event whose content has no tool_result blocks.
+    A transcript must start with one — an orphan tool_result at the head
+    makes the API reject the whole conversation."""
+    if ev.get("type") != "user":
+        return False
+    content = (ev.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return True
     if isinstance(content, list):
-        msg["content"] = [
-            blk for blk in content
-            if not (isinstance(blk, dict) and blk.get("type") == "thinking")
-        ]
-    return ev
+        return not any(isinstance(b, dict) and b.get("type") == "tool_result"
+                       for b in content)
+    return False
+
+
+def _has_tool_round(seq: list) -> bool:
+    """True if seq contains a complete tool_use → tool_result pair."""
+    ids = set()
+    for ev in seq:
+        content = (ev.get("message") or {}).get("content")
+        if isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    ids.add(b.get("id"))
+                elif b.get("type") == "tool_result" and b.get("tool_use_id") in ids:
+                    return True
+    return False
 
 
 def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
-    """Archive original JSONL, overwrite it with trimmed tail for --resume.
+    """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 
-    CC CLI only resumes sessions it created, so we reuse the original session ID.
-    Returns {"new_id": str, "events": int, "tokens": int, "time_range": str, "bytes": int}
-    or {"error": str} on failure.
+    Recipe (manually verified 2026-07-08): new session id, sessionId aligned
+    on every event, parentUuid chain rewritten sequentially (original uuids
+    kept so intra-event references like sourceToolAssistantUUID stay valid),
+    no orphan tool_result at the head, no dangling tool_use at the tail,
+    at least one complete tool round (tool primer), file owned by CC_USER.
+    The original transcript is left untouched — it doubles as the archive
+    and the old session stays resumable.
+    Returns {"new_id", "events", "tokens", "time_range", "bytes"} or {"error"}.
     """
     old_path = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
     if not old_path.exists():
@@ -1097,7 +1115,6 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     if not events:
         return {"error": "empty transcript"}
 
-    # Extract time range BEFORE filtering (use all events)
     def _extract_ts(ev):
         for key in ("timestamp", "ts", "createdAt", "created_at"):
             v = ev.get(key)
@@ -1108,59 +1125,111 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
                 return v
         return None
 
-    # Only keep user/assistant events (skip system, result, summary etc.)
-    keepable = [ev for ev in events if ev.get("type") in ("user", "assistant")]
+    # Main-chain user/assistant only (drop system/summary/sidechain events)
+    keepable = [ev for ev in events
+                if ev.get("type") in ("user", "assistant")
+                and not ev.get("isSidechain", False)]
     if not keepable:
         return {"error": "no user/assistant events"}
 
-    # Strip metadata + thinking blocks, then compress tool results BEFORE sizing
+    # Drop thinking blocks + compress tool_result bodies. Every other field
+    # (usage, model, message id, cwd, version…) stays untouched so events
+    # keep CC CLI's native shape.
     TOOL_RESULT_MAX = 300
-    stripped = []
+    cleaned = []
     for ev in keepable:
-        ev = _strip_event_metadata(ev)
-        if ev.get("type") == "user":
-            content = (ev.get("message") or {}).get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict) or block.get("type") != "tool_result":
-                        continue
-                    rc = block.get("content", "")
+        msg = ev.get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = [b for b in content
+                       if not (isinstance(b, dict) and b.get("type") == "thinking")]
+            if not content:
+                continue  # thinking-only event
+            msg["content"] = content
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    rc = b.get("content", "")
                     if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
-                        block["content"] = rc[:150] + "\n…[trimmed]…\n" + rc[-100:]
+                        b["content"] = rc[:150] + "\n…[trimmed]…\n" + rc[-100:]
                     elif isinstance(rc, list):
                         for sub in rc:
                             if isinstance(sub, dict) and sub.get("type") == "text":
                                 t = sub.get("text", "")
                                 if len(t) > TOOL_RESULT_MAX:
                                     sub["text"] = t[:150] + "\n…[trimmed]…\n" + t[-100:]
-        stripped.append(ev)
+        cleaned.append(ev)
 
     # From tail, accumulate tokens until budget
     retained = []
     token_count = 0
-    for ev in reversed(stripped):
-        ev_json = json.dumps(ev, ensure_ascii=False)
-        ev_tok = _estimate_tokens(ev_json)
+    for ev in reversed(cleaned):
+        ev_tok = _estimate_tokens(json.dumps(ev, ensure_ascii=False))
         if token_count + ev_tok > retain_tokens and retained:
             break
         retained.insert(0, ev)
         token_count += ev_tok
 
-    # Must start with user message (CC CLI expects user-first)
-    while retained and retained[0].get("type") != "user":
+    # Head must be a plain user message (an orphan tool_result → API 400)
+    while retained and not _is_plain_user(retained[0]):
         retained.pop(0)
+
+    # Tail must not end on an unanswered tool_use
+    while retained:
+        last = retained[-1]
+        if last.get("type") == "assistant":
+            blocks = (last.get("message") or {}).get("content", [])
+            if isinstance(blocks, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in blocks):
+                retained.pop()
+                continue
+        break
 
     if not retained:
         return {"error": "nothing to retain after trimming"}
 
-    # Ensure we don't end with a dangling tool_use (no matching tool_result)
-    last = retained[-1]
-    if last.get("type") == "assistant":
-        blocks = (last.get("message") or {}).get("content", [])
-        if isinstance(blocks, list) and blocks:
-            last_block_type = blocks[-1].get("type", "") if isinstance(blocks[-1], dict) else ""
-            if last_block_type == "tool_use":
-                retained.pop()
+    # Tool primer: without a real tool round in context the new session tends
+    # to hallucinate tool calls instead of making them. If the tail has none,
+    # graft the most recent complete round (plain user → tool_use → tool_result)
+    # from earlier in the transcript, and mark the gap in the first retained
+    # message so the model doesn't mistake the jump for continuity.
+    if not _has_tool_round(retained):
+        first = retained[0]
+        start_idx = next(i for i, e in enumerate(cleaned) if e is first)
+        head = cleaned[:start_idx]
+        grabbed = []
+        for i in range(len(head) - 1, 0, -1):
+            ev = head[i]
+            content = (ev.get("message") or {}).get("content")
+            if ev.get("type") != "assistant" or not isinstance(content, list):
+                continue
+            tids = {b.get("id") for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_use"}
+            if not tids or i + 1 >= len(head):
+                continue
+            nxt = head[i + 1]
+            nc = (nxt.get("message") or {}).get("content")
+            if nxt.get("type") == "user" and isinstance(nc, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") in tids for b in nc):
+                for j in range(i - 1, -1, -1):
+                    if _is_plain_user(head[j]):
+                        grabbed = [head[j], ev, nxt]
+                        break
+                break
+        if grabbed:
+            note = ("[context-forge] 上面3条是从更早处保留的一组工具调用示例，"
+                    "它们和本条之间省略了若干轮对话；从本条起才是连续的最近对话。\n\n")
+            fc = (first.get("message") or {}).get("content")
+            if isinstance(fc, str):
+                first["message"]["content"] = note + fc
+            elif isinstance(fc, list):
+                fc.insert(0, {"type": "text", "text": note})
+            retained = grabbed + retained
+            token_count += sum(
+                _estimate_tokens(json.dumps(e, ensure_ascii=False)) for e in grabbed)
 
     # Time range from retained events
     ts_first = _extract_ts(retained[0])
@@ -1171,60 +1240,36 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
         mtime = datetime.fromtimestamp(old_path.stat().st_mtime, tz=SGT)
         time_range = f"截止 {mtime.strftime('%Y-%m-%d %H:%M')}"
 
-    # Add forge marker as first event pair, with proper uuid/parentUuid chain
-    # CC CLI uses uuid/parentUuid to build the conversation tree — broken chains
-    # cause it to skip orphaned events and only load the last few messages.
-    n_rounds = sum(1 for e in retained if e.get("type") == "user")
-    marker_user_uuid = str(uuid.uuid4())
-    marker_asst_uuid = str(uuid.uuid4())
-    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    marker_user = {
-        "type": "user",
-        "uuid": marker_user_uuid,
-        "parentUuid": None,
-        "sessionId": old_cc_session_id,
-        "timestamp": now_ts,
-        "message": {
-            "role": "user",
-            "content": (
-                f"[context-forge] 系统从上一个session裁剪保留了最近 {n_rounds} 轮对话原文，"
-                f"时间范围：{time_range}。以下是保留的对话，你可以自然地继续。"
-            ),
-        },
-    }
-    marker_assistant = {
-        "type": "assistant",
-        "uuid": marker_asst_uuid,
-        "parentUuid": marker_user_uuid,
-        "sessionId": old_cc_session_id,
-        "timestamp": now_ts,
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "好的，我已加载之前的对话上下文。"}],
-            "stop_reason": "end_turn",
-        },
-    }
-    # Graft first retained event onto the marker chain
-    if retained:
-        retained[0]["parentUuid"] = marker_asst_uuid
-    retained = [marker_user, marker_assistant] + retained
+    # New session id: align sessionId on every event and rewrite the
+    # parentUuid chain sequentially. Original event uuids are kept.
+    new_id = str(uuid.uuid4())
+    prev = None
+    for ev in retained:
+        ev["sessionId"] = new_id
+        ev["parentUuid"] = prev
+        if not ev.get("uuid"):
+            ev["uuid"] = str(uuid.uuid4())
+        prev = ev["uuid"]
 
-    # Archive original, overwrite in place (CC CLI only resumes sessions it created)
-    import shutil
-    archive_name = f"{old_cc_session_id}.pre-forge-{datetime.now(SGT).strftime('%Y%m%d_%H%M%S')}.jsonl"
-    archive_path = CC_TRANSCRIPT_DIR / archive_name
-    shutil.copy2(str(old_path), str(archive_path))
-
-    with open(old_path, "w", encoding="utf-8") as f:
+    new_path = CC_TRANSCRIPT_DIR / f"{new_id}.jsonl"
+    with open(new_path, "w", encoding="utf-8") as f:
         for ev in retained:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-    file_bytes = old_path.stat().st_size
+    file_bytes = new_path.stat().st_size
 
-    log.info(f"Forge: {old_cc_session_id} in-place "
+    # CC CLI runs as CC_USER — a root-owned 0600 file is invisible to it
+    import shutil
+    try:
+        shutil.chown(str(new_path), CC_USER, CC_USER)
+        os.chmod(new_path, 0o600)
+    except (PermissionError, LookupError, OSError) as e:
+        log.warning(f"Forge: chown {new_path.name} failed: {e}")
+
+    log.info(f"Forge: {old_cc_session_id} -> {new_id} "
              f"({len(retained)} events, ~{token_count} est-tok, "
              f"{file_bytes//1024}KB, {time_range})")
     return {
-        "new_id": old_cc_session_id,
+        "new_id": new_id,
         "events": len(retained),
         "tokens": token_count,
         "bytes": file_bytes,
@@ -2107,7 +2152,8 @@ def _get_cc_session_id_from_transcript() -> str | None:
     """Get CC CLI session ID from latest transcript filename."""
     if not CC_TRANSCRIPT_DIR.exists():
         return None
-    candidates = list(CC_TRANSCRIPT_DIR.glob("*.jsonl"))
+    candidates = [p for p in CC_TRANSCRIPT_DIR.glob("*.jsonl")
+                  if ".pre-forge-" not in p.name]
     if not candidates:
         return None
     latest = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -2631,10 +2677,9 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": result["error"]})
                     continue
-                # Invalidate old session so it won't resume the (now trimmed) JSONL
+                # Old session keeps its cc_session_id — its transcript is
+                # untouched, so switching back to it still works.
                 old_session = current_session
-                old_session.cc_session_id = None
-                save_session_meta(old_session)
                 sid = uuid.uuid4().hex[:8]
                 session = Session(sid)
                 session.model = old_session.model
