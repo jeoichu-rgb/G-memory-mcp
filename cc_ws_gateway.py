@@ -1193,7 +1193,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     retained = [marker_user, marker_assistant] + retained
 
     # Write new JSONL (chown to CC_USER so CC CLI can append)
-    new_sid = uuid.uuid4().hex
+    new_sid = str(uuid.uuid4())
     new_path = CC_TRANSCRIPT_DIR / f"{new_sid}.jsonl"
     with open(new_path, "w", encoding="utf-8") as f:
         for ev in retained:
@@ -1201,9 +1201,10 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     file_bytes = new_path.stat().st_size
     try:
         import shutil
+        os.chmod(str(new_path), 0o600)
         shutil.chown(str(new_path), user=CC_USER, group=CC_USER)
     except Exception as e:
-        log.warning(f"Forge: chown failed (non-fatal): {e}")
+        log.warning(f"Forge: chown/chmod failed (non-fatal): {e}")
 
     log.info(f"Forge: {old_cc_session_id} → {new_sid} "
              f"({len(retained)} events, ~{token_count} est-tok, "
