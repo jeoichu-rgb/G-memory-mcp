@@ -1085,6 +1085,39 @@ def _has_tool_round(seq: list) -> bool:
     return False
 
 
+# Background oneshot rounds — the whole round (prompt + reply + tool calls)
+# is gateway noise and gets dropped from forged transcripts.
+_ONESHOT_PREFIXES = ("[patrol]", "[pebbling]")
+# Single noise lines injected in front of real messages.
+_NOISE_LINE_PREFIXES = ("[stickers:", "[snap]", "[call-ended]", "[context-forge]")
+_TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8\]")
+_AUTO_INJECT_RE = re.compile(r"^═+ 自动注入[^\n]*\n.*?\n═+\n?", re.S | re.M)
+
+
+def _strip_gateway_noise(text: str) -> str:
+    """Strip gateway-injected prefixes from a user message, keeping the
+    real text: auto-injection blocks, [desire] blocks, time tags,
+    sticker/snap/call lines. Token budget should buy conversation, not noise."""
+    text = _AUTO_INJECT_RE.sub("", text)
+    lines = text.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        # [desire] header + its indented/blank continuation lines
+        if s.startswith("[desire]"):
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or lines[i].startswith("  ")):
+                i += 1
+            continue
+        if _TIME_TAG_RE.fullmatch(s) or any(s.startswith(p) for p in _NOISE_LINE_PREFIXES):
+            i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out).strip()
+
+
 def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 
@@ -1134,13 +1167,36 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
 
     # Drop thinking blocks + compress tool_result bodies. Every other field
     # (usage, model, message id, cwd, version…) stays untouched so events
-    # keep CC CLI's native shape.
+    # keep CC CLI's native shape. Background oneshot rounds (patrol/pebbling)
+    # are dropped whole; gateway injection prefixes are stripped from real
+    # messages so the token budget buys conversation, not noise.
     TOOL_RESULT_MAX = 300
     cleaned = []
+    dropped_rounds = 0
+    in_oneshot = False
     for ev in keepable:
         msg = ev.get("message")
         if not isinstance(msg, dict):
             continue
+        content = msg.get("content")
+
+        if _is_plain_user(ev):
+            text = content if isinstance(content, str) else None
+            if text is not None:
+                if text.lstrip().startswith(_ONESHOT_PREFIXES):
+                    in_oneshot = True
+                    dropped_rounds += 1
+                    continue
+                in_oneshot = False
+                text = _strip_gateway_noise(text)
+                if not text:
+                    continue  # message was pure injection
+                msg["content"] = text
+            else:
+                in_oneshot = False
+        elif in_oneshot:
+            continue  # reply / tool traffic inside a skipped oneshot round
+
         content = msg.get("content")
         if isinstance(content, list):
             content = [b for b in content
@@ -1267,7 +1323,8 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
 
     log.info(f"Forge: {old_cc_session_id} -> {new_id} "
              f"({len(retained)} events, ~{token_count} est-tok, "
-             f"{file_bytes//1024}KB, {time_range})")
+             f"{file_bytes//1024}KB, {dropped_rounds} oneshot rounds dropped, "
+             f"{time_range})")
     return {
         "new_id": new_id,
         "events": len(retained),
