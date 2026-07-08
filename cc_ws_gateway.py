@@ -162,6 +162,12 @@ _recent_libido_memories: list[str] = []
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
 CC_USER = os.getenv("CC_USER", "erik")
 _SU_PFX = "" if getpass.getuser() == CC_USER else f"sudo -u {CC_USER} "
+# CC session id the tmux CC CLI is actually on. Set by tmux_start (resume_id or
+# None for a fresh session), cleared by tmux_stop, synced after each turn.
+# Never guess this from transcript mtimes — forge/scripts writing new JSONL
+# files made the freshest file look like the running session, so the gateway
+# skipped --resume and fed messages to a stale CC instance.
+_tmux_cc_id = None
 _tmux_send_lock = asyncio.Lock()
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
@@ -225,6 +231,12 @@ class TranscriptTailer:
         self._start_offset = 0
         self._tts_queue: asyncio.Queue | None = None
         self._tts_worker: asyncio.Task | None = None
+        # Events stamped before this moment are history, not this turn's reply.
+        # When CC CLI resumes it forks old events into a NEW transcript; the
+        # tailer switches to that file at offset 0 and would otherwise replay
+        # them — spamming the frontend with stale text and hitting a stale
+        # stop_reason=end_turn that ends the turn before the real reply lands.
+        self._started_at = datetime.now(timezone.utc)
 
     def start(self):
         global _transcript_path_cache
@@ -274,6 +286,9 @@ class TranscriptTailer:
                         log.info(f"tailer switch: {self._path.name if self._path else 'none'} -> {latest.name}")
                         self._path = latest
                         self._offset = 0
+                        # New file, old byte offset is meaningless. Usage
+                        # accounting is guarded by _started_at instead.
+                        self._start_offset = 0
 
                 if self._path and self._path.exists():
                     sz = self._path.stat().st_size
@@ -302,6 +317,15 @@ class TranscriptTailer:
         if self._dbg < 5:
             log.info(f"tailer: type={entry.get('type')} keys={list(entry.keys())[:6]}")
             self._dbg += 1
+
+        ts = entry.get("timestamp")
+        if ts:
+            try:
+                when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if when < self._started_at:
+                    return  # replayed history from a resume-fork, not this turn
+            except (ValueError, TypeError):
+                pass  # unparseable timestamp — let it through
 
         if entry.get("type") != "assistant":
             return
@@ -498,11 +522,13 @@ class TranscriptTailer:
                 pass
 
 
-def _read_turn_usage(path, start_offset) -> tuple:
+def _read_turn_usage(path, start_offset, since=None) -> tuple:
     """Read usage from JSONL entries after start_offset.
     Deduplicates by usage-value fingerprint: intermediate + final entries
     from the same API call have identical usage, so only counted once.
     Different API calls (multi-tool turns) have different fingerprints.
+    Entries stamped before `since` are skipped — a resume-fork transcript
+    starts with replayed history whose usage isn't this turn's.
     Returns (usage_dict, cost_float)."""
     _KEYS = ("input_tokens", "output_tokens",
              "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -528,6 +554,14 @@ def _read_turn_usage(path, start_offset) -> tuple:
             continue
         if entry.get("type") != "assistant":
             continue
+        if since:
+            ts = entry.get("timestamp")
+            if ts:
+                try:
+                    if datetime.fromisoformat(ts.replace("Z", "+00:00")) < since:
+                        continue
+                except (ValueError, TypeError):
+                    pass
         usage = (entry.get("message") or {}).get("usage")
         if not usage:
             continue
@@ -2149,6 +2183,7 @@ async def pebbling_worker():
 # ══════════════════════════════════════════════
 
 async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
+    global _tmux_cc_id
     resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
         f"claude --dangerously-skip-permissions --verbose "
@@ -2162,6 +2197,7 @@ async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
     await proc.wait()
+    _tmux_cc_id = resume_id  # None = fresh session, id unknown until CC writes
     log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model}, resume={resume_id})")
 
 
@@ -2207,9 +2243,11 @@ async def tmux_switch_model(model: str):
 
 
 async def tmux_stop():
+    global _tmux_cc_id
     proc = await asyncio.create_subprocess_shell(
         f"{_SU_PFX}tmux kill-session -t {TMUX_SESSION} 2>/dev/null")
     await proc.wait()
+    _tmux_cc_id = None
     log.info(f"tmux '{TMUX_SESSION}' stopped")
 
 
@@ -3297,7 +3335,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 async def run_claude(message: str, session: Session, ws: WebSocket):
     """Send message to CC CLI via tmux and stream reply via transcript."""
-    global _user_msg_active
+    global _user_msg_active, _tmux_cc_id
     _user_msg_active = True
     session.reset_accumulator()
     tailer = TranscriptTailer(ws, session)
@@ -3307,7 +3345,9 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if not await tmux_is_running():
             need_restart = True
         else:
-            current_cc_id = _get_cc_session_id_from_transcript()
+            # Ask the gateway's own record of what tmux is running — NOT the
+            # freshest transcript mtime, which any forge/script write can fake.
+            current_cc_id = _tmux_cc_id
             target_cc_id = session.cc_session_id
             if target_cc_id and target_cc_id not in ("channel", "tmux"):
                 if current_cc_id != target_cc_id:
@@ -3330,13 +3370,16 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         await asyncio.sleep(1)
         await tailer.stop()
 
-        turn_usage, turn_cost = _read_turn_usage(tailer._path, tailer._start_offset)
+        turn_usage, turn_cost = _read_turn_usage(tailer._path, tailer._start_offset,
+                                                 since=tailer._started_at)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
 
         # Always sync session ID to whatever transcript the tailer ended on
         # (handles context compression creating a new transcript mid-turn)
         real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
+        if real_id:
+            _tmux_cc_id = real_id
         if real_id and real_id != session.cc_session_id:
             log.info(f"CC session ID updated: {session.cc_session_id} -> {real_id}")
             session.cc_session_id = real_id
