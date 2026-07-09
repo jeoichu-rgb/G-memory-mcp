@@ -1,0 +1,30 @@
+serverAddr = "192.3.61.205"
+serverPort = 24816
+
+[[proxies]]
+name = "toybridge"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8765
+remotePort = 7001
+
+[[proxies]]
+name = "browserbridge"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8766
+remotePort = 7002
+
+[[proxies]]
+name = "bunnybridge"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8767
+remotePort = 7003
+
+[[proxies]]
+name = "akbridge"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8768
+remotePort = 7004
