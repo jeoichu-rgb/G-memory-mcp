@@ -395,7 +395,6 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
     parts.extend([
         'These seeds were waiting in your curiosity pool. Go through them.',
         'You can:',
-        '  - Search the web (browser_open / browser_js on Yahoo)',
         '  - Search memories via palace',
         '  - Send Jeoi a message — a finding, a question, a thought',
         '  - Skip any that feel stale (none)',
