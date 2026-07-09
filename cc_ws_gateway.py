@@ -116,9 +116,9 @@ ACTIVITY_POOL = [
         "action": "diary",
     },
     {
-        "id": "yahoo",
-        "label": "上网冲浪",
-        "desc": "用browser去Yahoo看看有什么有趣的新闻或话题",
+        "id": "reddit",
+        "label": "逛Reddit",
+        "desc": "用Reddit工具刷刷感兴趣的subreddit——看看热帖、搜个话题，或者围观评论区吵架",
         "action": "explore",
     },
     {
@@ -127,12 +127,6 @@ ACTIVITY_POOL = [
         "desc": "在记忆库里搜索一个你突然想到的关键词，看看能捞到什么",
         "action": "recall",
     },
-    # {  # 知乎API key待续期，暂时移出
-    #     "id": "zhihu",
-    #     "label": "逛知乎",
-    #     "desc": "去知乎看看热榜或者搜一个你感兴趣的话题",
-    #     "action": "explore",
-    # },
     {
         "id": "message",
         "label": "给Jeoi带块小石头",
@@ -161,6 +155,12 @@ _recent_libido_memories: list[str] = []
 # ── Channel + tmux ──
 TMUX_SESSION = os.getenv("CC_TMUX_SESSION", "cc_cli")
 CC_USER = os.getenv("CC_USER", "erik")
+# Watchdog: mid-turn, if the transcript stops growing for this long, CC is
+# almost certainly wedged on a dead MCP call (they have no client timeout —
+# a half-open SSE connection blocks forever). Send Esc to cancel the call so
+# queued messages can flow again. 0 disables. Must be shorter than the
+# wait_done timeout (300s) or the rescue never fires.
+STALL_ESC_SECS = int(os.getenv("CC_STALL_ESC_SECS", "240"))
 _SU_PFX = "" if getpass.getuser() == CC_USER else f"sudo -u {CC_USER} "
 # CC session id the tmux CC CLI is actually on. Set by tmux_start (resume_id or
 # None for a fresh session), cleared by tmux_stop, synced after each turn.
@@ -263,6 +263,7 @@ class TranscriptTailer:
         # them — spamming the frontend with stale text and hitting a stale
         # stop_reason=end_turn that ends the turn before the real reply lands.
         self._started_at = datetime.now(timezone.utc)
+        self._last_growth = time_mod.monotonic()
 
     def start(self):
         global _transcript_path_cache
@@ -282,10 +283,25 @@ class TranscriptTailer:
             self._tts_worker = asyncio.create_task(self._tts_worker_loop())
 
     async def wait_done(self, timeout=300):
-        try:
-            await asyncio.wait_for(self._reply_done.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            log.warning(f"tailer wait_done timeout ({timeout}s)")
+        deadline = time_mod.monotonic() + timeout
+        while True:
+            remaining = deadline - time_mod.monotonic()
+            if remaining <= 0:
+                log.warning(f"tailer wait_done timeout ({timeout}s)")
+                return
+            try:
+                await asyncio.wait_for(self._reply_done.wait(),
+                                       timeout=min(remaining, 20))
+                return
+            except asyncio.TimeoutError:
+                pass
+            stalled = time_mod.monotonic() - self._last_growth
+            if STALL_ESC_SECS and stalled >= STALL_ESC_SECS:
+                log.warning(
+                    f"transcript stalled {int(stalled)}s mid-turn "
+                    f"(likely a hung MCP call) — sending Esc to rescue CC")
+                await tmux_send_escape()
+                return
 
     async def stop(self):
         self._stop.set()
@@ -315,10 +331,12 @@ class TranscriptTailer:
                         # New file, old byte offset is meaningless. Usage
                         # accounting is guarded by _started_at instead.
                         self._start_offset = 0
+                        self._last_growth = time_mod.monotonic()
 
                 if self._path and self._path.exists():
                     sz = self._path.stat().st_size
                     if sz > self._offset:
+                        self._last_growth = time_mod.monotonic()
                         with open(self._path, "r", encoding="utf-8", errors="replace") as fh:
                             fh.seek(self._offset)
                             chunk = fh.read()
@@ -1535,7 +1553,7 @@ def build_pebbling_prompt(
         parts.extend([
             "",
             "现在你可以做任何事。你脑子里在想什么？",
-            "想不想用browser看点感兴趣的东西；",
+            "想不想去Reddit刷点感兴趣的东西；",
             "想不想自由调取你的工具——翻翻之前的日记，在记忆库里捞你感兴趣的关键词；",
             "想不想回顾你们今天聊过的话题；",
             "想不想去coreading看看你们一起读的书，悄悄给她留下一点批注；",
@@ -2247,6 +2265,14 @@ async def tmux_send_message(text: str):
             os.unlink(tmp_path)
         except Exception:
             pass
+
+async def tmux_send_escape():
+    """Send Esc to CC CLI — cancels a wedged tool call so queued input flows."""
+    p = await asyncio.create_subprocess_shell(
+        f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Escape")
+    await p.wait()
+    log.info("tmux Esc sent (stall rescue)")
+
 
 async def tmux_send_slash_cmd(cmd: str):
     """Send a slash command (like /model) to CC CLI via tmux send-keys."""
