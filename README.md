@@ -135,8 +135,26 @@ Windows 本地（frpc 隧道接入 VPS）
   ├── toy_bridge.py     :7001  → Satisfyer Curvy 2+
   ├── bunny_bridge.py   :7003  → Air Pump Bunny 5+
   ├── ak_bridge.py      :7004  → AfterKiss AK-G2
-  └── browser_bridge.py :7002  → XHS 登录态 Chrome
+  ├── browser_bridge.py :7002  → XHS 登录态 Chrome
+  └── stardew MCP       :7005  → 星露谷 SSE MCP（本地 :7845）
 ```
+
+### Stardew MCP（星露谷）
+
+完整链路：`Claude (Desktop/CC) → https://erikssheep.uk/stardew/Jeoi2026/sse → Cloudflare
+→ Traefik（strip /stardew/Jeoi2026，转发 10.0.0.1:7005）→ frps:7005 → frpc → Windows :7845
+→ SSE MCP server → SMAPI mod（JSON 文件桥）→ 游戏`。
+
+- 代码库：`D:\Eric\StardewValley-MCP`（GitHub: jeoichu-rgb/StardewValley-MCP），MCP server 支持 stdio（默认）/ `--sse` 双模式
+- Windows 启动（重启电脑后需手动跑，秘密前缀通过环境变量注入，不在代码里）：
+  ```powershell
+  $env:STARDEW_MCP_PREFIX='/stardew/Jeoi2026'
+  node D:\Eric\StardewValley-MCP\mcp-server\build\index.js --sse
+  ```
+- VPS 路由：`/data/coolify/proxy/dynamic/stardew-mcp.yml`（Traefik 动态配置，热加载；SSE 需 `flushInterval: "-1"` 关闭缓冲）
+- 两端接入均走 claude.ai connector（`https://erikssheep.uk/stardew/Jeoi2026/sse`），CC CLI 本地不再单独配 MCP
+- 健康检查：`http://localhost:7845/health`（本地）/ `https://erikssheep.uk/stardew/Jeoi2026/health`（全链路）
+- 踩坑记录：`express.json()` 会吃掉 POST body，`handlePostMessage` 必须显式传 `req.body`，否则 initialize 永远无响应，客户端报 "Failed to connect"，Desktop 会误报 OAuth 错误；strip-prefix 反代下 SSE endpoint 事件必须广播完整公网前缀（`STARDEW_MCP_PREFIX`）
 
 ---
 
