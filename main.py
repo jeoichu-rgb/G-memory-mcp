@@ -550,6 +550,13 @@ async def admin_list_memories(collection: str = "dynamic", offset: int = 0, limi
     items = claude_list_all_memories(collection)
     return {"total": len(items), "items": items[offset:offset+limit]}
 
+# 按 id 精确取核心记忆（钉住的固定板块用，绕过模糊检索）
+@app.get("/admin/memories_by_ids")
+async def admin_memories_by_ids(ids: str):
+    from claude_memory import claude_get_memories_by_ids
+    id_list = [x.strip() for x in ids.split(",") if x.strip()]
+    return {"items": claude_get_memories_by_ids(id_list)}
+
 # 编辑记忆
 @app.put("/admin/memories/{memory_id}")
 async def admin_edit_memory(memory_id: str, payload: MemoryEditPayload, collection: str = "dynamic"):

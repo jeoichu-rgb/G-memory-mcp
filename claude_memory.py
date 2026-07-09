@@ -119,6 +119,17 @@ def claude_update_metadata(memory_id: str, new_metadata: dict):
         print(f"更新metadata失败: {e}")
 
 
+def claude_get_memories_by_ids(ids: list[str]) -> list[dict]:
+    """按 id 精确取核心记忆，保持传入顺序，查不到的 id 静默跳过。"""
+    try:
+        r = claude_core.get(ids=ids)
+    except Exception as e:
+        print(f"按id取记忆失败: {e}")
+        return []
+    by_id = dict(zip(r["ids"], r["documents"]))
+    return [{"id": i, "content": by_id[i]} for i in ids if i in by_id]
+
+
 def claude_search_memory(keyword: str, current_mood: str = "平静") -> str | None:
     """
     RRF 双路融合检索 claude_core_palace + claude_dynamic_palace

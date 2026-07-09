@@ -1094,6 +1094,47 @@ async def build_injection() -> str:
     return header + "\n\n" + "\n\n".join(parts) + "\n\n" + footer
 
 
+PINNED_MEM_FILE = Path(CC_CWD) / "pinned_memories.json"
+
+def match_pinned_memories(message: str) -> list[str]:
+    """If the message hits a pinned trigger word, return the pinned memory ids.
+    Config is re-read every call so Jeoi can edit triggers without a restart."""
+    try:
+        cfg = json.loads(PINNED_MEM_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    triggers, ids = cfg.get("triggers") or [], cfg.get("ids") or []
+    if not triggers or not ids:
+        return []
+    msg_lower = message.lower()
+    return ids if any(t.lower() in msg_lower for t in triggers) else []
+
+
+async def fetch_pinned_injection(ids: list[str]) -> str:
+    """Fetch pinned memories by exact id — no fuzzy search, no surprises."""
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            r = await client.get(
+                f"{ADMIN_API}/admin/memories_by_ids",
+                params={"ids": ",".join(ids)},
+                headers={"x-secret": PALACE_SECRET},
+            )
+            if r.status_code != 200:
+                log.warning(f"Pinned memory fetch failed: HTTP {r.status_code}")
+                return ""
+            items = r.json().get("items", [])
+            if not items:
+                return ""
+            body = "\n\n---\n\n".join(it["content"] for it in items)
+            header = ("═══ 自动注入 · 亲密备忘（固定板块）· 已完整注入，"
+                      "无需再调 palace 检索 · 不是Jeoi的消息 ═══")
+            footer = "═══════════════════════════════════════════════════════════════"
+            return header + "\n\n" + body + "\n" + footer
+    except Exception as e:
+        log.warning(f"Pinned memory fetch error: {e}")
+        return ""
+
+
 async def search_memory_for_injection(message: str) -> str:
     """Search memory via admin API, return formatted injection or empty string."""
     try:
@@ -2531,6 +2572,9 @@ class Session:
         self.pending_jeoi_reactions: list[dict] = []
         # Whether first message has been sent (diary+summary only inject on first msg with 📎)
         self.first_msg_seen = False
+        # Pinned intimacy memos: injected at most once per session (in-memory
+        # only — a gateway restart re-arms it, which is fine)
+        self.pinned_injected = False
         # Voice call mode
         self._in_call = False
         self._call_injected = False
@@ -2967,11 +3011,23 @@ async def websocket_endpoint(ws: WebSocket):
                             cli_message = injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected context for new session {current_session.id}")
                 elif memory_on:
-                    # Subsequent messages + clip on: memory search only
-                    mem_injection = await search_memory_for_injection(message)
+                    # Subsequent messages + clip on: pinned memos take priority
+                    # over fuzzy search; once injected, trigger hits inject
+                    # nothing more (the memos are already in context)
+                    pinned_ids = match_pinned_memories(message)
+                    if pinned_ids and not current_session.pinned_injected:
+                        mem_injection = await fetch_pinned_injection(pinned_ids)
+                        if mem_injection:
+                            current_session.pinned_injected = True
+                            log.info(f"Injected pinned memos ({len(pinned_ids)}) for session {current_session.id}")
+                    elif pinned_ids:
+                        mem_injection = ""
+                    else:
+                        mem_injection = await search_memory_for_injection(message)
+                        if mem_injection:
+                            log.info(f"Injected memory for session {current_session.id}")
                     if mem_injection:
                         cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
-                        log.info(f"Injected memory for session {current_session.id}")
 
                 # Sticker reactions injection (one-shot, then cleared)
                 if current_session.pending_jeoi_reactions:
