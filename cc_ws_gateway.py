@@ -1094,7 +1094,7 @@ async def build_injection() -> str:
     return header + "\n\n" + "\n\n".join(parts) + "\n\n" + footer
 
 
-PINNED_MEM_FILE = Path(CC_CWD) / "pinned_memories.json"
+PINNED_MEM_FILE = Path(CC_CWD) / "docs" / "pinned_memories.json"
 
 def match_pinned_memories(message: str) -> list[str]:
     """If the message hits a pinned trigger word, return the pinned memory ids.
