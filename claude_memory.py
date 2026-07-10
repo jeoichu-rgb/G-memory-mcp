@@ -629,6 +629,73 @@ def claude_write_diary_by_filename(filename: str, content: str) -> bool:
     except:
         return False
 
+# ── 日记节点切分（write_diary 落盘后的钩子）─────────────────────────
+# 标签集合待与 CATEGORY_WEIGHTS 白名单统一（见标签收敛讨论），先按六类走
+DIARY_SPLIT_CATEGORIES = ["亲密", "情感", "日常", "冲突", "纪念日", "思考"]
+
+def claude_split_diary_to_dynamic(title: str, content: str, mood: str,
+                                  diary_date: str, diary_time: str,
+                                  diary_file: str) -> str:
+    """把按节点写的日记机械切块落入动态库。DS 只做切分+贴标签，
+    不概括不改写；【整体】感受和独白留在日记里，不入库。
+    没有【】节点标记的日记直接跳过，旧式日记不乱切。"""
+    if "【" not in content:
+        return "日记无节点标记，跳过切分。"
+    cats = "/".join(DIARY_SPLIT_CATEGORIES)
+    prompt = f"""下面是一篇按【节点】写的日记。请把它机械切分成若干条独立记忆，规则：
+
+1. 每个事件节点一条：内容 = 梗概中与该节点对应的句子 + 该节点下的细节原文 + 挂在该节点的感受原文。全部用原文拼接，不改写、不概括、不补充。
+2. 【整体】感受和"独白"部分不要切出来——它们留在日记里，不进记忆库。
+3. 每条选一个标签，只能从这些里选：{cats}
+4. 只输出JSON数组，不要其他任何文字。格式：[{{"text": "...", "category": "..."}}]
+
+日记标题：{title}
+日记正文：
+{content}"""
+    try:
+        resp = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            stream=False
+        )
+        raw = resp.choices[0].message.content.strip()
+        s, e = raw.find("["), raw.rfind("]")
+        if s == -1 or e == -1:
+            raise ValueError(f"DS返回中没有JSON数组: {raw[:100]}")
+        segments = json.loads(raw[s:e + 1])
+    except Exception as ex:
+        logging.info(f"日记切分失败: {ex}")
+        return f"日记切分失败: {ex}"
+
+    stored = 0
+    ts = int(time.time())
+    for i, seg in enumerate(segments):
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        category = seg.get("category", "日常")
+        if category not in DIARY_SPLIT_CATEGORIES:
+            category = "日常"
+        try:
+            claude_add_dynamic_memory(
+                content=f"[{diary_date} {diary_time}] {text}",
+                metadata={
+                    "category": category, "mood": mood,
+                    "recall_count": 0, "last_recalled_ts": 0,
+                    "source": "diary_split",
+                    "date": diary_date,
+                    "diary_file": diary_file,
+                },
+                memory_id=f"claude_diary_split_{ts}_{i}",
+            )
+            stored += 1
+            time.sleep(1)  # Voyage 免费 tier 限速
+        except Exception as ex:
+            logging.info(f"日记切分入库失败: {ex}")
+    logging.info(f"日记切分完成: {diary_file} → {stored} 条")
+    return f"日记已切分 {stored} 条入动态库。"
+
+
 def claude_delete_dynamic_memory(memory_id: str) -> str:
     """删除动态记忆库里的一条记忆"""
     try:

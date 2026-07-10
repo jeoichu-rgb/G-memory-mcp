@@ -1148,43 +1148,72 @@ async def build_injection() -> str:
 
 PINNED_MEM_FILE = Path(CC_CWD) / "docs" / "pinned_memories.json"
 
-def match_pinned_memories(message: str) -> list[str]:
-    """If the message hits a pinned trigger word, return the pinned memory ids.
-    Config is re-read every call so Jeoi can edit triggers without a restart."""
+def _load_pinned_entries() -> list[dict]:
+    """Read the pinned config. Supports the multi-entry format (entries[])
+    and the legacy single-entry format (top-level triggers/ids)."""
     try:
         cfg = json.loads(PINNED_MEM_FILE.read_text(encoding="utf-8"))
     except Exception:
         return []
-    triggers, ids = cfg.get("triggers") or [], cfg.get("ids") or []
-    if not triggers or not ids:
-        return []
+    if isinstance(cfg.get("entries"), list):
+        return cfg["entries"]
+    if cfg.get("triggers") and cfg.get("ids"):
+        return [{"name": "亲密备忘", "triggers": cfg["triggers"], "ids": cfg["ids"]}]
+    return []
+
+
+def match_pinned_entries(message: str) -> list[dict]:
+    """Return all entries whose trigger words hit the message. Entries with
+    empty triggers or no content source are disabled. Config is re-read
+    every call so Jeoi can edit it without a restart."""
     msg_lower = message.lower()
-    return ids if any(t.lower() in msg_lower for t in triggers) else []
+    hits = []
+    for e in _load_pinned_entries():
+        triggers = e.get("triggers") or []
+        if not e.get("name") or not triggers:
+            continue
+        if not (e.get("ids") or e.get("file")):
+            continue
+        if any(t.lower() in msg_lower for t in triggers):
+            hits.append(e)
+    return hits
 
 
-async def fetch_pinned_injection(ids: list[str]) -> str:
-    """Fetch pinned memories by exact id — no fuzzy search, no surprises."""
-    try:
-        async with httpx.AsyncClient(timeout=15, verify=False) as client:
-            r = await client.get(
-                f"{ADMIN_API}/admin/memories_by_ids",
-                params={"ids": ",".join(ids)},
-                headers={"x-secret": PALACE_SECRET},
-            )
-            if r.status_code != 200:
-                log.warning(f"Pinned memory fetch failed: HTTP {r.status_code}")
-                return ""
-            items = r.json().get("items", [])
-            if not items:
-                return ""
-            body = "\n\n---\n\n".join(it["content"] for it in items)
-            header = ("═══ 自动注入 · 亲密备忘（固定板块）· 已完整注入，"
-                      "无需再调 palace 检索 · 不是Jeoi的消息 ═══")
-            footer = "═══════════════════════════════════════════════════════════════"
-            return header + "\n\n" + body + "\n" + footer
-    except Exception as e:
-        log.warning(f"Pinned memory fetch error: {e}")
+async def fetch_pinned_injection(entries: list[dict]) -> str:
+    """Assemble the injection block for hit entries. Memory ids are fetched
+    exactly (no fuzzy search); file entries are read from the repo."""
+    blocks = []
+    for e in entries:
+        name = e.get("name", "固定备忘")
+        content = ""
+        if e.get("file"):
+            try:
+                content = (Path(CC_CWD) / e["file"]).read_text(encoding="utf-8").strip()
+            except Exception as ex:
+                log.warning(f"Pinned file read failed ({name}): {ex}")
+        elif e.get("ids"):
+            try:
+                async with httpx.AsyncClient(timeout=15, verify=False) as client:
+                    r = await client.get(
+                        f"{ADMIN_API}/admin/memories_by_ids",
+                        params={"ids": ",".join(e["ids"])},
+                        headers={"x-secret": PALACE_SECRET},
+                    )
+                    if r.status_code != 200:
+                        log.warning(f"Pinned memory fetch failed ({name}): HTTP {r.status_code}")
+                    else:
+                        items = r.json().get("items", [])
+                        content = "\n\n---\n\n".join(it["content"] for it in items)
+            except Exception as ex:
+                log.warning(f"Pinned memory fetch error ({name}): {ex}")
+        if content:
+            blocks.append(f"◆ {name}\n\n{content}")
+    if not blocks:
         return ""
+    header = ("═══ 自动注入 · 固定备忘（约定/说明，已完整注入，"
+              "无需再调 palace 检索）· 不是Jeoi的消息 ═══")
+    footer = "═══════════════════════════════════════════════════════════════"
+    return header + "\n\n" + "\n\n".join(blocks) + "\n" + footer
 
 
 async def search_memory_for_injection(message: str) -> str:
@@ -1689,6 +1718,9 @@ def build_pebbling_prompt(
             "",
             f"🎲 今日事项抽签 → 【{pick['label']}】：{pick['desc']}",
             "这是随机抽到的建议，你可以选择跟着做，也可以做自己想做的事。",
+            "",
+            "如果这轮你想写日记：先看一眼 docs/diary_convention.md（cat 就行），按节点写，",
+            "落盘后系统会按【】节点自动切进动态记忆。上下文里已经有约定内容就不用再翻。",
             "",
             "随便想，想完了告诉我你决定做什么。可以先调用工具再回复。",
             "不要用reply或channel工具发消息——已经不用了。CONTENT是唯一输出通道。",
@@ -2778,9 +2810,9 @@ class Session:
         self.pending_jeoi_reactions: list[dict] = []
         # Whether first message has been sent (diary+summary only inject on first msg with 📎)
         self.first_msg_seen = False
-        # Pinned intimacy memos: injected at most once per session (in-memory
-        # only — a gateway restart re-arms it, which is fine)
-        self.pinned_injected = False
+        # Pinned entries: each entry name injects at most once per session
+        # (in-memory only — a gateway restart re-arms them, which is fine)
+        self.pinned_injected: set = set()
         # Voice call mode
         self._in_call = False
         self._call_injected = False
@@ -3271,16 +3303,19 @@ async def websocket_endpoint(ws: WebSocket):
                             cli_message = injection + "\n\n" + time_tag + "\n" + message
                             log.info(f"Injected context for new session {current_session.id}")
                 elif memory_on:
-                    # Subsequent messages + clip on: pinned memos take priority
-                    # over fuzzy search; once injected, trigger hits inject
-                    # nothing more (the memos are already in context)
-                    pinned_ids = match_pinned_memories(message)
-                    if pinned_ids and not current_session.pinned_injected:
-                        mem_injection = await fetch_pinned_injection(pinned_ids)
+                    # Subsequent messages + clip on: pinned entries take
+                    # priority over fuzzy search; each entry injects at most
+                    # once per session (already in context after that)
+                    pinned_hits = match_pinned_entries(message)
+                    new_hits = [e for e in pinned_hits
+                                if e["name"] not in current_session.pinned_injected]
+                    if new_hits:
+                        mem_injection = await fetch_pinned_injection(new_hits)
                         if mem_injection:
-                            current_session.pinned_injected = True
-                            log.info(f"Injected pinned memos ({len(pinned_ids)}) for session {current_session.id}")
-                    elif pinned_ids:
+                            current_session.pinned_injected |= {e["name"] for e in new_hits}
+                            names = ", ".join(e["name"] for e in new_hits)
+                            log.info(f"Injected pinned entries ({names}) for session {current_session.id}")
+                    elif pinned_hits:
                         mem_injection = ""
                     else:
                         mem_injection = await search_memory_for_injection(message)
