@@ -1233,6 +1233,12 @@ function handleWSMessage(data) {
       renderSessions();
       break;
 
+    case 'session:forge_progress': {
+      const fs = document.getElementById('forgeStatus');
+      if (fs) fs.textContent = data.message || '正在验证新session…';
+      break;
+    }
+
     case 'session:forge_result':
       if (data.ok) {
         currentSessionId = data.sessionId;
@@ -1241,11 +1247,25 @@ function handleWSMessage(data) {
         renderSessions();
         document.getElementById('app').classList.add('chat-open');
         const fs = document.getElementById('forgeStatus');
-        if (fs) { fs.textContent = '✓'; setTimeout(() => fs.textContent = '', 2000); }
+        if (fs) { fs.textContent = data.verified ? '✓ 已验证' : '✓'; setTimeout(() => fs.textContent = '', 2000); }
         closeMcpPanel();
       } else {
+        // 验证失败：还停在原 session，随时可以重试
         const fs = document.getElementById('forgeStatus');
-        if (fs) { fs.textContent = data.error || '失败'; setTimeout(() => fs.textContent = '', 3000); }
+        if (fs) { fs.textContent = '失败'; setTimeout(() => fs.textContent = '', 3000); }
+        showError(data.error || '裁剪失败，已停留在原session，可重试');
+      }
+      break;
+
+    case 'session:delete_result':
+      if (!data.ok) showError(data.error || '删除失败');
+      break;
+
+    case 'route:drift':
+      // Route Guard 告警：恢复是手动决定，不自动重铸
+      if (confirm(`⚠ 检测到模型漂移\n目标模型：${data.target}\n实际响应：${data.actual}\n\n从漂移前的干净位置裁剪重铸一个新session？`)) {
+        currentSessionId = data.sessionId;
+        forgeSession(true);
       }
       break;
 
@@ -1966,11 +1986,12 @@ function newSession() {
   document.getElementById('app').classList.add('chat-open');
 }
 
-function forgeSession() {
+function forgeSession(routeGuard = false) {
   if (!currentSessionId) return;
   const fs = document.getElementById('forgeStatus');
   if (fs) fs.textContent = '裁剪中…';
-  wsSend('session:forge', {});
+  // 裁剪源 = 前端当前显示的 session，后端不再自己猜
+  wsSend('session:forge', { sessionId: currentSessionId, route_guard: routeGuard });
 }
 
 function startCall() {
@@ -2651,6 +2672,10 @@ function deleteSession(id) {
   if (id === currentSessionId) {
     currentSessionId = null;
     clearMessages();
+    // 跟后端的回退保持一致：切到剩下最近的会话，避免悬空状态下
+    // 发消息落进一个看不见的 session
+    const next = sessions.find(s => s.id !== id);
+    if (next) switchSession(next.id);
   }
 }
 

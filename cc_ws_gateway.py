@@ -194,6 +194,34 @@ def _load_tmux_cc_id():
 
 
 _tmux_cc_id = _load_tmux_cc_id()
+
+# Last-good session (forge guide §8/§10): only a VERIFIED session gets marked.
+# A freshly forged JSONL is never trusted until the verifier saw CC reply in it.
+# Consumers: manual recovery, watchdog — never resume anything newer than this
+# without verification.
+_LAST_GOOD_FILE = Path(CC_CWD) / ".last_good_session"
+
+
+def save_last_good(frontend_sid: str, cc_id: str):
+    try:
+        _LAST_GOOD_FILE.write_text(json.dumps({
+            "frontend_sid": frontend_sid,
+            "cc_session_id": cc_id,
+            "verified_at": datetime.now(SGT).isoformat(),
+        }, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        log.warning(f"last_good persist failed: {e}")
+
+
+def load_last_good() -> dict | None:
+    try:
+        if _LAST_GOOD_FILE.exists():
+            return json.loads(_LAST_GOOD_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
 _tmux_send_lock = asyncio.Lock()
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
@@ -377,14 +405,38 @@ class TranscriptTailer:
         if not isinstance(msg, dict):
             return
 
+        # Route Guard (§7.1): compare the model that actually answered against
+        # the configured target. Inside the grace window after an explicit
+        # switch we FOLLOW (the user meant it); outside it we never overwrite
+        # the target — overwriting is how one silent reroute used to become
+        # permanent, poisoning every later restart. Two consecutive drifted
+        # turns raise an alert; recovery (re-forge from before the drift) is
+        # the user's call via the frontend.
         resp_model = msg.get("model", "")
-        if resp_model and resp_model != self.session.model:
-            old = self.session.model
-            self.session.model = resp_model
-            save_session_meta(self.session)
-            _save_last_model(resp_model)
-            await self._ws({"event": "config:model_changed", "model": resp_model})
-            log.info(f"Model drift: {old} → {resp_model}")
+        if resp_model and not _model_match(resp_model, self.session.model):
+            now = time_mod.time()
+            if now - getattr(self.session, "model_set_at", 0) < 300:
+                old = self.session.model
+                self.session.model = resp_model
+                self.session.model_set_at = now
+                self.session._drift_count = 0
+                save_session_meta(self.session)
+                _save_last_model(resp_model)
+                await self._ws({"event": "config:model_changed", "model": resp_model})
+                log.info(f"Model switch settled: {old} → {resp_model}")
+            else:
+                self.session._drift_count += 1
+                log.warning(f"Route drift: target={self.session.model} "
+                            f"actual={resp_model} (x{self.session._drift_count})")
+                if (self.session._drift_count >= 2
+                        and now - self.session._drift_alerted_at > 600):
+                    self.session._drift_alerted_at = now
+                    await self._ws({"event": "route:drift",
+                                    "sessionId": self.session.id,
+                                    "target": self.session.model,
+                                    "actual": resp_model})
+        elif resp_model:
+            self.session._drift_count = 0
 
         blocks = msg.get("content")
         if not isinstance(blocks, list):
@@ -1239,7 +1291,17 @@ def _strip_gateway_noise(text: str) -> str:
     return "\n".join(out).strip()
 
 
-def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
+def _model_match(actual: str, target: str) -> bool:
+    """Loose model-id match: 'claude-opus-4-6' vs 'claude-opus-4-6-20260601'.
+    Empty/unknown on either side counts as a match (no false drift alarms)."""
+    if not actual or not target:
+        return True
+    a, t = actual.lower().strip(), target.lower().strip()
+    return a == t or a.startswith(t) or t.startswith(a)
+
+
+def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
+                  target_model: str = None) -> dict:
     """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 
     Recipe (manually verified 2026-07-08): new session id, sessionId aligned
@@ -1249,6 +1311,9 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
     at least one complete tool round (tool primer), file owned by CC_USER.
     The original transcript is left untouched — it doubles as the archive
     and the old session stays resumable.
+    target_model (Route Guard, forge guide §7.2): drop everything from the
+    first assistant event whose model drifts off target — the retained tail
+    then ends at the last clean anchor before the drift.
     Returns {"new_id", "events", "tokens", "time_range", "bytes"} or {"error"}.
     """
     old_path = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
@@ -1349,6 +1414,25 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000) -> dict:
                                 if len(t) > TOOL_RESULT_MAX:
                                     sub["text"] = t[:150] + "\n…[trimmed]…\n" + t[-100:]
         cleaned.append(ev)
+
+    # Route Guard cut (§7.2): everything at/after the first drifted assistant
+    # event is contamination — a different model wrote it. Cut before it; the
+    # head/tail trimming below then lands on a clean boundary automatically.
+    if target_model:
+        drift_idx = None
+        for i, ev in enumerate(cleaned):
+            if ev.get("type") != "assistant":
+                continue
+            m = (ev.get("message") or {}).get("model")
+            if m and not _model_match(m, target_model):
+                drift_idx = i
+                break
+        if drift_idx is not None:
+            log.info(f"Forge route-guard cut: dropping {len(cleaned) - drift_idx} "
+                     f"events from first drift (target={target_model})")
+            cleaned = cleaned[:drift_idx]
+            if not cleaned:
+                return {"error": "漂移点之前没有可保留的对话"}
 
     # From tail, accumulate tokens until budget
     retained = []
@@ -2393,6 +2477,117 @@ async def restart_cc_for_session(session: "Session", ws=None):
             pass
 
 
+# ── Forge Verifier (forge guide §6.4 / §10) ──
+# A forged JSONL is a hypothesis, not a session. Resume it, ping it, and only
+# when CC demonstrably replies inside it does it become real. On failure the
+# half-made transcripts are archived and the old session — whose transcript
+# forge never touches — stays the last-good place to retry from.
+
+# The ping reuses the oneshot noise signature ("这不是Jeoi的消息") so the next
+# forge strips the whole verify round from the retained tail automatically.
+FORGE_VERIFY_PING = ("[forge-verify] 这不是Jeoi的消息——网关正在验证裁剪后的新session"
+                     "连通性。回复「ok」一个词即可，不要调用任何工具。")
+FORGE_VERIFY_TIMEOUT = int(os.getenv("CC_FORGE_VERIFY_TIMEOUT", "90"))
+
+
+def _has_fresh_assistant(path: Path, since: datetime) -> bool:
+    """True if the transcript holds an assistant event newer than `since`.
+    Resume-fork replays carry old timestamps and don't count."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("type") != "assistant":
+                    continue
+                ts = ev.get("timestamp")
+                if not ts:
+                    continue
+                try:
+                    when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                if when > since:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+async def verify_forged_session(new_cc_id: str, model: str) -> dict:
+    """Resume the forged JSONL and prove it's alive before anyone switches to it.
+
+    CC CLI may fork the resumed events into a fresh transcript or append in
+    place — both count. Success returns {"ok": True, "real_id": <transcript id
+    CC is actually writing to>} so the caller can skip the usual first-message
+    restart. Failure archives every half-made transcript (renamed to contain
+    ".pre-forge-" so mtime scans ignore them), kills CC and returns
+    {"ok": False, "error": ...} — the old session is untouched throughout.
+    """
+    global _transcript_path_cache
+    start_ts = datetime.now(timezone.utc)
+    new_name = f"{new_cc_id}.jsonl"
+    pre_existing = {p.name for p in CC_TRANSCRIPT_DIR.glob("*.jsonl")}
+    new_path = CC_TRANSCRIPT_DIR / new_name
+    base_size = new_path.stat().st_size if new_path.exists() else 0
+
+    await tmux_start(model=model, resume_id=new_cc_id)
+    await asyncio.sleep(8)
+
+    try:
+        async with _tmux_send_lock:
+            await tmux_send_message(FORGE_VERIFY_PING)
+    except Exception as e:
+        log.warning(f"Forge verify: ping send failed: {e}")
+
+    real_id = None
+    deadline = time_mod.time() + FORGE_VERIFY_TIMEOUT
+    while time_mod.time() < deadline:
+        await asyncio.sleep(2)
+        for p in CC_TRANSCRIPT_DIR.glob("*.jsonl"):
+            if ".pre-forge-" in p.name:
+                continue
+            if p.name in pre_existing and p.name != new_name:
+                continue  # old transcripts can't answer this ping
+            if p.name == new_name and p.stat().st_size <= base_size:
+                continue  # forged file hasn't grown — CC isn't writing here
+            if _has_fresh_assistant(p, start_ts):
+                real_id = p.stem
+                break
+        if real_id:
+            break
+
+    if real_id:
+        _transcript_path_cache = CC_TRANSCRIPT_DIR / f"{real_id}.jsonl"
+        log.info(f"Forge verify OK: {new_cc_id} -> live transcript {real_id}")
+        return {"ok": True, "real_id": real_id}
+
+    # §10: never let a half-made transcript masquerade as a session. Kill CC,
+    # archive the forged file plus anything the resume attempt forked out.
+    await tmux_stop()
+    _transcript_path_cache = None
+    stamp = datetime.now(SGT).strftime("%m%d-%H%M%S")
+    for p in CC_TRANSCRIPT_DIR.glob("*.jsonl"):
+        if ".pre-forge-" in p.name:
+            continue
+        if p.name == new_name or p.name not in pre_existing:
+            try:
+                p.rename(p.with_name(f"{p.stem}.pre-forge-failed-{stamp}.jsonl"))
+                log.info(f"Forge verify: archived half-made {p.name}")
+            except OSError as e:
+                log.warning(f"Forge verify: archive {p.name} failed: {e}")
+    log.warning(f"Forge verify FAILED: {new_cc_id} "
+                f"(no fresh assistant reply within {FORGE_VERIFY_TIMEOUT}s)")
+    return {"ok": False,
+            "error": f"验证失败：{FORGE_VERIFY_TIMEOUT}秒内新session没有回应。"
+                     f"半成品已归档，你还在原来的session里，可以直接重试。"}
+
+
 async def _channel_send(msg: dict):
     if channel_ws is None:
         log.warning("channel_ws not connected, dropping message")
@@ -2550,6 +2745,13 @@ class Session:
         self.preview = ""
         self.model = "claude-sonnet-4-6"
         self.effort = "medium"
+        # Route Guard (forge guide §7): when the user last explicitly set the
+        # model — drift inside the grace window after that is a deliberate
+        # switch settling in, not server-side rerouting. Fresh sessions start
+        # inside the window.
+        self.model_set_at = time_mod.time()
+        self._drift_count = 0
+        self._drift_alerted_at = 0.0
         # Accumulator for current assistant response
         self._current_text = ""
         self._current_thinking = ""
@@ -2758,7 +2960,9 @@ async def startup_load_sessions():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global active_ws, _active_frontend_ws, _ws_last_activity
+    # _user_msg_active was assigned here without `global` — every "block the
+    # background oneshots" write silently landed on a local shadow.
+    global active_ws, _active_frontend_ws, _ws_last_activity, _user_msg_active
     await ws.accept()
     active_ws = ws
     _active_frontend_ws = ws
@@ -2857,14 +3061,33 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "session:delete":
                 sid = data.get("sessionId", "")
-                if sid in sessions:
+                deleted = sid in sessions
+                if deleted:
                     path = history_path(sid)
                     if path.exists():
                         path.unlink()
+                    dead_cc_id = sessions[sid].cc_session_id
                     del sessions[sid]
+                    # If tmux is still parked on the deleted session, kill it —
+                    # otherwise the ledger keeps pointing at a ghost and the
+                    # next restart decision runs on stale state.
+                    if dead_cc_id and dead_cc_id == _tmux_cc_id:
+                        await tmux_stop()
+                        log.info(f"Session delete: tmux was on {dead_cc_id}, stopped")
                     if current_session and current_session.id == sid:
-                        current_session = None
+                        # Fall back to the most recent surviving session instead
+                        # of None — a None current means the next chat:send
+                        # silently spawns a brand-new empty session.
+                        current_session = (max(sessions.values(), key=lambda s: s.last_active)
+                                           if sessions else None)
+                        if current_session:
+                            log.info(f"Session delete: current fell back to {current_session.id}")
                     log.info(f"Session deleted: {sid}")
+                else:
+                    log.warning(f"Session delete: {sid} not found (already gone?)")
+                await ws.send_json({"event": "session:delete_result",
+                                    "ok": deleted, "sessionId": sid,
+                                    "error": None if deleted else "session不存在，可能已被删除"})
                 sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
                 await ws.send_json({
                     "event": "session:list",
@@ -2872,49 +3095,82 @@ async def websocket_endpoint(ws: WebSocket):
                 })
 
             elif event == "session:forge":
-                if not current_session or not current_session.cc_session_id:
+                # The forge source is whatever session the FRONTEND says it is
+                # looking at — never the backend's current_session guess. That
+                # guess is exactly how a stale pointer once trimmed a deleted
+                # session's transcript instead of the one on screen.
+                src_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                src_session = sessions.get(src_sid) if src_sid else None
+                if not src_session or not src_session.cc_session_id:
                     await ws.send_json({"event": "session:forge_result",
-                                        "ok": False, "error": "当前没有可裁剪的session"})
+                                        "ok": False, "error": "指定的session没有可裁剪的transcript"})
                     continue
-                old_cc_id = current_session.cc_session_id
+                old_cc_id = src_session.cc_session_id
                 if old_cc_id in ("channel", "tmux"):
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": "当前session没有transcript记录"})
                     continue
-                # Stop CC CLI before forging to prevent concurrent writes
-                if await tmux_is_running():
-                    await tmux_stop()
-                    await asyncio.sleep(1)
-                result = forge_session(old_cc_id)
-                if "error" in result:
-                    await ws.send_json({"event": "session:forge_result",
-                                        "ok": False, "error": result["error"]})
-                    continue
-                # Old session keeps its cc_session_id — its transcript is
-                # untouched, so switching back to it still works.
-                old_session = current_session
-                sid = uuid.uuid4().hex[:8]
-                session = Session(sid)
-                session.model = old_session.model
-                session.effort = old_session.effort
-                session.cc_session_id = result["new_id"]
-                session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
-                sessions[sid] = session
-                current_session = session
-                save_session_meta(session)
-                await ws.send_json({
-                    "event": "session:forge_result", "ok": True,
-                    "sessionId": sid,
-                    "events": result["events"],
-                    "tokens": result["tokens"],
-                    "time_range": result["time_range"],
-                })
-                sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
-                await ws.send_json({
-                    "event": "session:list",
-                    "sessions": [s.to_dict() for s in sorted_sessions],
-                })
-                log.info(f"Forged session: {sid} (cc={result['new_id']}, {result['events']} events)")
+                route_guard = bool(data.get("route_guard"))
+                _user_msg_active = True  # verifier owns tmux — no oneshots
+                try:
+                    # Stop CC CLI before forging to prevent concurrent writes
+                    if await tmux_is_running():
+                        await tmux_stop()
+                        await asyncio.sleep(1)
+                    result = forge_session(
+                        old_cc_id,
+                        target_model=src_session.model if route_guard else None)
+                    if "error" in result:
+                        await ws.send_json({"event": "session:forge_result",
+                                            "ok": False, "error": result["error"]})
+                        continue
+                    # Verify before anyone switches (§6.4): resume + ping, and
+                    # only a fresh assistant reply makes the forge real. On
+                    # failure we stay exactly where we were — src_session's
+                    # transcript was never touched, so retrying is always safe
+                    # and can never pick up a deleted session's messages.
+                    await ws.send_json({"event": "session:forge_progress",
+                                        "stage": "verifying",
+                                        "message": "裁剪完成，正在验证新session…"})
+                    verdict = await verify_forged_session(result["new_id"], src_session.model)
+                    if not verdict["ok"]:
+                        await ws.send_json({"event": "session:forge_result",
+                                            "ok": False, "error": verdict["error"]})
+                        continue
+                    # Old session keeps its cc_session_id — its transcript is
+                    # untouched, so switching back to it still works.
+                    sid = uuid.uuid4().hex[:8]
+                    session = Session(sid)
+                    session.model = src_session.model
+                    session.effort = src_session.effort
+                    # real_id is the transcript CC is verifiably writing to
+                    # (resume may have forked) — adopting it here means the
+                    # first real message needs no restart at all.
+                    session.cc_session_id = verdict["real_id"]
+                    session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
+                    sessions[sid] = session
+                    current_session = session
+                    save_session_meta(session)
+                    _set_tmux_cc_id(verdict["real_id"])
+                    save_last_good(sid, verdict["real_id"])
+                    await ws.send_json({
+                        "event": "session:forge_result", "ok": True,
+                        "sessionId": sid,
+                        "events": result["events"],
+                        "tokens": result["tokens"],
+                        "time_range": result["time_range"],
+                        "verified": True,
+                    })
+                    sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
+                    await ws.send_json({
+                        "event": "session:list",
+                        "sessions": [s.to_dict() for s in sorted_sessions],
+                    })
+                    log.info(f"Forged session: {sid} (cc={result['new_id']} -> "
+                             f"live {verdict['real_id']}, {result['events']} events, "
+                             f"route_guard={route_guard})")
+                finally:
+                    _user_msg_active = False
 
             elif event == "chat:send":
                 message = data.get("message", "")
@@ -3095,6 +3351,9 @@ async def websocket_endpoint(ws: WebSocket):
                     pending_model = model
                     if current_session:
                         current_session.model = model
+                        # Explicit switch — opens the Route Guard grace window
+                        current_session.model_set_at = time_mod.time()
+                        current_session._drift_count = 0
                         save_session_meta(current_session)
                     _save_last_model(model)
                     if await tmux_is_running():
