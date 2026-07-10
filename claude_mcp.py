@@ -23,7 +23,6 @@ BUNNY_BRIDGE_URL    = os.getenv("BUNNY_BRIDGE_URL",    "http://192.3.61.205:7003
 AK_BRIDGE_URL       = os.getenv("AK_BRIDGE_URL",       "http://192.3.61.205:7004")
 
 import time
-import threading
 import smtplib
 import imaplib
 import email as emaillib
@@ -58,7 +57,7 @@ from claude_memory import (
     claude_get_draft,
     CLAUDE_COMPRESS_DRAFT,
     claude_search_chronicle,
-    claude_split_diary_to_dynamic,
+    DIARY_SPLIT_CATEGORIES,
 )
 
 PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
@@ -91,7 +90,7 @@ mcp = FastMCP(
         "store_core     — 永久存核心库，data={content, category(可选), mood(可选), folder(可选)}\n"
         "store_dynamic  — 存动态库，data={content, category(可选), mood(可选)}\n"
         "log_turn       — 记录本轮对话，data={user_message, claude_reply}\n"
-        "write_diary    — 写新日记，data={title, content, mood(可选)}；按节点写（【】标记），落盘后自动按节点切进动态库，约定见 docs/diary_convention.md\n"
+        "write_diary    — 写新日记，data={title, content, mood(可选)}；按节点写（【】标记），约定见 docs/diary_convention.md，Jeoi 会在面板手动切分入动态库\n"
         "append_diary   — 追加日记，data={target_date(YYYY-MM-DD), extra_content, current_time(HH:MM)}\n"
         "read_diary     — 读日记，data={date(可选,YYYY-MM-DD)}\n"
         "list_room      — 浏览房间，data={room_name}\n"
@@ -189,6 +188,12 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if not content:
             return f"错误：store_dynamic 需要 content 参数。收到的 data: {data}"
         category = data.get("category", "日常")
+        # 标签白名单：集合外的按词根归一，从写入口杜绝花式一次性标签
+        if category not in DIARY_SPLIT_CATEGORIES:
+            hit = next((c for c in DIARY_SPLIT_CATEGORIES if c in category), None)
+            if not hit and any(k in category for k in ("思想", "讨论", "洞察", "观察", "哲学", "模式")):
+                hit = "思考"
+            category = hit or "日常"
         mood     = data.get("mood", "平静")
         m_id     = f"claude_dynamic_manual_{int(time.time())}"
         claude_add_dynamic_memory(
@@ -230,14 +235,6 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         filename   = f"{CLAUDE_DIARY_PATH}/{today}_{time_str}_{safe_title}.md"
         with open(filename, "w", encoding="utf-8") as f:
             f.write(f"# {title}\n> 日期：{today} {time_str.replace('-', ':')} | 心情：{mood}\n\n{content}\n")
-        # 节点切分钩子：有【】标记就后台切块落动态库，失败不影响日记本体
-        if "【" in content:
-            threading.Thread(
-                target=claude_split_diary_to_dynamic,
-                args=(title, content, mood, today, time_str.replace('-', ':'), filename),
-                daemon=True,
-            ).start()
-            return f"已写下。{filename}\n检测到节点标记，正在后台按节点切分进动态记忆（前端可改可删）。"
         return f"已写下。{filename}"
 
     # ── append_diary ──────────────────────────────────────────

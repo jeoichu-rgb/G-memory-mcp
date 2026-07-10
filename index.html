@@ -1175,11 +1175,30 @@ async function erikLoadDiaries() {
   list.innerHTML = files.map(f => `
     <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);padding:9px 12px;border-radius:var(--r-sm);">
       <div style="font-size:11px;color:var(--dim);">${f}</div>
-      <button class="btn btn-xs btn-v" onclick="erikOpenDiary('${f}')">编辑</button>
+      <div style="display:flex;gap:4px;align-items:center;">
+        <button class="btn btn-xs" onclick="erikSplitDiary('${f}', this)" title="DS按【】节点切进动态库，重按=重切不重复">切分</button>
+        <button class="btn btn-xs btn-v" onclick="erikOpenDiary('${f}')">编辑</button>
+      </div>
     </div>`).join('');
   updatePager('e-diary', diaryPage, diaryTotal, PAGE_DIARY);
 }
 function erikDiaryPage(dir) { diaryPage = Math.max(0, Math.min(diaryPage + dir, Math.ceil(diaryTotal / PAGE_DIARY) - 1)); erikLoadDiaries(); }
+async function erikSplitDiary(filename, btn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'DS切分中…';
+  try {
+    const r = await fetch(`${API_BASE}/admin/diary-split?filename=${encodeURIComponent(filename)}`, { method: 'POST', headers: hdr() });
+    const d = await r.json();
+    if (d.stored > 0) btn.textContent = `+${d.stored}条记忆 ✓`;
+    else if ((d.message || '').includes('无节点')) btn.textContent = '无节点标记';
+    else btn.textContent = '切分失败';
+  } catch (e) {
+    btn.textContent = '切分失败';
+  }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
+}
 async function erikOpenDiary(filename) {
   erikCurrentDiaryFile = filename;
   const r = await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(filename)}`, { headers: hdr() });

@@ -51,6 +51,7 @@ CATEGORY_WEIGHTS = {
     "冲突":   1.3,
     "情感":   1.3,
     "亲密":   1.3,
+    "思考":   1.1,
     "日常":   1.0,
 }
 
@@ -293,7 +294,7 @@ def claude_compress_and_store() -> str:
 时间：{datetime.now().strftime('%Y-%m-%d')}
 内容：（用100-200字总结这个事件的核心内容）
 情绪：（用一个词描述当时的情绪）
-类型：（从以下选择：日常/冲突/亲密/纪念日/旅行/健康）
+类型：（从以下选择：亲密/情感/日常/冲突/纪念日/思考）
 
 对话记录：
 {raw_log}
@@ -465,7 +466,7 @@ def claude_compress_preview() -> dict:
 时间：{datetime.now().strftime('%Y-%m-%d')}
 内容：（用100-200字总结这个事件的核心内容）
 情绪：（用一个词描述当时的情绪）
-类型：（从以下选择：日常/冲突/亲密/纪念日/旅行/健康）
+类型：（从以下选择：亲密/情感/日常/冲突/纪念日/思考）
 
 对话记录：
 {raw_log}
@@ -629,25 +630,25 @@ def claude_write_diary_by_filename(filename: str, content: str) -> bool:
     except:
         return False
 
-# ── 日记节点切分（write_diary 落盘后的钩子）─────────────────────────
-# 标签集合待与 CATEGORY_WEIGHTS 白名单统一（见标签收敛讨论），先按六类走
-DIARY_SPLIT_CATEGORIES = ["亲密", "情感", "日常", "冲突", "纪念日", "思考"]
+# ── 日记节点切分（面板【切分】按钮触发）─────────────────────────────
+# 标签集合与 CATEGORY_WEIGHTS 同源，白名单即权重表
+DIARY_SPLIT_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
 def claude_split_diary_to_dynamic(title: str, content: str, mood: str,
                                   diary_date: str, diary_time: str,
-                                  diary_file: str) -> str:
+                                  diary_file: str) -> dict:
     """把按节点写的日记机械切块落入动态库。DS 只做切分+贴标签，
     不概括不改写；【整体】感受和独白留在日记里，不入库。
-    没有【】节点标记的日记直接跳过，旧式日记不乱切。"""
+    幂等：重切前先删同一篇日记的旧切分条目。返回 {stored, message}。"""
     if "【" not in content:
-        return "日记无节点标记，跳过切分。"
+        return {"stored": 0, "message": "日记无节点标记，跳过切分。"}
     cats = "/".join(DIARY_SPLIT_CATEGORIES)
     prompt = f"""下面是一篇按【节点】写的日记。请把它机械切分成若干条独立记忆，规则：
 
-1. 每个事件节点一条：内容 = 梗概中与该节点对应的句子 + 该节点下的细节原文 + 挂在该节点的感受原文。全部用原文拼接，不改写、不概括、不补充。
+1. 每个事件节点一条：node = 节点名（【】里的文字），text = 梗概中与该节点对应的句子 + 该节点下的细节原文 + 挂在该节点的感受原文。全部用原文拼接，不改写、不概括、不补充。
 2. 【整体】感受和"独白"部分不要切出来——它们留在日记里，不进记忆库。
 3. 每条选一个标签，只能从这些里选：{cats}
-4. 只输出JSON数组，不要其他任何文字。格式：[{{"text": "...", "category": "..."}}]
+4. 只输出JSON数组，不要其他任何文字。格式：[{{"node": "...", "text": "...", "category": "..."}}]
 
 日记标题：{title}
 日记正文：
@@ -665,7 +666,16 @@ def claude_split_diary_to_dynamic(title: str, content: str, mood: str,
         segments = json.loads(raw[s:e + 1])
     except Exception as ex:
         logging.info(f"日记切分失败: {ex}")
-        return f"日记切分失败: {ex}"
+        return {"stored": 0, "message": f"日记切分失败: {ex}"}
+
+    # 幂等：先清掉这篇日记之前切出的条目，重按=重切不重复
+    try:
+        old = claude_dynamic.get(where={"diary_file": diary_file})
+        if old["ids"]:
+            claude_dynamic.delete(ids=old["ids"])
+            logging.info(f"日记重切: 已删除旧条目 {len(old['ids'])} 条")
+    except Exception as ex:
+        logging.info(f"清理旧切分条目失败(继续入库): {ex}")
 
     stored = 0
     ts = int(time.time())
@@ -673,12 +683,14 @@ def claude_split_diary_to_dynamic(title: str, content: str, mood: str,
         text = (seg.get("text") or "").strip()
         if not text:
             continue
+        node = (seg.get("node") or "").strip().strip("【】")
         category = seg.get("category", "日常")
         if category not in DIARY_SPLIT_CATEGORIES:
             category = "日常"
+        prefix = f"[{diary_date} {diary_time}]" + (f"【{node}】" if node else "")
         try:
             claude_add_dynamic_memory(
-                content=f"[{diary_date} {diary_time}] {text}",
+                content=f"{prefix} {text}",
                 metadata={
                     "category": category, "mood": mood,
                     "recall_count": 0, "last_recalled_ts": 0,
@@ -693,7 +705,7 @@ def claude_split_diary_to_dynamic(title: str, content: str, mood: str,
         except Exception as ex:
             logging.info(f"日记切分入库失败: {ex}")
     logging.info(f"日记切分完成: {diary_file} → {stored} 条")
-    return f"日记已切分 {stored} 条入动态库。"
+    return {"stored": stored, "message": f"切分完成，新增 {stored} 条记忆。"}
 
 
 def claude_delete_dynamic_memory(memory_id: str) -> str:
@@ -715,7 +727,7 @@ def claude_recompress_single(memory_id: str, original_text: str, original_meta: 
 时间：{original_meta.get('date', datetime.now().strftime('%Y-%m-%d'))}
 内容：（用80-150字总结核心内容）
 情绪：（一个词）
-类型：（日常/冲突/亲密/纪念日/旅行/健康）
+类型：（亲密/情感/日常/冲突/纪念日/思考）
 
 原始内容：
 {original_text}

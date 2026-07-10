@@ -708,6 +708,27 @@ async def admin_save_diary(filename: str, payload: DiaryEditPayload):
     ok = claude_write_diary_by_filename(filename, payload.content)
     return {"status": "ok" if ok else "error"}
 
+# 切分日记 → 动态库（面板【切分】按钮，同步等 DS，def 走线程池不卡事件循环）
+from claude_memory import claude_split_diary_to_dynamic
+
+@app.post("/admin/diary-split")
+def admin_split_diary(filename: str):
+    content = claude_read_diary_by_filename(filename)
+    if not content:
+        raise HTTPException(status_code=404, detail="日记不存在")
+    # 文件名 {date}_{H-M}_{title}.md → 日期/时间/标题
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    parts = stem.split("_", 2)
+    diary_date = parts[0] if parts else ""
+    diary_time = parts[1].replace("-", ":") if len(parts) > 1 else ""
+    title = parts[2] if len(parts) > 2 else stem
+    mood = "平静"
+    for line in content.splitlines()[:3]:
+        if "心情：" in line:
+            mood = line.split("心情：")[-1].strip()
+            break
+    return claude_split_diary_to_dynamic(title, content, mood, diary_date, diary_time, filename)
+
 from claude_memory import claude_recompress_single
 
 class RecompressItem(BaseModel):
