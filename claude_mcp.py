@@ -58,6 +58,7 @@ from claude_memory import (
     CLAUDE_COMPRESS_DRAFT,
     claude_search_chronicle,
     DIARY_SPLIT_CATEGORIES,
+    claude_get_memories_by_ids,
 )
 
 PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
@@ -87,6 +88,7 @@ mcp = FastMCP(
         "使用唯一工具 palace(cmd, data) 操作所有记忆功能。\n\n"
         "【cmd 列表】\n"
         "search         — 检索记忆，data={keyword, mood(可选)}\n"
+        "get_by_id      — 按 id 精准取核心记忆（零噪音，不走打分检索），data={ids:[...]}。id 来源：docs/pinned_memories.json 或 list_room 输出。整块取过一次就在上下文里，不要重复取\n"
         "store_core     — 永久存核心库，data={content, category(可选), mood(可选), folder(可选)}\n"
         "store_dynamic  — 存动态库，data={content, category(可选), mood(可选)}\n"
         "log_turn       — 记录本轮对话，data={user_message, claude_reply}\n"
@@ -154,6 +156,16 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             return f"错误：search 需要 keyword 参数。收到的 data: {data}"
         result = claude_search_memory(keyword, mood)
         return result if result else "没有找到相关记忆，这可能是你们第一次聊这个话题。"
+
+    # ── get_by_id ─────────────────────────────────────────────
+    elif cmd == "get_by_id":
+        ids = data.get("ids") or ([data["id"]] if data.get("id") else [])
+        if not ids:
+            return f"错误：get_by_id 需要 ids（列表）或 id。收到的 data: {data}"
+        items = claude_get_memories_by_ids(ids)
+        if not items:
+            return "没有找到这些 id 对应的记忆。"
+        return "\n\n---\n\n".join(f"[{it['id']}]\n{it['content']}" for it in items)
 
     # ── store_core ────────────────────────────────────────────
     elif cmd == "store_core":

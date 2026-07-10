@@ -507,6 +507,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(cmd, data)`：
 |--------|------|---------|
 | `get_context` | 对话开始冷启动，读最近两次压缩总结；若检测到未处理 buffer 自动生成压缩草稿 | 无 |
 | `search` | 向量+keyword 混合检索（含 jieba 分词），搜核心库和动态库，日记一并返回，score > 0.7 的前 3 条 + 1 篇日记 | `keyword`, `mood`（可选） |
+| `get_by_id` | 按 id 精准取核心记忆，零噪音不走打分（📎 词条注入的同一条底层通道，开放给 CC 在 pebbling/desire 时自取约定/备忘；id 来源 `docs/pinned_memories.json` 或 `list_room` 输出） | `ids`（列表）或 `id` |
 | `store_core` | 永久存入核心库，同时写本地 MD 文件 | `content`, `category`, `mood`, `folder`（均可选） |
 | `store_dynamic` | 存入动态库 | `content`, `category`, `mood`（均可选） |
 | `log_turn` | 每轮对话追加到缓冲文件 | `user_message`, `claude_reply` |

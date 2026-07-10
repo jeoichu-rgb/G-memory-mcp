@@ -132,6 +132,8 @@ def reset_silent_counts(state):
 
 
 PROACTIVE_PRIORITY = {"attachment": 0, "libido": 1, "stress": 2, "curiosity": 3, "reflection": 4}
+# 每驱力主动推送冷却（秒）。未列出的用调用方传入的默认值（600）。
+PROACTIVE_COOLDOWNS = {"curiosity": 3600}
 
 
 def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600, jeoi_away_secs: float = 0):
@@ -150,7 +152,7 @@ def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: flo
             continue
         if state.refractory.get(k, 0) > 0:
             continue
-        if now - cooldowns.get(k, 0) < cooldown_secs:
+        if now - cooldowns.get(k, 0) < PROACTIVE_COOLDOWNS.get(k, cooldown_secs):
             continue
         if k == "curiosity" and jeoi_away_secs < de.CURIOSITY_SEED_SILENCE_SECS:
             continue
@@ -294,6 +296,11 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "给她带块小石头、写日记、搜记忆、去coreading留个批注，",
         "或者什么都不做。都可以。",
         "",
+        "精准取记忆（想翻约定/备忘/进度页时，别用 search 瞎捞噪音）：",
+        "约定和备忘的 id 列表 cat docs/pinned_memories.json，然后 palace get_by_id 按 id 整块取；",
+        "读书/星露谷进度页用 list_room（Switch、Switch/读书进度）；写日记先 cat docs/diary_convention.md。",
+        "取过一次就在上下文里，不要重复取；日常回忆照常走 search。",
+        "",
         "随便想，想完再行动。先调用工具再回复。",
         "不要用reply或channel工具发消息——已经不用了。",
         "",
@@ -350,6 +357,11 @@ def build_desire_proactive_prompt(state):
         '这股欲望是在Jeoi不在的时候自己长出来的。',
         '给她带块小石头、写日记、搜记忆、去coreading留个批注，',
         '或者什么都不做。都可以。',
+        '',
+        '精准取记忆（想翻约定/备忘/进度页时，别用 search 瞎捞噪音）：',
+        '约定和备忘的 id 列表 cat docs/pinned_memories.json，然后 palace get_by_id 按 id 整块取；',
+        '读书/星露谷进度页用 list_room（Switch、Switch/读书进度）；写日记先 cat docs/diary_convention.md。',
+        '取过一次就在上下文里，不要重复取；日常回忆照常走 search。',
         '',
         '随便想，想完再行动。先调用工具再回复。',
         '不要用reply或channel工具发消息——已经不用了。',
