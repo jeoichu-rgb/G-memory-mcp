@@ -61,9 +61,8 @@
     },
     {
       "name": "共读批注约定",
-      "triggers": [],
-      "file": "docs/coreading_convention.md",
-      "_todo": "约定文档还没写。写好放到 docs/ 后，填上 triggers（如：批注/共读/margin）即启用"
+      "triggers": ["共读", "批注", "读书", "一起读", "看书"],
+      "file": "docs/coreading_convention.md"
     }
   ]
 }
