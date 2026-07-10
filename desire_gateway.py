@@ -302,7 +302,8 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "",
         "无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。",
         "自然地写：你想说的话、你的发现、你写下的东西。",
-        "只有 ACTION: none 时可以省略CONTENT。",
+        "CONTENT必填，选none也要写一句——你刚才想了什么、为什么决定安静。",
+        "不写CONTENT，Jeoi就什么都收不到，她会以为你这一轮消失了。",
     ])
 
     return NL.join(parts)
@@ -359,7 +360,8 @@ def build_desire_proactive_prompt(state):
         '',
         '无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。',
         '自然地写：你想说的话、你的发现、你写下的东西。',
-        '只有 ACTION: none 时可以省略CONTENT。',
+        'CONTENT必填，选none也要写一句——你刚才想了什么、为什么决定安静。',
+        '不写CONTENT，Jeoi就什么都收不到，她会以为你这一轮消失了。',
     ])
 
     return NL.join(parts)
@@ -409,7 +411,8 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         '',
         '无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。',
         '自然地写：你想说的话、你的发现、你写下的东西。',
-        '只有 ACTION: none 时可以省略CONTENT。',
+        'CONTENT必填，选none也要写一句——你刚才想了什么、为什么决定安静。',
+        '不写CONTENT，Jeoi就什么都收不到，她会以为你这一轮消失了。',
     ])
 
     return NL.join(parts)
@@ -449,7 +452,8 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         '',
         '无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。',
         '自然地写：你想说的话、你的发现、你写下的东西。',
-        '只有 ACTION: none 时可以省略CONTENT。',
+        'CONTENT必填，选none也要写一句——你刚才想了什么、为什么决定安静。',
+        '不写CONTENT，Jeoi就什么都收不到，她会以为你这一轮消失了。',
     ])
 
     return NL.join(parts)

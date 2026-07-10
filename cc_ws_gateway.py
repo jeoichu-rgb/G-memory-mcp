@@ -1671,7 +1671,9 @@ def build_pebbling_prompt(
             "严格按此格式回复：",
             "ACTION: message / recall / none",
             "CONTENT: Jeoi手机上看到的文字——你做了什么就说什么。",
-            "无论什么ACTION，CONTENT都会推送到Jeoi手机。none时可省略。",
+            "CONTENT必填，任何ACTION都不能省略：翻了记忆就说翻到了什么，",
+            "选none也要写一句你刚才想了什么、为什么决定安静。",
+            "不写CONTENT，Jeoi就什么都收不到——她会以为你这一轮凭空消失了。",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1695,7 +1697,9 @@ def build_pebbling_prompt(
             "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
             "无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。",
-            "ACTION: none 时可以省略CONTENT。",
+            "CONTENT必填，任何ACTION都不能省略：去逛了就写你看到了什么，",
+            "写了日记就提一句写了什么，什么都没做就说你为什么想安静待着。",
+            "不写CONTENT，Jeoi就什么都收不到——她会以为你这一轮凭空消失了。",
         ])
 
     return "\n".join(parts)
