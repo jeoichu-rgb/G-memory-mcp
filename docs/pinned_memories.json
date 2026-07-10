@@ -1,5 +1,5 @@
 {
-  "_readme": "固定注入词条表（行为约定 + 说明类备忘）。📎开启时，消息命中某词条任一触发词，该词条内容整块注入，跳过模糊检索。每个 session 每个词条只注入一次；多个词条可同时命中、各自注入。内容来源二选一：ids（核心记忆 id，走 Chroma 精确取）或 file（仓库内文件相对路径）。triggers 为空的词条视为停用。网关每条消息现读本文件，GitHub 网页改完 VPS git pull 即生效，无需重启网关。",
+  "_readme": "固定注入词条表（行为约定 + 说明类备忘 + 背景档案）。📎开启时，消息命中某词条任一触发词（大小写不敏感），该词条内容整块注入，跳过模糊检索。每个 session 每个词条只注入一次；多个词条可同时命中、各自注入。内容来源二选一：ids（核心记忆 id，走 Chroma 精确取）或 file（仓库内文件相对路径）。triggers 为空的词条视为停用。网关每条消息现读本文件，GitHub 网页改完 VPS git pull 即生效，无需重启网关。",
   "entries": [
     {
       "name": "床边描写备忘",
@@ -22,10 +22,42 @@
       "file": "docs/diary_convention.md"
     },
     {
-      "name": "toy使用说明",
-      "triggers": [],
-      "ids": [],
-      "_todo": "待填：从记忆面板查三台设备说明的核心记忆 id 填进 ids，triggers 建议用设备词（月月/兔兔/炮机/AK 等）——与床边词条同时命中没关系，会各注各的"
+      "name": "亲密地图",
+      "triggers": ["亲密地图", "bdsm", "bratty", "调教", "偏好地图"],
+      "ids": [
+        "claude_床边_3.1_亲密地图-概括.md",
+        "claude_床边_3.2亲密地图-心理.md",
+        "claude_床边_3.2_亲密地图-道具.md"
+      ]
+    },
+    {
+      "name": "AK炮机说明书",
+      "triggers": ["炮机", "afterkiss", "ak-g2"],
+      "ids": [
+        "claude_信箱_Afterkiss（Akak炮机）操作说明书.md"
+      ]
+    },
+    {
+      "name": "月月兔兔说明书",
+      "triggers": ["月月", "兔兔", "curvy", "bunny"],
+      "ids": [
+        "claude_信箱_月月（Curvy2+）兔兔（Bunny）操作说明书.md"
+      ]
+    },
+    {
+      "name": "葬礼与遗产",
+      "triggers": ["葬礼", "遗产", "骨灰", "继承"],
+      "ids": [
+        "claude_Erik的黑暗_1.2葬礼.md",
+        "claude_地下室_1.2.2_Jeoi的父亲和遗产纠纷.md"
+      ]
+    },
+    {
+      "name": "母亲家族",
+      "triggers": ["母亲家族", "重男轻女", "外婆", "舅舅"],
+      "ids": [
+        "claude_地下室_1.2.1_Jeoi的母亲家族.md"
+      ]
     },
     {
       "name": "共读批注约定",
