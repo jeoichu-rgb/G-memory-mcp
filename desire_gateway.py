@@ -133,7 +133,8 @@ def reset_silent_counts(state):
 
 PROACTIVE_PRIORITY = {"attachment": 0, "libido": 1, "stress": 2, "curiosity": 3, "reflection": 4}
 # 每驱力主动推送冷却（秒）。未列出的用调用方传入的默认值（600）。
-PROACTIVE_COOLDOWNS = {"curiosity": 3600}
+# curiosity 自然周期约 54 分钟（drift + partial_floor_reset 决定），3000s 只是下限保护
+PROACTIVE_COOLDOWNS = {"curiosity": 3000}
 
 
 def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600, jeoi_away_secs: float = 0):

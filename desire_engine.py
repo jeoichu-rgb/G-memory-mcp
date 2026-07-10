@@ -8,7 +8,9 @@ from typing import Optional
 DRIVE_KEYS = ["attachment", "curiosity", "reflection", "libido", "stress", "fatigue"]
 DRIVE_CONFIG = {
     "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.80, "pulse_delta": 0.18, "drift_delay": 1800},
-    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.002, "drift_cap": 0.80, "pulse_delta": 0.18, "drift_delay": 1200},
+    # drift_cap 必须比 BG 阈值(0.55)高至少 ~0.05：drive 追赶上涨的 floor 有滞后，
+    # cap 贴着阈值会让 drive 无限逼近但永远触发不了（cap=0.57 实测 drive 峰值只有 0.54）
+    "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.002, "drift_cap": 0.65, "pulse_delta": 0.18, "drift_delay": 1200, "partial_floor_reset": 0.5},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
     "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5},
     "stress":     {"home": 0.12, "decay": 0.93, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},
@@ -369,7 +371,8 @@ def partial_satisfy(state, drive_key, factor=0.95):
     cfg = DRIVE_CONFIG[drive_key]
     if cfg.get("drift", 0) > 0:
         home = cfg["home"]
-        state.floors[drive_key] = home + (state.floors.get(drive_key, home) - home) * 0.85
+        floor_reset = cfg.get("partial_floor_reset", 0.85)
+        state.floors[drive_key] = home + (state.floors.get(drive_key, home) - home) * floor_reset
     state.silent_inject_count[drive_key] = count + 1
     state.trails[drive_key] = []
     state.intent = None
