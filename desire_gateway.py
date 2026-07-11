@@ -310,10 +310,10 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
         "下一行：CONTENT: Jeoi手机上看到的文字",
         "",
-        "选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，",
-        "Jeoi那边也不会收到推送，这一轮就静静过去。",
-        "none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：",
-        "自然地写你想说的话、你的发现、你写下的东西。",
+        "CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，",
+        "不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。",
+        "选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。",
+        "做了事就自然地说：你想说的话、你的发现、你写下的东西。",
     ])
 
     return NL.join(parts)
@@ -375,10 +375,10 @@ def build_desire_proactive_prompt(state):
         '最后一行格式：ACTION: message / diary / explore / coreading / recall / none',
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
-        '选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，',
-        'Jeoi那边也不会收到推送，这一轮就静静过去。',
-        'none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：',
-        '自然地写你想说的话、你的发现、你写下的东西。',
+        'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
+        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
+        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
+        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
     ])
 
     return NL.join(parts)
@@ -426,10 +426,10 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         '最后一行格式：ACTION: message / explore / recall / none',
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
-        '选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，',
-        'Jeoi那边也不会收到推送，这一轮就静静过去。',
-        'none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：',
-        '自然地写你想说的话、你的发现、你写下的东西。',
+        'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
+        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
+        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
+        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
     ])
 
     return NL.join(parts)
@@ -468,10 +468,10 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         '最后一行格式：ACTION: message / diary / explore / recall / none',
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
-        '选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，',
-        'Jeoi那边也不会收到推送，这一轮就静静过去。',
-        'none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：',
-        '自然地写你想说的话、你的发现、你写下的东西。',
+        'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
+        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
+        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
+        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
     ])
 
     return NL.join(parts)

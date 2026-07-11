@@ -1768,9 +1768,10 @@ def build_pebbling_prompt(
             "严格按此格式回复：",
             "ACTION: message / recall / none",
             "CONTENT: Jeoi手机上看到的文字——你做了什么就说什么。",
-            "选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，",
-            "Jeoi那边也不会收到推送。什么都不做是完全正当的选择，不是失职。",
-            "none以外的ACTION才写CONTENT：翻了记忆就说翻到了什么。",
+            "CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，",
+            "不写就什么都不发——安静不是失职，不用向谁交代。",
+            "选none也可以写CONTENT：什么都不做、但想跟她说句话，完全可以。",
+            "做了事就自然地说：翻了记忆就说翻到了什么。",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1799,10 +1800,10 @@ def build_pebbling_prompt(
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
             "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
-            "选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，",
-            "Jeoi那边也不会收到推送。什么都不做是完全正当的选择，不是失职。",
-            "none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：",
-            "去逛了就写你看到了什么，写了日记就提一句写了什么。",
+            "CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，",
+            "不写就什么都不发——安静不是失职，不用向谁交代。",
+            "选none也可以写CONTENT：什么都不做、但想跟她说句话，完全可以。",
+            "做了事就自然地说：去逛了就写你看到了什么，写了日记就提一句写了什么。",
         ])
 
     return "\n".join(parts)
