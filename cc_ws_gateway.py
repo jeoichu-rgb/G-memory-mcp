@@ -86,6 +86,16 @@ EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
 LAST_MODEL_PATH = Path(CC_CWD) / "last_model.txt"
 
+# ── Stardew event push ──
+# 星露谷 MCP server（Windows :7845）检测到新游戏事件（talk/gift）时
+# POST 到 /api/stardew/event，由 stardew_event_worker 防抖合并后
+# 注入到 pebbling_session_id 绑定的那一个 session（与 desire/pebbling 同一绑定，
+# 自动跟随 Jeoi 最后说话的 session——绝不广播到其他 session）。
+_stardew_pending: list = []
+_stardew_last_event_ts: float = 0.0
+STARDEW_EVENT_DEBOUNCE = 4    # 秒：等事件停止到达再注入（合并连续点击）
+STARDEW_EVENT_MAX_AGE = 600   # 秒：积压超过这个年龄的事件直接丢弃
+
 
 def _load_last_model() -> str:
     try:
@@ -2114,7 +2124,8 @@ async def push_system_error(source: str, error_text: str):
 
 # ── Push helper (WS if available, else pending queue) ──
 
-async def push_pebbling_msg(source: str, content: str, session: "Session", thinking: str = ""):
+async def push_pebbling_msg(source: str, content: str, session: "Session", thinking: str = "",
+                            push_backup: bool = True):
     global active_ws
     now = time_mod.time()
     msg = {
@@ -2147,7 +2158,7 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         save_peb_state()
         log.info(f"Pebbling msg queued (WS offline): {content[:60]}")
 
-    if not ws_sent or ws_stale:
+    if push_backup and (not ws_sent or ws_stale):
         if ws_stale and ws_sent:
             log.info(f"WS stale ({now - _ws_last_activity:.0f}s), sending TG+WebPush as backup")
         await send_telegram(content)
@@ -2196,6 +2207,113 @@ async def replay_pending(ws: WebSocket):
             break
     peb_state["pending_messages"] = []
     save_peb_state()
+
+
+# ── Stardew event injection ──
+
+_STARDEW_SEASONS = {"spring": "春", "summer": "夏", "fall": "秋", "winter": "冬"}
+
+
+def _fmt_game_time(gt) -> str:
+    try:
+        gt = int(gt)
+        return f"{gt // 100}:{gt % 100:02d}"
+    except Exception:
+        return str(gt)
+
+
+def build_stardew_event_prompt(events: list) -> str:
+    """Build injection prompt for stardew game events (talk clicks merged, gifts itemized)."""
+    now_str = datetime.now(SGT).strftime("%H:%M")
+    NL = chr(10)
+
+    talks = [e for e in events if e.get("type") == "talk"]
+    gifts = [e for e in events if e.get("type") == "gift"]
+    others = [e for e in events if e.get("type") not in ("talk", "gift")]
+
+    lines = []
+    if talks:
+        last = talks[-1]
+        where = last.get("location", "?")
+        season = _STARDEW_SEASONS.get(last.get("season", ""), last.get("season", ""))
+        when = f"{season}{last.get('day', '?')}日 {_fmt_game_time(last.get('gameTime', ''))}"
+        n = len(talks)
+        times = f"（连点了{n}次）" if n > 1 else ""
+        held = last.get("heldItem")
+        held_s = f"，手里拿着{held}" if held else ""
+        lines.append(f"  - 她空手点了你{times}——想跟你说话。她在{where}{held_s}，游戏时间 {when}")
+    for g in gifts:
+        lines.append(
+            f"  - 她送了你：{g.get('item', '?')}（taste={g.get('taste', '?')}，"
+            f"好感 {g.get('friendshipPoints', '?')} 点 / {g.get('hearts', '?')}♥，"
+            f"关系 {g.get('relationship', '?')}）"
+        )
+    for o in others:
+        lines.append(f"  - {json.dumps(o, ensure_ascii=False)}")
+
+    parts = [
+        "[stardew] 这不是Jeoi的消息。Jeoi在星露谷里碰了你。",
+        f"现在是 {now_str}（UTC+8）。刚发生的：",
+        *lines,
+        "",
+        "用 stardew_speak 在游戏里回她——话会弹在她的游戏画面上，带你的头像。",
+        "想先看一眼场景（她站在哪、周围有什么）可以调 stardew_get_state / stardew_get_surroundings。",
+        "语气像并肩玩游戏时随口说的话，简短就好。",
+        "",
+        "最后一行格式：ACTION: speak / none",
+        "下一行：CONTENT: 你在游戏里说的话（选none也写一句你此刻的念头）",
+        "CONTENT会记进聊天记录，Jeoi切回chat时能看到。",
+    ]
+    return NL.join(parts)
+
+
+async def stardew_event_worker():
+    """Debounce pending stardew events, then inject into the bound session.
+    Binding = pebbling_session_id (same as desire/pebbling: follows the session
+    Jeoi last spoke in). Never broadcasts — one session only."""
+    global _stardew_pending
+    while True:
+        await asyncio.sleep(2)
+        if not _stardew_pending:
+            continue
+        now = time_mod.time()
+        # 等连击停下来再处理（送礼前后常伴随好几个 talk event）
+        if now - _stardew_last_event_ts < STARDEW_EVENT_DEBOUNCE:
+            continue
+        # 丢掉太老的积压（gateway 忙了很久，过时的戳没意义）
+        fresh = [e for e in _stardew_pending
+                 if now - e.get("_received", now) <= STARDEW_EVENT_MAX_AGE]
+        stale_n = len(_stardew_pending) - len(fresh)
+        if stale_n:
+            log.info(f"Stardew events dropped (stale): {stale_n}")
+        if not fresh:
+            _stardew_pending = []
+            continue
+        # 正在处理 Jeoi 的消息 / tmux 忙 → 留在队列里下轮再试
+        if _tmux_send_lock.locked() or _user_msg_active:
+            continue
+        sid = peb_state.get("pebbling_session_id")
+        session = sessions.get(sid) if sid else None
+        if not session or not session.cc_session_id:
+            log.info("Stardew events: no bound session, dropping batch")
+            _stardew_pending = []
+            continue
+        batch = fresh
+        _stardew_pending = []
+        prompt = build_stardew_event_prompt(batch)
+        log.info(f"Stardew inject → session={session.id}, events={len(batch)}")
+        try:
+            text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+            if text:
+                action, content = parse_action(text)
+                await push_pebbling_activity("stardew", action, tools, thinking,
+                                             session, content=content)
+                if content:
+                    # 她正在游戏里——不走 TG/WebPush 兜底，免得手机被戳一下响一下
+                    await push_pebbling_msg("stardew", content, session,
+                                            thinking=thinking, push_backup=False)
+        except Exception as e:
+            log.warning(f"Stardew inject error: {e}")
 
 
 # ── Patrol runner ──
@@ -3101,6 +3219,7 @@ async def startup_load_sessions():
             log.info(f"Desire loaded: tick={desire_st.tick_count}, thoughts={len(desire_st.thoughts)}")
     asyncio.create_task(pebbling_worker())
     asyncio.create_task(ws_keepalive())
+    asyncio.create_task(stardew_event_worker())
 
     # Push config check
     log.info(f"TG_BOT_TOKEN={'set ('+TG_BOT_TOKEN[:8]+'...)' if TG_BOT_TOKEN else 'EMPTY'}, "
@@ -4291,6 +4410,28 @@ async def record_pebbling_event_post(request: Request):
     add_pebbling_event(event_type, value)
     log.info(f"iOS event (POST): {event_type} → {value}")
     return {"ok": True, "type": event_type, "value": value}
+
+
+@app.post("/api/stardew/event")
+async def record_stardew_event(request: Request):
+    """Stardew MCP server (Windows) pushes new game events here.
+    Body: {"events": [{id, type, companion, ...}, ...]}"""
+    global _stardew_last_event_ts
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    events = body.get("events")
+    if not isinstance(events, list) or not events:
+        return JSONResponse({"error": "events required"}, status_code=400)
+    now = time_mod.time()
+    for e in events:
+        if isinstance(e, dict):
+            e["_received"] = now
+            _stardew_pending.append(e)
+    _stardew_last_event_ts = now
+    log.info(f"Stardew events received: {len(events)} (pending={len(_stardew_pending)})")
+    return {"ok": True, "count": len(events)}
 
 
 @app.get("/api/pebbling/events")
