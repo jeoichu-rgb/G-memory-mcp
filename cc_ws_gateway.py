@@ -1320,6 +1320,24 @@ def _strip_gateway_noise(text: str) -> str:
     return "\n".join(out).strip()
 
 
+def _shrink_strings(obj, limit: int = 300):
+    """Truncate every long string in a nested structure, keeping its shape.
+    Used on top-level toolUseResult: CC CLI mirrors the raw tool payload
+    there, so a Read on a snap image keeps the full base64 in the event even
+    after message.content is stubbed. The field never reaches the API on
+    resume, but it sits inside the json.dumps the budget loop estimates —
+    one un-shrunk image reads as ~100k est-tok and starves the tail."""
+    if isinstance(obj, str):
+        if len(obj) > limit:
+            return obj[:150] + "…[trimmed by forge]…" + obj[-50:]
+        return obj
+    if isinstance(obj, list):
+        return [_shrink_strings(x, limit) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _shrink_strings(v, limit) for k, v in obj.items()}
+    return obj
+
+
 def _model_match(actual: str, target: str) -> bool:
     """Loose model-id match: 'claude-opus-4-6' vs 'claude-opus-4-6-20260601'.
     Empty/unknown on either side counts as a match (no false drift alarms)."""
@@ -1442,6 +1460,8 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
                                 t = sub.get("text", "")
                                 if len(t) > TOOL_RESULT_MAX:
                                     sub["text"] = t[:150] + "\n…[trimmed]…\n" + t[-100:]
+        if "toolUseResult" in ev:
+            ev["toolUseResult"] = _shrink_strings(ev["toolUseResult"], TOOL_RESULT_MAX)
         cleaned.append(ev)
 
     # Route Guard cut (§7.2): everything at/after the first drifted assistant
@@ -1468,6 +1488,11 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
     token_count = 0
     for ev in reversed(cleaned):
         ev_tok = _estimate_tokens(json.dumps(ev, ensure_ascii=False))
+        if ev_tok > retain_tokens:
+            # A single event bigger than the whole budget means some payload
+            # escaped the cleaning above — it would silently eat the tail.
+            log.warning(f"Forge: event {str(ev.get('uuid'))[:8]} ~{ev_tok} "
+                        f"est-tok exceeds whole budget after cleaning — payload leak?")
         if token_count + ev_tok > retain_tokens and retained:
             break
         retained.insert(0, ev)
