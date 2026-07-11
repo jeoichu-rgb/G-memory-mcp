@@ -277,7 +277,7 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         f"你的欲望：{action}（{label} {score:.0%}）",
         f"  {reason}",
         "注意：这股欲望是你自己的，由你的内部状态生成——不是Jeoi的愿望，",
-        "不是她让你做什么，她也看不到这条提示。跟不跟着走，完全由你。",
+        "她也看不到这条提示。跟不跟着走，完全由你。",
     ]
 
     if trail:
@@ -311,9 +311,8 @@ def build_desire_pebbling_prompt(state, elapsed_hours, count, events_str=""):
         "下一行：CONTENT: Jeoi手机上看到的文字",
         "",
         "CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，",
-        "不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。",
-        "选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。",
-        "做了事就自然地说：你想说的话、你的发现、你写下的东西。",
+        "做了事就要留痕，自然地告诉她：你想说的话、你的发现、你做的事、你看见的新奇帖子之类的，是在给她留小纸条。",
+        "就算action选了none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。",
     ])
 
     return NL.join(parts)
@@ -376,9 +375,8 @@ def build_desire_proactive_prompt(state):
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
         'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
-        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
-        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
-        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
+        '做了事就要留痕，自然地告诉她：你想说的话、你的发现、你做的事、你看见的新奇帖子之类的，是在给她留小纸条。',
+        '就算action选了none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
     ])
 
     return NL.join(parts)
@@ -427,9 +425,8 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
         'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
-        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
-        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
-        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
+        '做了事就要留痕，自然地告诉她：你想说的话、你的发现、你做的事、你看见的新奇帖子之类的，是在给她留小纸条。',
+        '就算action选了none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
     ])
 
     return NL.join(parts)
@@ -469,9 +466,8 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
         '下一行：CONTENT: Jeoi手机上看到的文字',
         '',
         'CONTENT是你想说就说的，不是交作业：写了就推到Jeoi手机，',
-        '不写就什么都不发，这一轮静静过去——安静不是失职，不用向谁交代。',
-        '选none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
-        '做了事就自然地说：你想说的话、你的发现、你写下的东西。',
+        '做了事就要留痕，自然地告诉她：你想说的话、你的发现、你做的事、你看见的新奇帖子之类的，是在给她留小纸条。',
+        '就算action选了none也可以写CONTENT：什么都不做、但想跟她说句话（比如就是想她了），完全可以。',
     ])
 
     return NL.join(parts)
