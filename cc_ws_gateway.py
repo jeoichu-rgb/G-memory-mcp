@@ -294,11 +294,24 @@ class TranscriptTailer:
         # stop_reason=end_turn that ends the turn before the real reply lands.
         self._started_at = datetime.now(timezone.utc)
         self._last_growth = time_mod.monotonic()
+        # Anchor: don't treat anything as this turn's reply until our own
+        # user message shows up in the transcript. A background oneshot
+        # (desire/pebbling) already in flight when Jeoi sends a message
+        # otherwise lands its ACTION/CONTENT reply in our window — the
+        # frontend shows it as HER reply and its end_turn kills the turn
+        # before the real reply is even generated.
+        self._anchor = None
+        self._anchored = True
+        self._anchor_armed_at = 0.0
 
-    def start(self):
+    def start(self, anchor_text: str = None):
         global _transcript_path_cache
         _transcript_path_cache = None
         self._reply_done.clear()
+        if anchor_text:
+            self._anchor = anchor_text.strip()[:60]
+            self._anchored = False
+            self._anchor_armed_at = time_mod.monotonic()
         self._path = _find_active_transcript()
         if self._path:
             try:
@@ -348,6 +361,13 @@ class TranscriptTailer:
         _ticks = 0
         while not self._stop.is_set():
             _ticks += 1
+            # Anchor fallback: if our message never shows up (text rewritten
+            # in transit?), degrade to unanchored tailing rather than eating
+            # the whole reply. 20s is enough for a stuck oneshot to finish.
+            if (not self._anchored
+                    and time_mod.monotonic() - self._anchor_armed_at > 20):
+                self._anchored = True
+                log.warning("tailer anchor timeout — falling back to unanchored")
             try:
                 # Every ~4s, rescan for newer transcript file
                 if _ticks % 10 == 0:
@@ -400,6 +420,19 @@ class TranscriptTailer:
                     return  # replayed history from a resume-fork, not this turn
             except (ValueError, TypeError):
                 pass  # unparseable timestamp — let it through
+
+        if not self._anchored:
+            # Everything before our own user message is another turn's
+            # traffic (an in-flight background oneshot finishing up).
+            if entry.get("type") == "user":
+                c = (entry.get("message") or {}).get("content")
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c
+                                 if isinstance(b, dict) and b.get("type") == "text")
+                if isinstance(c, str) and self._anchor and self._anchor in c:
+                    self._anchored = True
+                    log.info("tailer anchored to this turn's user message")
+            return
 
         if entry.get("type") != "assistant":
             return
@@ -3858,7 +3891,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                                 "message": "Switching session..."})
             await restart_cc_for_session(session, ws)
 
-        tailer.start()
+        tailer.start(anchor_text=message)
         async with _tmux_send_lock:
             await tmux_send_message(message)
 
