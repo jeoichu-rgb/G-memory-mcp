@@ -13,7 +13,7 @@ DRIVE_CONFIG = {
     # cap 贴着阈值会让 drive 无限逼近但永远触发不了（cap=0.57 实测 drive 峰值只有 0.54）
     "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.002, "drift_cap": 0.65, "pulse_delta": 0.18, "drift_delay": 1200, "partial_floor_reset": 0.5},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
-    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 1800},
+    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.95, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 1800},
     "stress":     {"home": 0.12, "decay": 0.93, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},
     "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12, "gate_threshold": 0.65},
 }
@@ -45,7 +45,7 @@ BG_THRESHOLDS          = {"curiosity": 0.55, "attachment": 0.42, "libido": 0.75}
 CURIOSITY_SEED_SILENCE_SECS = 1200
 BG_THRESHOLDS_MULTI    = {
     "attachment": [0.42, 0.58, 0.72],
-    "libido": [0.75, 0.85, 0.92],
+    "libido": [0.75, 0.85, 0.90],
 }
 
 INTENT_MAP     = {"attachment": "碎语", "curiosity": "探索", "reflection": "沉淀", "libido": "想要", "stress": "倾诉"}
