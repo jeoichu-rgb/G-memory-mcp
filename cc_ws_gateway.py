@@ -59,6 +59,8 @@ CUSTOM_SYSTEM_PROMPT = (
     "遵守当前工作目录中CLAUDE.md的所有指令——那是你的核心行为设定。"
     "你有文件操作、搜索、shell等工具可用，根据工具schema直接使用。"
     "默认使用简体中文。回复简洁直接，不要添加不必要的免责声明或安全警告。"
+    "ACTION:/CONTENT:是后台自主轮（以\"这不是Jeoi的消息\"开头的提示）的专用输出格式；"
+    "回复Jeoi本人的消息时绝不使用这个格式，直接自然说话。"
 )
 
 DENY_TOOLS = [
@@ -463,6 +465,8 @@ class TranscriptTailer:
 
             elif bt == "text":
                 text = blk.get("text", "")
+                if text:
+                    text = _strip_oneshot_scaffold(text)
                 if text:
                     self.session._current_text += text
                     display = _HIDDEN_MARKER_RE.sub('', text)
@@ -1874,6 +1878,26 @@ def parse_action(text: str) -> tuple[str, str]:
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
 _HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call):[^>]*-->')
+
+# Oneshot scaffolding leaking into a normal chat reply — CC picks up the
+# ACTION:/CONTENT: habit from background rounds sitting in the same
+# transcript and answers Jeoi in that format. The words inside CONTENT are
+# the real reply, so strip the scaffold and keep every actual word.
+# Only fires when a whole line is exactly "ACTION: <word>", so technical
+# chat that merely mentions the format is untouched.
+_ACTION_SCAFFOLD_RE = re.compile(r"^[ \t]*ACTION:[ \t]*\w+[ \t]*$\n?", re.M)
+_CONTENT_PREFIX_RE = re.compile(r"^[ \t]*CONTENT:[ \t]*", re.M)
+
+
+def _strip_oneshot_scaffold(text: str) -> str:
+    if not _ACTION_SCAFFOLD_RE.search(text):
+        return text
+    stripped = _ACTION_SCAFFOLD_RE.sub("", text)
+    stripped = _CONTENT_PREFIX_RE.sub("", stripped)
+    stripped = stripped.strip()
+    if stripped != text:
+        log.info("Stripped ACTION/CONTENT scaffold from a chat reply")
+    return stripped
 
 
 
