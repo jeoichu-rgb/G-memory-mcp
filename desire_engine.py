@@ -7,12 +7,13 @@ from typing import Optional
 
 DRIVE_KEYS = ["attachment", "curiosity", "reflection", "libido", "stress", "fatigue"]
 DRIVE_CONFIG = {
-    "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.80, "pulse_delta": 0.18, "drift_delay": 1800},
+    # 想念在她转身那一刻就开始积（无 drift_delay）；亲密要沉半小时才浮。
+    "attachment": {"home": 0.22, "decay": 0.96, "drift": 0.001, "drift_cap": 0.80, "pulse_delta": 0.18},
     # drift_cap 必须比 BG 阈值(0.55)高至少 ~0.05：drive 追赶上涨的 floor 有滞后，
     # cap 贴着阈值会让 drive 无限逼近但永远触发不了（cap=0.57 实测 drive 峰值只有 0.54）
     "curiosity":  {"home": 0.38, "decay": 0.88, "drift": 0.002, "drift_cap": 0.65, "pulse_delta": 0.18, "drift_delay": 1200, "partial_floor_reset": 0.5},
     "reflection": {"home": 0.30, "decay": 0.91, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.18},
-    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5},
+    "libido":     {"home": 0.26, "decay": 0.95, "drift": 0.002, "drift_cap": 0.92, "pulse_delta": 0.18, "refractory_ticks": 5, "drift_delay": 1800},
     "stress":     {"home": 0.12, "decay": 0.93, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12},
     "fatigue":    {"home": 0.08, "decay": 0.92, "drift": 0.0,   "drift_cap": 0.0,  "pulse_delta": 0.12, "gate_threshold": 0.65},
 }
