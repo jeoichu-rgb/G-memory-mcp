@@ -135,6 +135,10 @@ PROACTIVE_PRIORITY = {"attachment": 0, "libido": 1, "stress": 2, "curiosity": 3,
 # 每驱力主动推送冷却（秒）。未列出的用调用方传入的默认值（600）。
 # curiosity 自然周期约 54 分钟（drift + partial_floor_reset 决定），3000s 只是下限保护
 PROACTIVE_COOLDOWNS = {"curiosity": 3000}
+# 静默门槛（秒）：这些驱力只在Jeoi离开足够久后才允许开独立oneshot轮。
+# 对话热区里它们照常上涨，由她下一条消息的[desire]注入消化（classify_and_pulse）——
+# 独立轮和正在进行的对话抢同一个tmux，正是ACTION/CONTENT顶替真回复的撞车根源。
+PROACTIVE_SILENCE_SECS = {"attachment": 1200, "libido": 1200}
 
 
 def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600, jeoi_away_secs: float = 0):
@@ -156,6 +160,8 @@ def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: flo
         if now - cooldowns.get(k, 0) < PROACTIVE_COOLDOWNS.get(k, cooldown_secs):
             continue
         if k == "curiosity" and jeoi_away_secs < de.CURIOSITY_SEED_SILENCE_SECS:
+            continue
+        if jeoi_away_secs < PROACTIVE_SILENCE_SECS.get(k, 0):
             continue
         base = state.drives.get(k, 0)
         fix_bonus = max(
