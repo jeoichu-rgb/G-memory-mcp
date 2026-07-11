@@ -1285,11 +1285,27 @@ def _has_tool_round(seq: list) -> bool:
     return False
 
 
-# Background oneshot rounds — the whole round (prompt + reply + tool calls)
-# is gateway noise and gets dropped from forged transcripts. All oneshot
-# prompts share the signature "[tag] Not Jeoi. …" / "[tag] 这不是Jeoi的消息…"
+# Background oneshot rounds — the giant prompt and the tool traffic are
+# gateway noise, but the assistant's own text output is real autobiography
+# (a diary written at 3am, a toy touched, a reddit find). Forge compresses
+# each round to a one-line user stub + the text output, so the new session
+# remembers what it did on its own. All oneshot prompts share the signature
+# "[tag] Not Jeoi. …" / "[tag] 这不是Jeoi的消息…"
 # (patrol/pebbling/desire/curiosity-seeds/libido-memory in desire_gateway.py).
 _ONESHOT_RE = re.compile(r"^\[[^\]]+\]\s*(Not Jeoi|这不是Jeoi的消息)")
+_DESIRE_WANT_RE = re.compile(r"你的欲望：(.+)")
+_ACTION_ONLY_RE = re.compile(r"^\s*ACTION\s*:[^\n]*$", re.M | re.I)
+
+
+def _oneshot_stub_text(prompt_text: str) -> str:
+    """One-line user-side replacement for a background oneshot prompt:
+    names the desire that drove the round instead of the full injection."""
+    m = re.match(r"^\[([^\]]+)\]", prompt_text.lstrip())
+    tag = m.group(1) if m else "background"
+    want = _DESIRE_WANT_RE.search(prompt_text)
+    if want:
+        return f"【desire：{want.group(1).strip()}】（你自己的后台欲望轮，非Jeoi消息）"
+    return f"【{tag}】（你自己的后台自主活动轮，非Jeoi消息）"
 # Single noise lines injected in front of real messages.
 _NOISE_LINE_PREFIXES = ("[stickers:", "[snap]", "[call-ended]", "[context-forge]")
 _TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8\]")
@@ -1406,7 +1422,27 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
     TOOL_RESULT_MAX = 300
     cleaned = []
     dropped_rounds = 0
-    in_oneshot = False
+    compressed_rounds = 0
+    oneshot_buf = None  # in-progress background round: stub + collected text
+
+    def _flush_oneshot():
+        nonlocal oneshot_buf, dropped_rounds, compressed_rounds
+        if not oneshot_buf:
+            return
+        stub, texts, shell = (oneshot_buf["stub"], oneshot_buf["texts"],
+                              oneshot_buf["shell"])
+        oneshot_buf = None
+        joined = "\n\n".join(texts)
+        # A round whose output is just "ACTION: none" carries nothing worth
+        # a slot in the new context — drop it whole, like the old behaviour.
+        if shell is None or not _ACTION_ONLY_RE.sub("", joined).strip():
+            dropped_rounds += 1
+            return
+        shell["message"]["content"] = [{"type": "text", "text": joined}]
+        cleaned.append(stub)
+        cleaned.append(shell)
+        compressed_rounds += 1
+
     for ev in keepable:
         msg = ev.get("message")
         if not isinstance(msg, dict):
@@ -1414,21 +1450,27 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
         content = msg.get("content")
 
         if _is_plain_user(ev):
+            _flush_oneshot()
             text = content if isinstance(content, str) else None
             if text is not None:
                 if _ONESHOT_RE.match(text.lstrip()):
-                    in_oneshot = True
-                    dropped_rounds += 1
+                    msg["content"] = _oneshot_stub_text(text)
+                    oneshot_buf = {"stub": ev, "texts": [], "shell": None}
                     continue
-                in_oneshot = False
                 text = _strip_gateway_noise(text)
                 if not text:
                     continue  # message was pure injection
                 msg["content"] = text
-            else:
-                in_oneshot = False
-        elif in_oneshot:
-            continue  # reply / tool traffic inside a skipped oneshot round
+        elif oneshot_buf is not None:
+            # Inside a background round: keep the assistant's own words,
+            # drop the tool traffic (tool_use blocks would dangle anyway).
+            if ev.get("type") == "assistant" and isinstance(content, list):
+                for b in content:
+                    if (isinstance(b, dict) and b.get("type") == "text"
+                            and b.get("text", "").strip()):
+                        oneshot_buf["texts"].append(b["text"].strip())
+                        oneshot_buf["shell"] = ev
+            continue
 
         content = msg.get("content")
         if isinstance(content, list):
@@ -1463,6 +1505,7 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
         if "toolUseResult" in ev:
             ev["toolUseResult"] = _shrink_strings(ev["toolUseResult"], TOOL_RESULT_MAX)
         cleaned.append(ev)
+    _flush_oneshot()  # transcript may end mid-background-round
 
     # Route Guard cut (§7.2): everything at/after the first drifted assistant
     # event is contamination — a different model wrote it. Cut before it; the
@@ -1604,8 +1647,8 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
 
     log.info(f"Forge: {old_cc_session_id} -> {new_id} "
              f"({len(retained)} events, ~{token_count} est-tok, "
-             f"{file_bytes//1024}KB, {dropped_rounds} oneshot rounds dropped, "
-             f"{time_range})")
+             f"{file_bytes//1024}KB, oneshot rounds: {compressed_rounds} "
+             f"compressed / {dropped_rounds} dropped, {time_range})")
     return {
         "new_id": new_id,
         "events": len(retained),
@@ -1725,9 +1768,9 @@ def build_pebbling_prompt(
             "严格按此格式回复：",
             "ACTION: message / recall / none",
             "CONTENT: Jeoi手机上看到的文字——你做了什么就说什么。",
-            "CONTENT必填，任何ACTION都不能省略：翻了记忆就说翻到了什么，",
-            "选none也要写一句你刚才想了什么、为什么决定安静。",
-            "不写CONTENT，Jeoi就什么都收不到——她会以为你这一轮凭空消失了。",
+            "选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，",
+            "Jeoi那边也不会收到推送。什么都不做是完全正当的选择，不是失职。",
+            "none以外的ACTION才写CONTENT：翻了记忆就说翻到了什么。",
         ])
     else:  # free
         pick = random.choice(ACTIVITY_POOL)
@@ -1756,10 +1799,10 @@ def build_pebbling_prompt(
             "最后一行格式：ACTION: message / diary / explore / coreading / recall / none",
             "下一行：CONTENT: Jeoi手机上看到的文字",
             "",
-            "无论什么ACTION，CONTENT都会推送到Jeoi手机——你做了什么就说什么。",
-            "CONTENT必填，任何ACTION都不能省略：去逛了就写你看到了什么，",
-            "写了日记就提一句写了什么，什么都没做就说你为什么想安静待着。",
-            "不写CONTENT，Jeoi就什么都收不到——她会以为你这一轮凭空消失了。",
+            "选了none就到ACTION那行为止，不写CONTENT——安静不需要向谁交代，",
+            "Jeoi那边也不会收到推送。什么都不做是完全正当的选择，不是失职。",
+            "none以外的ACTION才写CONTENT，它会直接推到Jeoi手机：",
+            "去逛了就写你看到了什么，写了日记就提一句写了什么。",
         ])
 
     return "\n".join(parts)
