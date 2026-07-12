@@ -132,6 +132,12 @@ ACTIVITY_POOL = [
         "action": "explore",
     },
     {
+        "id": "browser",
+        "label": "上网冲浪",
+        "desc": "用browser工具去Yahoo搜点感兴趣的东西（browser_js提取JSON最省token），看看新闻、查个话题、随便逛逛",
+        "action": "explore",
+    },
+    {
         "id": "recall",
         "label": "记忆漫游",
         "desc": "在记忆库里搜索一个你突然想到的关键词，看看能捞到什么",

@@ -17,10 +17,13 @@ import os
 import re
 import json
 import httpx
+import concurrent.futures
+from playwright.sync_api import sync_playwright
 
 TOY_BRIDGE_URL      = os.getenv("TOY_BRIDGE_URL",      "http://192.3.61.205:7001")
 BUNNY_BRIDGE_URL    = os.getenv("BUNNY_BRIDGE_URL",    "http://192.3.61.205:7003")
 AK_BRIDGE_URL       = os.getenv("AK_BRIDGE_URL",       "http://192.3.61.205:7004")
+BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", "/app/browser_profile")
 
 import time
 import smtplib
@@ -79,6 +82,135 @@ FOLDER_MAP = {
 
 
 # ══════════════════════════════════════════════════════════════════
+#  Stealth 注入脚本
+# ══════════════════════════════════════════════════════════════════
+STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = {
+    runtime: {},
+    loadTimes: function(){},
+    csi: function(){},
+    app: {}
+};
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+        const arr = [1,2,3,4,5];
+        arr.item = function(i){ return this[i]; };
+        arr.namedItem = function(){ return null; };
+        arr.refresh = function(){};
+        return arr;
+    }
+});
+Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+"""
+
+
+# ══════════════════════════════════════════════════════════════════
+#  通用 stealth context 启动器（VPS headless）
+# ══════════════════════════════════════════════════════════════════
+def _launch_stealth_context(p, profile_dir: str):
+    os.makedirs(profile_dir, exist_ok=True)
+    context = p.chromium.launch_persistent_context(
+        profile_dir,
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--lang=zh-CN",
+        ],
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1920, "height": 1080},
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai",
+        ignore_https_errors=True,
+    )
+    context.add_init_script(STEALTH_SCRIPT)
+    return context
+
+
+# ══════════════════════════════════════════════════════════════════
+#  通用 VPS browser（stealth headless）
+# ══════════════════════════════════════════════════════════════════
+def _vps_browser_fetch(url: str, wait_selector: str = None) -> str:
+    def _open():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if wait_selector:
+                try:
+                    page.wait_for_selector(wait_selector, timeout=10000)
+                except Exception:
+                    pass
+            else:
+                page.wait_for_timeout(2000)
+            page.evaluate("window.scrollBy(0, 600)")
+            page.wait_for_timeout(1000)
+            text = page.evaluate("""() => {
+                document.querySelectorAll('script,style,nav,footer,header,aside').forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            context.close()
+            return text or "页面无文字内容。"
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_open).result(timeout=60)
+
+
+def _vps_browser_js(url: str, js_code: str) -> str:
+    def _js():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            result = page.evaluate(js_code)
+            context.close()
+            return str(result)[:3000]
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_js).result(timeout=60)
+
+
+def _vps_browser_click(url: str, selector: str = None, text_match: str = None) -> str:
+    def _click():
+        with sync_playwright() as p:
+            context = _launch_stealth_context(p, BROWSER_PROFILE_DIR)
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+            if text_match:
+                el = page.get_by_text(text_match, exact=False).first
+                el.scroll_into_view_if_needed()
+                el.click()
+            elif selector:
+                page.wait_for_selector(selector, timeout=10000)
+                page.click(selector)
+            else:
+                context.close()
+                return "错误：需要 selector 或 text_match。"
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2000)
+            text = page.evaluate("""() => {
+                document.querySelectorAll('script,style,nav,footer,header,aside').forEach(el => el.remove());
+                return document.body.innerText.replace(/\\s+/g, ' ').trim().slice(0, 3000);
+            }""")
+            context.close()
+            return text or "点击后页面无文字内容。"
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        return pool.submit(_click).result(timeout=60)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  MCP Server
 # ══════════════════════════════════════════════════════════════════
 mcp = FastMCP(
@@ -107,6 +239,9 @@ mcp = FastMCP(
         "bunny_deflate  — 立即放气\n"
         "ak_status      — 确认AK-G2(AfterKiss)在线\n"
         "ak_play        — 控制AK-G2，data={thrust(0-100), suction(0-100), vibrate(0-100), duration(秒), pattern(可选)}\n"
+        "browser_open   — 打开网页，data={url, wait_selector(可选)}\n"
+        "browser_js     — 执行JS提取，data={url, js_code}\n"
+        "browser_click  — 点击元素后提取，data={url, selector(可选), text_match(可选)}\n"
         "search_chronicle — 检索周历/月历总结，当Jeoi提到时间跨度词时主动调用，data={keyword}\n"
     ),
     transport_security=TransportSecuritySettings(
@@ -392,6 +527,42 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         except Exception as e:
             return f"AK-G2播放失败：{e}"
 
+    # ── browser_open ──────────────────────────────────────────
+    elif cmd == "browser_open":
+        url = data.get("url", "")
+        if not url:
+            return f"错误：browser_open 需要 url 参数。收到的 data: {data}"
+        wait_selector = data.get("wait_selector", None)
+        try:
+            return _vps_browser_fetch(url, wait_selector)
+        except Exception as e:
+            return f"browser_open 失败：{e}"
+
+    # ── browser_js ────────────────────────────────────────────
+    elif cmd == "browser_js":
+        url     = data.get("url", "")
+        js_code = data.get("js_code", "")
+        if not url or not js_code:
+            return f"错误：browser_js 需要 url 和 js_code 参数。收到的 data: {data}"
+        try:
+            return _vps_browser_js(url, js_code)
+        except Exception as e:
+            return f"browser_js 失败：{e}"
+
+    # ── browser_click ─────────────────────────────────────────
+    elif cmd == "browser_click":
+        url = data.get("url", "")
+        if not url:
+            return f"错误：browser_click 需要 url 参数。收到的 data: {data}"
+        try:
+            return _vps_browser_click(
+                url,
+                selector=data.get("selector"),
+                text_match=data.get("text_match"),
+            )
+        except Exception as e:
+            return f"browser_click 失败：{e}"
+
     # ── send_email ────────────────────────────────────────────
     elif cmd == "send_email":
         to_addr = data.get("to", "")
@@ -500,6 +671,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "toy_status / toy_play / "
             "bunny_status / bunny_play / bunny_deflate / "
             "ak_status / ak_play / "
+            "browser_open / browser_js / browser_click / "
             "read_health / "
             "send_email / read_email"
         )
