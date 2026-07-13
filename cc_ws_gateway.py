@@ -341,6 +341,7 @@ class TranscriptTailer:
 
     async def wait_done(self, timeout=300):
         deadline = time_mod.monotonic() + timeout
+        esc_sent = False
         while True:
             remaining = deadline - time_mod.monotonic()
             if remaining <= 0:
@@ -353,12 +354,12 @@ class TranscriptTailer:
             except asyncio.TimeoutError:
                 pass
             stalled = time_mod.monotonic() - self._last_growth
-            if STALL_ESC_SECS and stalled >= STALL_ESC_SECS:
+            if STALL_ESC_SECS and stalled >= STALL_ESC_SECS and not esc_sent:
                 log.warning(
                     f"transcript stalled {int(stalled)}s mid-turn "
                     f"(likely a hung MCP call) — sending Esc to rescue CC")
                 await tmux_send_escape()
-                return
+                esc_sent = True
 
     async def stop(self):
         self._stop.set()
