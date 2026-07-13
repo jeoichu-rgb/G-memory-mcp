@@ -341,6 +341,7 @@ class TranscriptTailer:
 
     async def wait_done(self, timeout=300):
         deadline = time_mod.monotonic() + timeout
+        esc_sent = False
         while True:
             remaining = deadline - time_mod.monotonic()
             if remaining <= 0:
@@ -353,12 +354,12 @@ class TranscriptTailer:
             except asyncio.TimeoutError:
                 pass
             stalled = time_mod.monotonic() - self._last_growth
-            if STALL_ESC_SECS and stalled >= STALL_ESC_SECS:
+            if STALL_ESC_SECS and stalled >= STALL_ESC_SECS and not esc_sent:
                 log.warning(
                     f"transcript stalled {int(stalled)}s mid-turn "
                     f"(likely a hung MCP call) — sending Esc to rescue CC")
                 await tmux_send_escape()
-                return
+                esc_sent = True
 
     async def stop(self):
         self._stop.set()
@@ -1557,6 +1558,32 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
             ev["toolUseResult"] = _shrink_strings(ev["toolUseResult"], TOOL_RESULT_MAX)
         cleaned.append(ev)
     _flush_oneshot()  # transcript may end mid-background-round
+
+    # Drop "Prompt is too long" error pairs: when CC CLI hits the context
+    # limit it writes an assistant event with just that text. If forge carries
+    # it into the new session, the new CC will echo it back as its first reply.
+    # Also drop the preceding user event (usually a desire/pebbling injection
+    # that triggered the overflow) so the pair doesn't leave an orphan.
+    _PTL = "Prompt is too long"
+    i = 0
+    while i < len(cleaned):
+        ev = cleaned[i]
+        if ev.get("type") == "assistant":
+            c = (ev.get("message") or {}).get("content")
+            text = None
+            if isinstance(c, str):
+                text = c.strip()
+            elif isinstance(c, list):
+                texts = [b.get("text", "").strip() for b in c
+                         if isinstance(b, dict) and b.get("type") == "text"]
+                text = " ".join(texts).strip()
+            if text == _PTL:
+                if i > 0 and cleaned[i - 1].get("type") == "user":
+                    cleaned.pop(i - 1)
+                    i -= 1
+                cleaned.pop(i)
+                continue
+        i += 1
 
     # Route Guard cut (§7.2): everything at/after the first drifted assistant
     # event is contamination — a different model wrote it. Cut before it; the
