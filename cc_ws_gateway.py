@@ -1484,9 +1484,11 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
                               oneshot_buf["shell"])
         oneshot_buf = None
         joined = "\n\n".join(texts)
-        # A round whose output is just "ACTION: none" carries nothing worth
-        # a slot in the new context — drop it whole, like the old behaviour.
-        if shell is None or not _ACTION_ONLY_RE.sub("", joined).strip():
+        # Drop rounds with no real output: "ACTION: none" only, or context-
+        # overflow error echoes ("Prompt is too long") from a saturated session.
+        if (shell is None
+                or not _ACTION_ONLY_RE.sub("", joined).strip()
+                or joined.strip() == "Prompt is too long"):
             dropped_rounds += 1
             return
         shell["message"]["content"] = [{"type": "text", "text": joined}]
@@ -1555,6 +1557,19 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
                                     sub["text"] = t[:150] + "\n…[trimmed]…\n" + t[-100:]
         if "toolUseResult" in ev:
             ev["toolUseResult"] = _shrink_strings(ev["toolUseResult"], TOOL_RESULT_MAX)
+        # CC CLI emits "Prompt is too long" as an assistant text event when
+        # context overflows — drop these so they don't pollute the forged session.
+        if ev.get("type") == "assistant":
+            c = msg.get("content")
+            if isinstance(c, str) and c.strip() == "Prompt is too long":
+                continue
+            if isinstance(c, list):
+                txt = [b for b in c
+                       if isinstance(b, dict) and b.get("type") == "text"]
+                if txt and all(
+                    b.get("text", "").strip() == "Prompt is too long" for b in txt
+                ):
+                    continue
         cleaned.append(ev)
     _flush_oneshot()  # transcript may end mid-background-round
 
