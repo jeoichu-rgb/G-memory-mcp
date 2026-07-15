@@ -456,7 +456,9 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 .emoji-bar .emoji-opt:active { transform:scale(0.9); }
 .emoji-bar .emoji-opt.text-emoji { font-size:13px; padding:4px 8px; display:flex; align-items:center; white-space:nowrap; }
 .emoji-bar .emoji-opt.heart-emoji { color:#e25555; font-family:serif; font-size:32px; line-height:1; }
-.reaction .heart-char { color:#e25555; font-family:serif; }
+/* ♥ (U+2665) renders in the text font — foreground black — unless recolored.
+   Shared by reactions AND message bodies (renderMarkdown wraps it). */
+.heart-char { color:#e25555; font-family:serif,Georgia; }
 
 /* Image preview */
 .img-preview-wrap {
@@ -2257,6 +2259,7 @@ function renderMarkdown(text) {
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,.06);padding:1px 4px;border-radius:3px;font-size:12px;">$1</code>')
+    .replace(/♥(?:︎|️)?/g, '<span class="heart-char">♥</span>')
     .replace(/\n/g, '<br>');
 }
 
