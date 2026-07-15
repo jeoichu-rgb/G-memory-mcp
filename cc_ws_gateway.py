@@ -883,8 +883,11 @@ def save_session_meta(session: "Session"):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None, **extra):
-    """Append a message to the session history file."""
+def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None, **extra) -> int:
+    """Append a message to the session history file.
+    Returns the message's index in the history array — history files start
+    empty per gateway session (forge creates a new one), so index+1 IS the
+    message's per-session house number (门牌号) shown in the time tag."""
     path = history_path(sid)
     data = {"meta": {}, "messages": []}
     if path.exists():
@@ -912,6 +915,7 @@ def append_message(sid: str, role: str, content: str, thinking: str = "", tools:
 
     data["messages"].append(msg)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(data["messages"]) - 1
 
 
 def load_history(sid: str) -> dict:
@@ -923,6 +927,22 @@ def load_history(sid: str) -> dict:
         except Exception:
             pass
     return {"meta": {}, "messages": []}
+
+
+def resolve_nth_user_from_tail(sid: str, nth: int):
+    """Absolute history index of the nth-from-last user message (1 = Jeoi's
+    latest). Only role=="user" counts, so Erik's replies and standalone voice
+    messages never shift the numbering. Returns None when nth runs off the
+    head — e.g. referencing a message that only exists in the forged CC
+    context, not in this gateway session's history."""
+    msgs = load_history(sid).get("messages", [])
+    seen = 0
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            seen += 1
+            if seen == nth:
+                return i
+    return None
 
 
 def set_reaction(sid: str, msg_index: int, who: str, emoji=None):
@@ -1376,7 +1396,7 @@ def _oneshot_stub_text(prompt_text: str) -> str:
     return f"【{tag}】（你自己的后台自主活动轮，非Jeoi消息）"
 # Single noise lines injected in front of real messages.
 _NOISE_LINE_PREFIXES = ("[stickers:", "[snap]", "[call-ended]", "[context-forge]")
-_TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8\]")
+_TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8( #\d+)?\]")
 _AUTO_INJECT_RE = re.compile(r"^═+ 自动注入[^\n]*\n.*?\n═+\n?", re.S | re.M)
 
 
@@ -3690,7 +3710,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Save user message & update last_active immediately
                 msg_source = "voice_call" if call_mode else None
-                append_message(current_session.id, "user", message, source=msg_source)
+                user_msg_idx = append_message(current_session.id, "user", message, source=msg_source)
                 current_session.last_active = datetime.now(SGT)
                 save_session_meta(current_session)
                 sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
@@ -3705,9 +3725,11 @@ async def websocket_endpoint(ws: WebSocket):
                 if content_blocks:
                     snap_path = save_snap(content_blocks)
 
-                # Auto-inject current time (UTC+8) into every message
+                # Auto-inject current time (UTC+8) + per-session house number
+                # (#N = position in THIS gateway session's history; forged CC
+                # context replays older sessions but never occupies a number)
                 now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
-                time_tag = "[" + now_str + " UTC+8]"
+                time_tag = f"[{now_str} UTC+8 #{user_msg_idx + 1}]"
                 cli_message = time_tag + "\n" + message
 
                 # Voice call: detect TTS backend + inject system prompt
@@ -3770,10 +3792,25 @@ async def websocket_endpoint(ws: WebSocket):
                     if mem_injection:
                         cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
 
-                # Sticker reactions injection (one-shot, then cleared)
+                # Sticker reactions injection (one-shot, then cleared).
+                # Each entry carries a short excerpt of the reacted message —
+                # the house number alone is useless to CC when the message
+                # predates what survived the last forge.
                 if current_session.pending_jeoi_reactions:
-                    parts = [f"#{r['msgIndex']+1}←{r['emoji']}"
-                             for r in current_session.pending_jeoi_reactions]
+                    _hist_msgs = load_history(current_session.id).get("messages", [])
+                    parts = []
+                    for r in current_session.pending_jeoi_reactions:
+                        _ri = r["msgIndex"]
+                        excerpt = ""
+                        if 0 <= _ri < len(_hist_msgs):
+                            _c = (_hist_msgs[_ri].get("content") or "").strip().replace("\n", " ")
+                            if not _c and _hist_msgs[_ri].get("voice"):
+                                _c = "🎤" + _hist_msgs[_ri]["voice"].get("text", "")
+                            if len(_c) > 24:
+                                _c = _c[:24] + "…"
+                            if _c:
+                                excerpt = f"「{_c}」"
+                        parts.append(f"#{_ri + 1}{excerpt}←{r['emoji']}")
                     sticker_line = "[stickers: " + ", ".join(parts) + "]"
                     cli_message = sticker_line + "\n" + cli_message
                     log.info(f"Injected stickers: {sticker_line}")
@@ -4119,8 +4156,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "不要把翻译攒到最后一起写。\n"
                         "不要用markdown格式。你是打电话过去的人，说你想说的。"
                     )
-                    cli_message = call_inject + "\n\n[" + now_str + " UTC+8]\n（Jeoi接听了来电）"
-                    append_message(call_session.id, "user", "（接听来电）", source="voice_call")
+                    _accept_idx = append_message(call_session.id, "user", "（接听来电）", source="voice_call")
+                    cli_message = call_inject + f"\n\n[{now_str} UTC+8 #{_accept_idx + 1}]\n（Jeoi接听了来电）"
                     await run_claude(cli_message, call_session, ws)
 
             elif event == "call:reject":
@@ -4251,13 +4288,17 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 })
             session._current_text = voice_pattern.sub('', session._current_text).rstrip()
 
-        # Post-processing: parse sticker reactions
+        # Post-processing: parse sticker reactions.
+        # Two addressing modes: #N = house number from the time tag (absolute
+        # index in this gateway session's history), ^N = nth-from-last Jeoi
+        # message (^1 = her latest). Resolution happens below, after the
+        # reply is appended — ^N only counts role=user so that's safe.
         erik_reactions = []
         if session._current_text:
-            react_pattern = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
+            react_pattern = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
             for m in react_pattern.finditer(session._current_text):
-                emoji, idx = m.group(1), int(m.group(2)) - 1
-                erik_reactions.append((idx, emoji))
+                emoji, kind, n = m.group(1), m.group(2), int(m.group(3))
+                erik_reactions.append((kind, n, emoji))
             session._current_text = react_pattern.sub('', session._current_text).rstrip()
 
         # Post-processing: parse incoming call marker
@@ -4302,7 +4343,14 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 tools=session._current_tools if session._current_tools else None,
                 source=_reply_source,
             )
-            for idx, emoji in erik_reactions:
+            for kind, n, emoji in erik_reactions:
+                if kind == "#":
+                    idx = n - 1
+                else:
+                    idx = resolve_nth_user_from_tail(session.id, n)
+                    if idx is None:
+                        log.warning(f"Erik reaction ^{n} ran off history head, dropped")
+                        continue
                 ok = set_reaction(session.id, idx, "erik", emoji)
                 if ok:
                     try:
@@ -4312,7 +4360,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         })
                     except Exception:
                         pass
-                    log.info(f"Erik reacted {emoji} on #{idx + 1}")
+                    log.info(f"Erik reacted {emoji} on #{idx + 1} (addressed {kind}{n})")
 
         for vm in voice_messages:
             append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
@@ -4379,7 +4427,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if session._current_text:
             voice_pat = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
             cleaned = voice_pat.sub('', session._current_text).rstrip()
-            react_pat = re.compile(r'<!--react:(.+?):#(\d+)-->'  )
+            react_pat = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
             cleaned = react_pat.sub('', cleaned).rstrip()
             _err_source = "voice_call" if session._in_call else None
             append_message(
