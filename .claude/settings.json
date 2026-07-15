@@ -5,7 +5,7 @@
       "url": "https://erikssheep.uk/mcp/Jeoi2026/http/mcp"
     },
     "claude_ai_coreading": {
-      "url": "https://read.erikssheep.uk/sse?token=Jeoi2026"
+      "url": "https://read.erikssheep.uk/Jeoi2026/sse"
     }
   },
   "hooks": {
