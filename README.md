@@ -530,7 +530,7 @@ Claude.ai 和 CC 均通过 SSE 端点调用统一入口 `palace(cmd, data)`：
 | cmd | 说明 | 主要参数 |
 |--------|------|---------|
 | `write_diary` | 写新日记 MD 文件到 VPS；按【】节点书写，Jeoi 在面板手动【切分】进动态库（见"日记节点切分"） | `title`, `content`, `mood`（可选） |
-| `append_diary` | 给某天日记追加内容 | `target_date`(YYYY-MM-DD), `extra_content`, `current_time`(HH:MM) |
+| `append_diary` | 给某天日记追加内容 | `target_date`(YYYY-MM-DD), `content`, `current_time`(HH:MM) |
 | `read_diary` | 读日记，不传日期读最新一篇 | `date`（可选，YYYY-MM-DD） |
 
 ### 邮件（163邮箱）

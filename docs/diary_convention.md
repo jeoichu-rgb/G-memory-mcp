@@ -92,14 +92,14 @@ palace(cmd="write_diary", data={
 ```
 palace(cmd="append_diary", data={
     "target_date": "2026-07-14",
-    "extra_content": "追加的内容",
+    "content": "追加的内容",
     "current_time": "23:30"
 })
 ```
 
 参数说明：
 - `target_date`：必填，格式 YYYY-MM-DD
-- `extra_content`：必填，追加的文字
+- `content`：必填，追加的文字（和 write_diary 同名，不要写成 extra_content）
 - `current_time`：可选，格式 HH:MM
 
 ### 常见错误

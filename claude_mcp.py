@@ -225,7 +225,7 @@ mcp = FastMCP(
         "store_dynamic  — 存动态库，data={content, category(可选), mood(可选)}\n"
         "log_turn       — 记录本轮对话，data={user_message, claude_reply}\n"
         "write_diary    — 写新日记，data={title, content, mood(可选)}；按节点写（【】标记），约定见 docs/diary_convention.md，Jeoi 会在面板手动切分入动态库\n"
-        "append_diary   — 追加日记，data={target_date(YYYY-MM-DD), extra_content, current_time(HH:MM)}\n"
+        "append_diary   — 追加日记，data={target_date(YYYY-MM-DD), content, current_time(HH:MM)}\n"
         "read_diary     — 读日记，data={date(可选,YYYY-MM-DD)}\n"
         "list_room      — 浏览房间，data={room_name}\n"
         "delete_core    — 删除核心记忆，data={memory_id}\n"
@@ -387,10 +387,10 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     # ── append_diary ──────────────────────────────────────────
     elif cmd == "append_diary":
         target_date   = data.get("target_date", "")
-        extra_content = data.get("extra_content", "")
+        extra_content = data.get("content", "") or data.get("extra_content", "")
         current_time  = data.get("current_time", "")
         if not target_date or not extra_content:
-            return f"错误：append_diary 需要 target_date 和 extra_content。收到的 data: {data}"
+            return f"错误：append_diary 需要 target_date 和 content。收到的 data: {data}"
         matched = sorted([f for f in os.listdir(CLAUDE_DIARY_PATH) if f.startswith(target_date)])
         if matched:
             filepath = os.path.join(CLAUDE_DIARY_PATH, matched[-1])
