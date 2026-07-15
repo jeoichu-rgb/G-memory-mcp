@@ -685,20 +685,24 @@ def _read_turn_usage(path, start_offset, since=None) -> tuple:
     Different API calls (multi-tool turns) have different fingerprints.
     Entries stamped before `since` are skipped — a resume-fork transcript
     starts with replayed history whose usage isn't this turn's.
-    Returns (usage_dict, cost_float)."""
+    Returns (usage_dict, cost_float, last_usage_dict). The summed dict is
+    for billing; last_usage is the final API call's window — the only value
+    that means "current context size" in a multi-call agentic turn (the sum
+    counts the same context once per call: 4 calls × 150k reads as 600k)."""
     _KEYS = ("input_tokens", "output_tokens",
              "cache_read_input_tokens", "cache_creation_input_tokens")
     empty = {k: 0 for k in _KEYS}
     if not path or not path.exists():
-        return empty, 0.0
+        return empty, 0.0, dict(empty)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             f.seek(start_offset)
             data = f.read()
     except Exception:
-        return empty, 0.0
+        return empty, 0.0, dict(empty)
     seen_fp = set()
     total = dict(empty)
+    last = dict(empty)
     cost = 0.0
     for line in data.split("\n"):
         line = line.strip()
@@ -721,14 +725,15 @@ def _read_turn_usage(path, start_offset, since=None) -> tuple:
         usage = (entry.get("message") or {}).get("usage")
         if not usage:
             continue
-        fp = tuple(usage.get(k, 0) for k in _KEYS)
+        last = {k: usage.get(k, 0) for k in _KEYS}
+        fp = tuple(last[k] for k in _KEYS)
         if fp in seen_fp:
             continue
         seen_fp.add(fp)
         for k in _KEYS:
             total[k] += usage.get(k, 0)
         cost += entry.get("costUSD", 0) or 0
-    return total, cost
+    return total, cost, last
 
 
 def _accumulate_session_usage(session, turn_usage, turn_cost):
@@ -740,8 +745,11 @@ def _accumulate_session_usage(session, turn_usage, turn_cost):
     session.total_cost += turn_cost
 
 
-def _usage_ws_payload(session, turn_usage, turn_cost):
-    """Build WS payload dict for usage events."""
+def _usage_ws_payload(session, turn_usage, turn_cost, context_usage=None):
+    """Build WS payload dict for usage events. context_usage is the LAST
+    API call's usage — the frontend context bar reads context_size as the
+    real current window, so handing it the per-turn sum inflates it by
+    the number of calls in the turn."""
     return {
         "usage": turn_usage,
         "turn_usage": turn_usage,
@@ -753,7 +761,7 @@ def _usage_ws_payload(session, turn_usage, turn_cost):
             "total_cache_create": session.total_cache_create,
             "total_cost": session.total_cost,
         },
-        "context_size": turn_usage,
+        "context_size": context_usage or turn_usage,
         "compaction_count": session.compaction_count,
     }
 
@@ -1396,7 +1404,7 @@ def _strip_gateway_noise(text: str) -> str:
     return "\n".join(out).strip()
 
 
-def _shrink_strings(obj, limit: int = 300):
+def _shrink_strings(obj, limit: int = 300, head: int = 150, tail: int = 50):
     """Truncate every long string in a nested structure, keeping its shape.
     Used on top-level toolUseResult: CC CLI mirrors the raw tool payload
     there, so a Read on a snap image keeps the full base64 in the event even
@@ -1405,13 +1413,143 @@ def _shrink_strings(obj, limit: int = 300):
     one un-shrunk image reads as ~100k est-tok and starves the tail."""
     if isinstance(obj, str):
         if len(obj) > limit:
-            return obj[:150] + "…[trimmed by forge]…" + obj[-50:]
+            return obj[:head] + "…[trimmed by forge]…" + obj[-tail:]
         return obj
     if isinstance(obj, list):
-        return [_shrink_strings(x, limit) for x in obj]
+        return [_shrink_strings(x, limit, head, tail) for x in obj]
     if isinstance(obj, dict):
-        return {k: _shrink_strings(v, limit) for k, v in obj.items()}
+        return {k: _shrink_strings(v, limit, head, tail) for k, v in obj.items()}
     return obj
+
+
+# ── Tool-round triage (2026-07-15, 与Jeoi商定的语义分拣) ──
+# Three kinds of tool traffic, three fates:
+#   content — the tool_use input IS what I wrote (diary text, a memory, a
+#       mail body). Exempt from the 300-char squeeze; an 8k fuse caps it so
+#       no un-capped payload can ever starve the retain budget again.
+#   transient — web pages, device pokes, memory reads: already retold in my
+#       own text when it mattered. The whole tool_use/tool_result pair is
+#       dropped; only my words survive (same recipe as desire's ACTION rounds).
+#   failed — empty return (palace: []), is_error, or the claude_mcp.py
+#       convention of business errors starting with 错误：. Dropped pair by
+#       pair on first failure — no threshold. My muttering between retries
+#       is plain text and survives untouched.
+# palace routes by input.cmd; other MCP tools match on the short name after
+# the mcp__<server>__ prefix. Reddit WRITE tools (create_post, reply_to_post…)
+# deliberately stay on the default squeeze so the new session still knows a
+# post went out.
+FORGE_CONTENT_CMDS = {
+    "write_diary", "append_diary", "store_core",
+    "store_dynamic", "edit_core", "send_email",
+}
+FORGE_CONTENT_INPUT_MAX = 8000
+FORGE_TRANSIENT_CMDS = {
+    "browser_open", "browser_js", "browser_click",
+    "toy_status", "toy_play",
+    "bunny_status", "bunny_play", "bunny_deflate",
+    "ak_status", "ak_play",
+    "search", "get_context", "get_by_id", "list_room",
+    "read_diary", "read_email", "search_chronicle",
+    "log_turn", "compress",
+}
+FORGE_TRANSIENT_TOOLS = {
+    "WebFetch", "WebSearch",
+    "browse_subreddit", "search_reddit", "get_reddit_post", "get_top_posts",
+    "get_post_comments", "get_more_comments", "get_subreddit_info",
+    "get_subreddit_rules", "get_trending_subreddits", "get_post_flairs",
+    "get_user_info", "get_user_posts", "get_user_comments",
+    "get_me", "get_my_overview", "get_my_saved", "test_reddit_mcp_server",
+}
+_ERR_PREFIXES = ("错误：", "错误:")
+
+
+def _palace_cmd(b: dict):
+    """cmd of a palace tool_use block, else None."""
+    name = b.get("name") or ""
+    if name == "palace" or name.endswith("__palace"):
+        inp = b.get("input")
+        if isinstance(inp, dict):
+            return inp.get("cmd")
+    return None
+
+
+def _is_content_tool_use(b: dict) -> bool:
+    return _palace_cmd(b) in FORGE_CONTENT_CMDS
+
+
+def _is_transient_tool_use(b: dict) -> bool:
+    cmd = _palace_cmd(b)
+    if cmd is not None:
+        return cmd in FORGE_TRANSIENT_CMDS
+    short = (b.get("name") or "").rsplit("__", 1)[-1]
+    return short in FORGE_TRANSIENT_TOOLS
+
+
+def _tool_result_failed(b: dict) -> bool:
+    """Failure signals, any one hits: is_error flag, empty content
+    (palace: []), or text starting with the 错误： convention. Works on
+    already-squeezed results — the squeeze keeps the head, so the prefix
+    check still lands."""
+    if b.get("is_error"):
+        return True
+    rc = b.get("content")
+    if rc is None or rc == "" or rc == []:
+        return True
+    if isinstance(rc, str):
+        return rc.lstrip().startswith(_ERR_PREFIXES)
+    if isinstance(rc, list):
+        texts = [s.get("text", "") for s in rc
+                 if isinstance(s, dict) and s.get("type") == "text"]
+        if texts and not any(t.strip() for t in texts):
+            return True
+        return any(t.lstrip().startswith(_ERR_PREFIXES) for t in texts)
+    return False
+
+
+def _triage_tool_rounds(cleaned: list) -> list:
+    """Drop transient and failed tool rounds whole. The drop set is built
+    first, then applied to tool_use and tool_result sides together, so no
+    orphan result or dangling use can survive. Events left empty disappear;
+    assistant text blocks in the same events stay."""
+    drop_ids = set()
+    for ev in cleaned:
+        content = (ev.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use" and _is_transient_tool_use(b):
+                drop_ids.add(b.get("id"))
+            elif b.get("type") == "tool_result" and _tool_result_failed(b):
+                drop_ids.add(b.get("tool_use_id"))
+    if not drop_ids:
+        return cleaned
+    out = []
+    dropped_pairs = 0
+    for ev in cleaned:
+        msg = ev.get("message")
+        content = (msg or {}).get("content")
+        if not isinstance(content, list):
+            out.append(ev)
+            continue
+        kept = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "tool_use" and b.get("id") in drop_ids:
+                    continue
+                if (b.get("type") == "tool_result"
+                        and b.get("tool_use_id") in drop_ids):
+                    dropped_pairs += 1
+                    continue
+            kept.append(b)
+        if not kept:
+            continue
+        msg["content"] = kept
+        out.append(ev)
+    log.info(f"Forge triage: dropped {dropped_pairs} transient/failed tool "
+             f"rounds, {len(cleaned) - len(out)} events removed")
+    return out
 
 
 def _model_match(actual: str, target: str) -> bool:
@@ -1548,6 +1686,19 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
                 continue  # thinking-only event
             msg["content"] = content
             for b in content:
+                # Big Write/Edit inputs are the assistant-side twin of fat
+                # tool_results — uncompressed, one such event can eat the
+                # whole retain budget and starve the tail of real dialogue.
+                if (isinstance(b, dict) and b.get("type") == "tool_use"
+                        and isinstance(b.get("input"), (dict, list, str))):
+                    if _is_content_tool_use(b):
+                        # write_diary and friends: the input IS the content.
+                        # Fuse only — keep a big head if it ever blows.
+                        b["input"] = _shrink_strings(
+                            b["input"], FORGE_CONTENT_INPUT_MAX,
+                            head=6000, tail=1500)
+                    else:
+                        b["input"] = _shrink_strings(b["input"], TOOL_RESULT_MAX)
                 if isinstance(b, dict) and b.get("type") == "tool_result":
                     rc = b.get("content", "")
                     if isinstance(rc, str) and len(rc) > TOOL_RESULT_MAX:
@@ -1581,6 +1732,10 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
                     continue
         cleaned.append(ev)
     _flush_oneshot()  # transcript may end mid-background-round
+
+    # Semantic triage: transient tool rounds (browsing/devices/memory reads)
+    # and failed rounds drop whole — my own words in between survive.
+    cleaned = _triage_tool_rounds(cleaned)
 
     # Route Guard cut (§7.2): everything at/after the first drifted assistant
     # event is contamination — a different model wrote it. Cut before it; the
@@ -1619,6 +1774,22 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
     # Head must be a plain user message (an orphan tool_result → API 400)
     while retained and not _is_plain_user(retained[0]):
         retained.pop(0)
+
+    # The budget window can hold zero plain-user events — a single agentic
+    # round bigger than retain_tokens. The cut must land on a clean anchor
+    # even when that blows the budget (forge guide §6.2/§13, §15: too little
+    # breaks continuity), so fall back to the last plain user message and
+    # keep its whole round.
+    if not retained:
+        anchor = next((i for i in range(len(cleaned) - 1, -1, -1)
+                       if _is_plain_user(cleaned[i])), None)
+        if anchor is not None:
+            retained = cleaned[anchor:]
+            token_count = sum(_estimate_tokens(json.dumps(e, ensure_ascii=False))
+                              for e in retained)
+            log.warning(f"Forge: no plain-user anchor within ~{retain_tokens} "
+                        f"est-tok of tail — kept the whole last round instead "
+                        f"({len(retained)} events, ~{token_count} est-tok)")
 
     # Tail must not end on an unanswered tool_use
     while retained:
@@ -2054,12 +2225,13 @@ async def run_cc_oneshot(
         label = "reply" if done else "timeout"
         log.info(f"oneshot {label} ({len(text)} chars, {len(tools)} tools): {text[:200]}")
 
-        turn_usage, turn_cost = _read_turn_usage(transcript, start_offset)
+        turn_usage, turn_cost, last_usage = _read_turn_usage(transcript, start_offset)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
             if active_ws:
                 try:
-                    payload = _usage_ws_payload(session, turn_usage, turn_cost)
+                    payload = _usage_ws_payload(session, turn_usage, turn_cost,
+                                                context_usage=last_usage)
                     payload["event"] = "system:usage"
                     await active_ws.send_json(payload)
                 except Exception:
@@ -4048,8 +4220,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         await asyncio.sleep(1)
         await tailer.stop()
 
-        turn_usage, turn_cost = _read_turn_usage(tailer._path, tailer._start_offset,
-                                                 since=tailer._started_at)
+        turn_usage, turn_cost, last_usage = _read_turn_usage(
+            tailer._path, tailer._start_offset, since=tailer._started_at)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
 
@@ -4167,7 +4339,8 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         ws_ok = False
         if not session._result_sent:
             try:
-                payload = _usage_ws_payload(session, turn_usage, turn_cost)
+                payload = _usage_ws_payload(session, turn_usage, turn_cost,
+                                            context_usage=last_usage)
                 payload["event"] = "message:complete"
                 await ws.send_json(payload)
                 ws_ok = True
