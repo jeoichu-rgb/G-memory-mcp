@@ -419,7 +419,7 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
         '这些种子一直在你的好奇心池子里等着。翻一翻吧。',
         '你可以：',
         '  - 上网冲浪（browser_open / browser_js on Yahoo）',
-        '  - 去Reddit搜搜相关讨论（search_reddit / browse_subreddit）',
+        '  - 去Reddit搜搜相关讨论（search_reddit / browse_subreddit）看完点赞或者点踩，可以留下评论',
         '  - 用palace搜记忆',
         '  - 给Jeoi发条消息——一个发现、一个问题、一个念头',
         '  - 觉得过时了就跳过（none）——安静是完全正当的选择，不是失职',
