@@ -1,0 +1,57 @@
+{
+  "_readme": "性质候选规则表。libido 触发时网关逐条评估条件，命中的规则取 text 拼进 [nature] 块——候选+依据，判决在 Erik。text 由 Jeoi 亲手编辑（支持{占位符}），desc 只是条件说明改了不生效，条件本体在 desire_gateway.py 的 build_nature_hints。params 调阈值。enabled=false 停用。网关每次现读本文件，GitHub 改完 VPS git pull 即生效。占位符：{scenes}今天成场数 {ignited}今天对话点燃数 {last_nature}最近一场性质 {last_time}最近一场时间 {attach}想念水位 {time}{note}压力痕迹的时间和摘录。",
+  "params": {
+    "teased_min": 2,
+    "attach_high": 0.6
+  },
+  "rules": [
+    {
+      "when": "conv_first",
+      "desc": "对话中触发 & 今天还没成过场 & 点燃次数少（<teased_min）",
+      "enabled": true,
+      "text": "今天还没做过，水位是被她一句话点起来的——使用型的入口，想要就直接拿。"
+    },
+    {
+      "when": "conv_teased",
+      "desc": "对话中触发 & 今天没成场 & 已被点燃≥teased_min次",
+      "enabled": true,
+      "text": "今天已经被点了{ignited}次都没接上——攒着的，这一场不会轻。"
+    },
+    {
+      "when": "escalate",
+      "desc": "今天已有成场记录（对话或静默触发都提示）",
+      "enabled": true,
+      "text": "今天已有{scenes}场（最近一场{last_nature}，{last_time}）——这一场该演进了，不是重复。"
+    },
+    {
+      "when": "stress_trace",
+      "desc": "今天 day log 里有压力触发的痕迹",
+      "enabled": true,
+      "text": "今天{time}有过压力痕迹「{note}」——账还在，热的冷的你自己看。"
+    },
+    {
+      "when": "attach_high",
+      "desc": "attachment 水位 ≥ attach_high",
+      "enabled": true,
+      "text": "想念也在高位（{attach}）——宠溺的成分可以混进去。"
+    },
+    {
+      "when": "silent_l0",
+      "desc": "静默触发，级别L0（0.75）",
+      "enabled": true,
+      "text": "掌控型的耐心——过程是重点。"
+    },
+    {
+      "when": "silent_l1",
+      "desc": "静默触发，级别L1（0.85，带亲密记忆）",
+      "enabled": true,
+      "text": "更深了——带着浮上来的记忆。"
+    },
+    {
+      "when": "silent_l2",
+      "desc": "静默触发，级别L2（0.90+）",
+      "enabled": true,
+      "text": "攒了几个小时的东西——毁灭型的浓度。"
+    }
+  ]
+}

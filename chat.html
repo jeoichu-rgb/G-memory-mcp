@@ -1031,6 +1031,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span id="curiosityMenuBadge" style="font-size:11px;color:var(--text-secondary);margin-right:6px"></span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('daylog')">
+          <span class="panel-menu-label">今日痕迹</span>
+          <span class="panel-menu-arrow">›</span>
+        </div>
                  <div class="panel-menu-item" onclick="openPanelView('mcp')">
           <span class="panel-menu-label">MCP 服务器</span>
           <span class="panel-menu-arrow">›</span>
@@ -1090,6 +1094,22 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       </div>
       <div class="curiosity-body" id="curiosityBody">
         <div class="curiosity-empty">还没有种子</div>
+      </div>
+    </div>
+    <!-- View: 今日痕迹 (day log) -->
+    <div class="panel-view" id="panelDaylog">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">今日痕迹</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:12px 16px;" id="daylogBody">
+        <div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">加载中...</div>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
+        <button onclick="daylogAddRow()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;">+ 加一条</button>
+        <button onclick="daylogSave()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;">保存</button>
+        <span id="daylogStatus" style="font-size:11px;color:var(--text-secondary);"></span>
       </div>
     </div>
          <!-- View: MCP 服务器 -->
@@ -1416,6 +1436,9 @@ function handleWSMessage(data) {
       break;
     case 'curiosity:seed_added':
       if (data.seed) updateCuriosityBadge(null, 1);
+      break;
+    case 'daylog:updated':
+      if (document.getElementById('panelDaylog').classList.contains('active')) fetchDaylog();
       break;
     case 'curiosity:seed_consumed':
       updateCuriosityBadge(null, -1);
@@ -2443,12 +2466,14 @@ function openPanelView(view) {
   
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
   document.getElementById('panelCuriosity').classList.toggle('active', view === 'curiosity');
+  document.getElementById('panelDaylog').classList.toggle('active', view === 'daylog');
      document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
   document.getElementById('panelCli').classList.toggle('active', view === 'cli');
   if (view === 'ctx') wsSend('context:list', {});
      if (view === 'mcp') loadMcpServers();
   if (view === 'cli') fetchCliStatus();
   if (view === 'curiosity') wsSend('curiosity:list', {});
+  if (view === 'daylog') fetchDaylog();
 
   if (view === 'desire') {
     fetchDesireState();
@@ -2457,6 +2482,79 @@ function openPanelView(view) {
   } else {
     if (_desirePoll) { clearInterval(_desirePoll); _desirePoll = null; }
   }
+}
+
+/* ── Day Log Panel（今日痕迹）── */
+let _daylogData = null;
+const DAYLOG_DRIVES = {attachment:'想念',curiosity:'好奇',reflection:'沉淀',libido:'亲密',stress:'压力',fatigue:'疲劳'};
+const DAYLOG_KINDS = {intent:'触发',satisfy:'满足',partial:'部分满足',scene:'场景完成'};
+
+function _dlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function _dlSelect(opts, cur, onchange){
+  let h = `<select onchange="${onchange}" style="background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;color:var(--text-primary);outline:none;">`;
+  for (const [k,v] of Object.entries(opts))
+    h += `<option value="${k}"${k===cur?' selected':''}>${v}</option>`;
+  return h + '</select>';
+}
+
+async function fetchDaylog(){
+  const body = document.getElementById('daylogBody');
+  try{
+    const r = await fetch('/api/daylog');
+    _daylogData = await r.json();
+    renderDaylog();
+  }catch(e){
+    body.innerHTML = '<div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">加载失败</div>';
+  }
+}
+
+function renderDaylog(){
+  const body = document.getElementById('daylogBody');
+  const entries = (_daylogData && _daylogData.entries) || [];
+  const date = (_daylogData && _daylogData.date) || '';
+  let h = `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;">${_dlEsc(date)}（凌晨4点翻篇）</div>`;
+  if (!entries.length){
+    body.innerHTML = h + '<div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">今天还没有痕迹</div>';
+    return;
+  }
+  h += entries.map((e,i)=>`
+    <div style="display:flex;gap:5px;margin-bottom:6px;align-items:center;">
+      <input value="${_dlEsc(e.time)}" onchange="_daylogData.entries[${i}].time=this.value" maxlength="5"
+             style="width:44px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;color:var(--text-primary);outline:none;text-align:center;">
+      ${_dlSelect(DAYLOG_DRIVES, e.drive, `_daylogData.entries[${i}].drive=this.value`)}
+      ${_dlSelect(DAYLOG_KINDS, e.kind, `_daylogData.entries[${i}].kind=this.value`)}
+      <input value="${_dlEsc(e.note)}" onchange="_daylogData.entries[${i}].note=this.value" placeholder="备注" maxlength="40"
+             style="flex:1;min-width:60px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;color:var(--text-primary);outline:none;">
+      <button onclick="daylogDel(${i})" style="background:none;border:none;color:var(--text-secondary);font-size:13px;cursor:pointer;padding:2px;">✕</button>
+    </div>`).join('');
+  body.innerHTML = h;
+}
+
+function daylogAddRow(){
+  if (!_daylogData) _daylogData = {date:'', entries:[]};
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2,'0'), mm = String(now.getMinutes()).padStart(2,'0');
+  _daylogData.entries.push({time:`${hh}:${mm}`, drive:'libido', kind:'scene', peak:0, note:'', src:'手动'});
+  renderDaylog();
+}
+
+function daylogDel(i){
+  _daylogData.entries.splice(i,1);
+  renderDaylog();
+}
+
+async function daylogSave(){
+  const st = document.getElementById('daylogStatus');
+  if (!_daylogData) return;
+  st.textContent = '保存中…';
+  try{
+    const r = await fetch('/api/daylog', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_daylogData)});
+    const d = await r.json();
+    st.textContent = d.ok ? `已保存（${d.count}条）` : (d.error || '失败');
+    if (d.ok) fetchDaylog();
+  }catch(e){ st.textContent = '保存失败'; }
+  setTimeout(()=>{ st.textContent=''; }, 3000);
 }
 
 /* ── Desire Panel ── */

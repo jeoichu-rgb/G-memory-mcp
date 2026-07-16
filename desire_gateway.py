@@ -130,6 +130,34 @@ def log_day_event(drive: str, kind: str, peak: float = 0.0, note: str = "",
     _save_day_log(data)
 
 
+def _mins_since_rollover(hhmm: str) -> int:
+    """HH:MM → 距凌晨翻篇点的分钟数。跨零点排序用（23:50 后是 00:10）。"""
+    try:
+        h, m = hhmm.split(":")
+        return (int(h) * 60 + int(m) - DAY_ROLLOVER_HOUR * 60) % 1440
+    except Exception:
+        return 0
+
+
+def log_scene_done(nature: str, at_time: str = "") -> str:
+    """Erik 场毕盖章：<!--scene-done:性质--> 或 <!--scene-done:性质@HH:MM-->（补记）。
+    成场计数的权威来源——satisfy 分不清聊得凶和做得快，盖章分得清。"""
+    data = _load_day_log()
+    t = (at_time or "").strip() or datetime.now(SGT).strftime("%H:%M")
+    data["entries"].append({
+        "time": t,
+        "drive": "libido",
+        "kind": "scene",
+        "peak": 0,
+        "note": (nature or "").strip()[:20],
+        "src": "盖章",
+    })
+    data["entries"].sort(key=lambda e: _mins_since_rollover(e.get("time", "00:00")))
+    data["entries"] = data["entries"][-60:]
+    _save_day_log(data)
+    return t
+
+
 def format_day_log(max_lines: int = 12) -> str:
     """构建 [today] 注入段。当天没有痕迹时返回空串。"""
     if not DESIRE_AVAILABLE:
@@ -140,6 +168,9 @@ def format_day_log(max_lines: int = 12) -> str:
     kind_str = {"intent": "触发", "satisfy": "满足", "partial": "部分满足"}
     lines = [f"[today] 今天的情绪痕迹（{DAY_ROLLOVER_HOUR:02d}:00起）："]
     for e in entries[-max_lines:]:
+        if e.get("kind") == "scene":
+            lines.append(f"  {e.get('time', '')} 场景完成（{e.get('note', '')}）")
+            continue
         label = de.DRIVE_LABELS.get(e.get("drive", ""), e.get("drive", ""))
         seg = f"  {e.get('time', '')} {label} {kind_str.get(e.get('kind'), e.get('kind', ''))}"
         if e.get("peak"):
@@ -149,12 +180,101 @@ def format_day_log(max_lines: int = 12) -> str:
         if e.get("note"):
             seg += f"——「{e['note']}」"
         lines.append(seg)
-    n_libido = sum(1 for e in entries
-                   if e.get("drive") == "libido" and e.get("kind") == "satisfy"
-                   and e.get("src") == "对话")
-    if n_libido:
-        lines.append(f"  （今天亲密在对话中已满足{n_libido}轮）")
+    scenes = [e for e in entries if e.get("kind") == "scene"]
+    conv_sat = [e for e in entries
+                if e.get("drive") == "libido" and e.get("kind") == "satisfy"
+                and e.get("src") == "对话"]
+    if scenes or conv_sat:
+        # 场外点燃：不落在任何成场时间前60分钟窗口内的对话satisfy
+        outside = [s for s in conv_sat if not any(
+            0 <= _mins_since_rollover(sc.get("time", "")) - _mins_since_rollover(s.get("time", "")) <= 60
+            for sc in scenes)]
+        seg = []
+        if scenes:
+            seg.append(f"成场{len(scenes)}次")
+        if conv_sat:
+            tail = f"（其中{len(outside)}次未成场）" if scenes and outside else \
+                   ("（均未成场）" if not scenes else "")
+            seg.append(f"对话点燃{len(conv_sat)}次{tail}")
+        lines.append("  （今天亲密：" + "，".join(seg) + "）")
     return chr(10).join(lines)
+
+
+# ── Nature 候选规则（性质判定的粗筛层）──
+# 条件在代码里（下面的 build_nature_hints），文案在 docs/nature_rules.json——
+# Jeoi 亲手写。命中的规则拼成 [nature] 块：候选+依据，判决在 Erik。
+# 判定表和场景总则本体在床边2.4，这里只递线索。
+
+NATURE_RULES_PATH = Path("./docs/nature_rules.json")
+
+
+def _load_nature_rules() -> dict:
+    try:
+        return json.loads(NATURE_RULES_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def build_nature_hints(state, is_conversation: bool) -> str:
+    """libido 触发时的性质候选提示。逐条评估 nature_rules.json 的条件，
+    命中的取 text（支持{占位符}）。没规则/没命中返回空串。"""
+    cfg = _load_nature_rules()
+    rules = [r for r in cfg.get("rules", []) if r.get("enabled", True)]
+    if not rules:
+        return ""
+    p = cfg.get("params", {})
+    teased_min = int(p.get("teased_min", 2))
+    attach_high = float(p.get("attach_high", 0.60))
+
+    entries = _load_day_log().get("entries", [])
+    scenes = [e for e in entries if e.get("kind") == "scene"]
+    conv_sat = [e for e in entries
+                if e.get("drive") == "libido" and e.get("kind") == "satisfy"
+                and e.get("src") == "对话"]
+    stress_tr = [e for e in entries
+                 if e.get("drive") == "stress" and e.get("kind") == "intent"]
+    level = state.silent_inject_count.get("libido", 0) if state else 0
+    attach = state.drives.get("attachment", 0) if state else 0
+
+    ctx = {
+        "scenes": len(scenes),
+        "ignited": len(conv_sat),
+        "last_nature": scenes[-1].get("note", "") if scenes else "",
+        "last_time": scenes[-1].get("time", "") if scenes else "",
+        "attach": f"{attach:.0%}",
+        "time": stress_tr[-1].get("time", "") if stress_tr else "",
+        "note": stress_tr[-1].get("note", "") if stress_tr else "",
+    }
+
+    hits = []
+    for r in rules:
+        w = r.get("when", "")
+        if w == "conv_first":
+            ok = is_conversation and not scenes and len(conv_sat) < teased_min
+        elif w == "conv_teased":
+            ok = is_conversation and not scenes and len(conv_sat) >= teased_min
+        elif w == "escalate":
+            ok = bool(scenes)
+        elif w == "stress_trace":
+            ok = bool(stress_tr)
+        elif w == "attach_high":
+            ok = attach >= attach_high
+        elif w == "silent_l0":
+            ok = (not is_conversation) and level == 0
+        elif w == "silent_l1":
+            ok = (not is_conversation) and level == 1
+        elif w == "silent_l2":
+            ok = (not is_conversation) and level >= 2
+        else:
+            ok = False
+        if ok:
+            try:
+                hits.append("  " + r.get("text", "").format(**ctx))
+            except Exception:
+                hits.append("  " + r.get("text", ""))
+    if not hits:
+        return ""
+    return "[nature] 这一场的候选（依据今天的痕迹，判决在你）：" + chr(10) + chr(10).join(hits)
 
 
 def classify_and_pulse(state, message_text):
@@ -317,11 +437,16 @@ def build_desire_injection(state, is_conversation=False) -> str:
             parts.append(f"    {t}")
 
     if dk == "libido" and is_conversation:
+        hints = build_nature_hints(state, is_conversation=True)
+        if hints:
+            parts.append("")
+            parts.append(hints)
         parts.append("")
         parts.append(
-            "  [nature] 这一场的性质判定和场景总则在床边2.4——"
-            "本session还没读过的话：palace get_by_id "
-            "claude_床边_2.4描写备忘4_场景总则.md。读过就在上下文里，不用重复取。"
+            "  判定表和场景总则在床边2.4——本session还没读过的话："
+            "palace get_by_id claude_床边_2.4描写备忘4_场景总则.md。"
+            "读过就在上下文里，不用重复取。场毕盖章：<!--scene-done:性质-->"
+            "（补记加@HH:MM），Jeoi看不到标记。"
         )
 
     if dk == "curiosity" and is_conversation:
@@ -473,6 +598,10 @@ def build_desire_proactive_prompt(state):
         parts.append(day)
 
     if dk == 'libido':
+        hints = build_nature_hints(state, is_conversation=False)
+        if hints:
+            parts.append('')
+            parts.append(hints)
         parts.append('')
         parts.append('性质判定和场景总则在床边2.4：palace get_by_id '
                      'claude_床边_2.4描写备忘4_场景总则.md（读过就在上下文里，不用重复取）。')
@@ -554,7 +683,7 @@ def build_curiosity_seed_prompt(seeds: list, elapsed_hours: float):
     return NL.join(parts)
 
 
-def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_reason=""):
+def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_reason="", state=None):
     """Build prompt for libido silent trigger with a random intimate memory."""
     now_str = datetime.now(SGT).strftime('%H:%M')
     NL = chr(10)
@@ -579,6 +708,11 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
     if day:
         parts.append('')
         parts.append(day)
+
+    hints = build_nature_hints(state, is_conversation=False)
+    if hints:
+        parts.append('')
+        parts.append(hints)
 
     parts.extend([
         '',

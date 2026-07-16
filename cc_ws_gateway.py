@@ -2137,7 +2137,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call):[^>]*-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|scene-done):[^>]*-->')
 
 # Oneshot scaffolding leaking into a normal chat reply — CC picks up the
 # ACTION:/CONTENT: habit from background rounds sitting in the same
@@ -2666,7 +2666,7 @@ async def pebbling_worker():
                                 elif _dp_dk == "libido":
                                     _mem_text, _mem_date = await fetch_unique_intimate_memory()
                                     if _mem_text:
-                                        _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h, desire_reason=_dp_intent.get("reason", ""))
+                                        _dp_prompt = dg.build_libido_memory_prompt(_mem_text, _mem_date, _elapsed_h, desire_reason=_dp_intent.get("reason", ""), state=desire_st)
                                         log.info(f"Libido memory injected: {_mem_text[:60]}")
                                     else:
                                         _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
@@ -2803,7 +2803,7 @@ async def pebbling_worker():
                         _lib_text, _lib_date = await fetch_unique_intimate_memory()
                         if _lib_text:
                             _lib_reason = desire_st.intent.get("reason", "") if desire_st.intent else ""
-                            prompt = dg.build_libido_memory_prompt(_lib_text, _lib_date, elapsed_h, desire_reason=_lib_reason)
+                            prompt = dg.build_libido_memory_prompt(_lib_text, _lib_date, elapsed_h, desire_reason=_lib_reason, state=desire_st)
                             log.info(f"Pebbling libido memory: {_lib_text[:60]}")
                         else:
                             events = get_recent_events(4)
@@ -4334,6 +4334,26 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             session._current_text = _seed_search_re.sub('', session._current_text)
             session._current_text = _seed_ask_re.sub('', session._current_text).rstrip()
 
+        # Post-processing: parse scene-done stamps (Erik's own day-log entry).
+        # <!--scene-done:性质--> or <!--scene-done:性质@HH:MM--> (backdated).
+        # Authoritative "成场" count — satisfy can't tell heavy talk from a
+        # quick scene; the stamp can.
+        if session._current_text and DESIRE_ENABLED:
+            _scene_re = re.compile(r'<!--scene-done:([^@>]+?)(?:@(\d{1,2}:\d{2}))?-->')
+            _stamped = False
+            for m in _scene_re.finditer(session._current_text):
+                _nature, _at = m.group(1).strip(), m.group(2) or ""
+                _t = dg.log_scene_done(_nature, at_time=_at)
+                _stamped = True
+                log.info(f"Scene stamped: {_nature} @ {_t}")
+            if _stamped:
+                session._current_text = _scene_re.sub('', session._current_text).rstrip()
+                if active_ws:
+                    try:
+                        await active_ws.send_json({"event": "daylog:updated"})
+                    except Exception:
+                        pass
+
         _reply_source = "voice_call" if session._in_call else None
 
         if session._current_text or session._current_thinking:
@@ -4700,6 +4720,43 @@ async def pebbling_status():
         "time": datetime.now(SGT).isoformat(),
         "events_count": len(get_recent_events(24)),
     }
+
+
+@app.get("/api/daylog")
+async def get_daylog():
+    """Day log（当日情绪痕迹）for the frontend panel."""
+    try:
+        return dg._load_day_log()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/daylog")
+async def save_daylog(request: Request):
+    """Frontend panel edit-save. Body: {date, entries: [...]}. Whole-file replace."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    entries = body.get("entries")
+    if not isinstance(entries, list):
+        return JSONResponse({"error": "entries must be a list"}, status_code=400)
+    cleaned = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        cleaned.append({
+            "time": str(e.get("time", ""))[:5],
+            "drive": str(e.get("drive", ""))[:16],
+            "kind": str(e.get("kind", ""))[:10],
+            "peak": round(float(e.get("peak") or 0), 2),
+            "note": str(e.get("note", ""))[:40],
+            "src": str(e.get("src", ""))[:12],
+        })
+    cleaned.sort(key=lambda e: dg._mins_since_rollover(e.get("time", "00:00")))
+    dg._save_day_log({"date": body.get("date") or dg._day_key(), "entries": cleaned[-60:]})
+    log.info(f"Day log saved from frontend: {len(cleaned)} entries")
+    return {"ok": True, "count": len(cleaned)}
 
 
 @app.get("/health")
