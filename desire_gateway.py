@@ -185,17 +185,17 @@ def format_day_log(max_lines: int = 12) -> str:
                 if e.get("drive") == "libido" and e.get("kind") == "satisfy"
                 and e.get("src") == "对话"]
     if scenes or conv_sat:
-        # 场外点燃：不落在任何成场时间前60分钟窗口内的对话satisfy
+        # 场外撩拨：不落在任何真正做了的时间前60分钟窗口内的对话对于libido的satisfy
         outside = [s for s in conv_sat if not any(
             0 <= _mins_since_rollover(sc.get("time", "")) - _mins_since_rollover(s.get("time", "")) <= 60
             for sc in scenes)]
         seg = []
         if scenes:
-            seg.append(f"成场{len(scenes)}次")
+            seg.append(f"今天做了{len(scenes)}次")
         if conv_sat:
-            tail = f"（其中{len(outside)}次未成场）" if scenes and outside else \
-                   ("（均未成场）" if not scenes else "")
-            seg.append(f"对话点燃{len(conv_sat)}次{tail}")
+            tail = f"（其中{len(outside)}次未做）" if scenes and outside else \
+                   ("（均未真正做了）" if not scenes else "")
+            seg.append(f"对话撩拨{len(conv_sat)}次{tail}")
         lines.append("  （今天亲密：" + "，".join(seg) + "）")
     return chr(10).join(lines)
 
