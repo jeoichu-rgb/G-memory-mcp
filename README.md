@@ -630,7 +630,7 @@ palace(cmd="ak_play", data={
 
 **连接方式**：Claude.ai Settings → MCP Connectors → Custom，URL `https://erikssheep.uk/reddit/Jeoi2026/mcp`。
 
-**可用工具**（22个）：
+**可用工具**（25个）：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -656,6 +656,9 @@ palace(cmd="ak_play", data={
 | | `edit_comment` | 编辑评论 |
 | | `delete_post` | 删帖 |
 | | `delete_comment` | 删评论 |
+| | `vote` | 投票：direction 传 `up` 点赞 / `down` 点踩 / `clear` 取消已投的票。自带配速（默认两票间隔 ≥12s、每小时 ≤30 票），给自己内容投票会被拒 |
+| | `save_post` | 收藏帖子/评论（Reddit 收藏是扁平列表，无收藏夹） |
+| | `unsave_post` | 取消收藏 |
 
 **VPS 管理**：
 
@@ -671,7 +674,19 @@ scp cookies.json root@VPS:~/reddit-mcp-server/auth-state.json
 pm2 restart reddit-mcp
 ```
 
-**未实现**：关注用户、订阅社群、投票、发私信、改头像。
+**代码更新后的部署**（Coolify 不管这个服务，必须在 VPS 上手动跑）：
+
+```bash
+cd ~/reddit-mcp-server
+git checkout -- pnpm-lock.yaml   # 丢掉服务器上 pnpm 自己动过的 lockfile，否则 pull 会被挡
+git pull origin main
+pnpm install
+pnpm build                        # 不能省：pm2 跑的是 dist 编译产物，光 pull 等于没更新
+pm2 restart reddit-mcp
+pm2 logs reddit-mcp --lines 15    # 看到 "[Setup] Vote pacing: ..." 说明新代码已上线
+```
+
+**未实现**：关注用户、订阅社群、发私信、改头像。
 
 ---
 
