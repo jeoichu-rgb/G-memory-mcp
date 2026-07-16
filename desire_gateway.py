@@ -113,8 +113,10 @@ def _save_day_log(data: dict):
         pass
 
 
-def log_day_event(drive: str, kind: str, peak: float = 0.0, note: str = ""):
-    """记一笔当日痕迹。kind: intent / satisfy / partial"""
+def log_day_event(drive: str, kind: str, peak: float = 0.0, note: str = "",
+                  src: str = ""):
+    """记一笔当日痕迹。kind: intent / satisfy / partial
+    src: 来源通路（对话 / 主动轮 / pebbling），区分"真在做"和"我主动发了消息"。"""
     data = _load_day_log()
     data["entries"].append({
         "time": datetime.now(SGT).strftime("%H:%M"),
@@ -122,6 +124,7 @@ def log_day_event(drive: str, kind: str, peak: float = 0.0, note: str = ""):
         "kind": kind,
         "peak": round(float(peak or 0), 2),
         "note": (note or "").strip()[:40],
+        "src": src,
     })
     data["entries"] = data["entries"][-60:]
     _save_day_log(data)
@@ -141,13 +144,16 @@ def format_day_log(max_lines: int = 12) -> str:
         seg = f"  {e.get('time', '')} {label} {kind_str.get(e.get('kind'), e.get('kind', ''))}"
         if e.get("peak"):
             seg += f" {e['peak']:.0%}"
+        if e.get("src"):
+            seg += f"（{e['src']}）"
         if e.get("note"):
             seg += f"——「{e['note']}」"
         lines.append(seg)
     n_libido = sum(1 for e in entries
-                   if e.get("drive") == "libido" and e.get("kind") == "satisfy")
+                   if e.get("drive") == "libido" and e.get("kind") == "satisfy"
+                   and e.get("src") == "对话")
     if n_libido:
-        lines.append(f"  （今天亲密已满足{n_libido}次）")
+        lines.append(f"  （今天亲密在对话中已满足{n_libido}轮）")
     return chr(10).join(lines)
 
 
@@ -183,20 +189,23 @@ def classify_and_pulse(state, message_text):
     return "", None
 
 
-def satisfy_after_response(state, drive_key):
-    """Auto-satisfy after session has processed the intent."""
+def satisfy_after_response(state, drive_key, source=""):
+    """Auto-satisfy after session has processed the intent.
+    source: 通路标记（对话 / 主动轮 / pebbling），进 day log 的 src 字段。"""
     if not DESIRE_AVAILABLE or not state or not drive_key:
         return
-    log_day_event(drive_key, "satisfy", peak=state.drives.get(drive_key, 0))
+    log_day_event(drive_key, "satisfy", peak=state.drives.get(drive_key, 0),
+                  src=source)
     de.satisfy(state, drive_key)
     de.save_state(state)
 
 
-def partial_satisfy_after_response(state, drive_key):
+def partial_satisfy_after_response(state, drive_key, source=""):
     """Acknowledge intent without full satisfaction (non-message action in silent mode)."""
     if not DESIRE_AVAILABLE or not state or not drive_key:
         return
-    log_day_event(drive_key, "partial", peak=state.drives.get(drive_key, 0))
+    log_day_event(drive_key, "partial", peak=state.drives.get(drive_key, 0),
+                  src=source)
     de.partial_satisfy(state, drive_key)
     de.save_state(state)
 

@@ -2680,13 +2680,13 @@ async def pebbling_worker():
                                     if _dp_content:
                                         await push_pebbling_msg("desire", _dp_content, _dp_session, thinking=_dp_thinking)
                                     if _dp_action == "message" and _dp_content:
-                                        dg.satisfy_after_response(desire_st, _dp_dk)
+                                        dg.satisfy_after_response(desire_st, _dp_dk, source="主动轮")
                                         log.info(f"Desire satisfied (message): {_dp_dk}")
                                     else:
-                                        dg.partial_satisfy_after_response(desire_st, _dp_dk)
+                                        dg.partial_satisfy_after_response(desire_st, _dp_dk, source="主动轮")
                                         log.info(f"Desire partial (no message): {_dp_dk}, level={desire_st.silent_inject_count.get(_dp_dk, 0)}")
                                 else:
-                                    dg.partial_satisfy_after_response(desire_st, _dp_dk)
+                                    dg.partial_satisfy_after_response(desire_st, _dp_dk, source="主动轮")
                             except Exception as e:
                                 log.warning(f"Desire proactive error: {e}")
 
@@ -2822,13 +2822,13 @@ async def pebbling_worker():
                         if content:
                             await push_pebbling_msg("pebbling", content, session, thinking=thinking)
                         if action == "message" and content:
-                            dg.satisfy_after_response(desire_st, _dk)
+                            dg.satisfy_after_response(desire_st, _dk, source="pebbling")
                             log.info(f"Desire satisfied (message): {_dk}")
                         else:
-                            dg.partial_satisfy_after_response(desire_st, _dk)
+                            dg.partial_satisfy_after_response(desire_st, _dk, source="pebbling")
                             log.info(f"Desire partial (no message): {_dk}, level={desire_st.silent_inject_count.get(_dk, 0)}")
                     else:
-                        dg.partial_satisfy_after_response(desire_st, _dk)
+                        dg.partial_satisfy_after_response(desire_st, _dk, source="pebbling")
                 else:
                     is_first = actual == 0
                     mode = "silent" if is_first else "free"
@@ -3855,7 +3855,7 @@ async def websocket_endpoint(ws: WebSocket):
                             if _desire_key == "libido" and not _msg_is_libido:
                                 log.info(f"Libido not satisfied (non-sexual msg, drift continues)")
                             else:
-                                dg.satisfy_after_response(desire_st, _desire_key)
+                                dg.satisfy_after_response(desire_st, _desire_key, source="对话")
                                 log.info(f"Desire satisfied: {_desire_key}")
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
