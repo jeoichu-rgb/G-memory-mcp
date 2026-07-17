@@ -1108,7 +1108,6 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       </div>
       <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
         <button onclick="daylogAddRow()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;">+ 加一条</button>
-        <button onclick="daylogSave()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;">保存</button>
         <span id="daylogStatus" style="font-size:11px;color:var(--text-secondary);"></span>
       </div>
     </div>
@@ -2473,7 +2472,14 @@ function openPanelView(view) {
      if (view === 'mcp') loadMcpServers();
   if (view === 'cli') fetchCliStatus();
   if (view === 'curiosity') wsSend('curiosity:list', {});
-  if (view === 'daylog') fetchDaylog();
+  if (view === 'daylog') {
+    _daylogEditIdx = null; _daylogDraft = null;
+    fetchDaylog();
+    if (_daylogPoll) clearInterval(_daylogPoll);
+    _daylogPoll = setInterval(fetchDaylog, 30000);
+  } else {
+    if (_daylogPoll) { clearInterval(_daylogPoll); _daylogPoll = null; }
+  }
 
   if (view === 'desire') {
     fetchDesireState();
@@ -2484,8 +2490,12 @@ function openPanelView(view) {
   }
 }
 
-/* ── Day Log Panel（今日痕迹）── */
+/* ── Day Log Panel（今日痕迹）──
+   形态对齐"上下文管理"：只读文本列表 + 点击行编辑 + 成场计数± + 即时保存 */
 let _daylogData = null;
+let _daylogEditIdx = null;   // 正在编辑的行号；-1 = 新增草稿；null = 无编辑
+let _daylogDraft = null;     // 新增草稿对象
+let _daylogPoll = null;
 const DAYLOG_DRIVES = {attachment:'想念',curiosity:'好奇',reflection:'沉淀',libido:'亲密',stress:'压力',fatigue:'疲劳'};
 const DAYLOG_KINDS = {intent:'触发',satisfy:'满足',partial:'部分满足',scene:'场景完成'};
 
@@ -2499,9 +2509,10 @@ function _dlSelect(opts, cur, onchange){
 }
 
 async function fetchDaylog(){
+  if (_daylogEditIdx !== null) return;  // 编辑中不让轮询/事件覆盖手上的改动
   const body = document.getElementById('daylogBody');
   try{
-    const r = await fetch('/api/daylog');
+    const r = await fetch('/api/daylog', {cache:'no-store'});
     _daylogData = await r.json();
     renderDaylog();
   }catch(e){
@@ -2509,52 +2520,117 @@ async function fetchDaylog(){
   }
 }
 
+function _dlRowText(e){
+  if (e.kind === 'scene'){
+    let t = `<b>${_dlEsc(e.time)}</b> 场景完成${e.note?`（${_dlEsc(e.note)}）`:'（未记性质）'}`;
+    if (e.src) t += ` <span style="color:var(--text-secondary);font-size:11px;">${_dlEsc(e.src)}</span>`;
+    return t;
+  }
+  let t = `<b>${_dlEsc(e.time)}</b> ${DAYLOG_DRIVES[e.drive]||_dlEsc(e.drive)}·${DAYLOG_KINDS[e.kind]||_dlEsc(e.kind)}`;
+  if (e.peak) t += ` ${Math.round(e.peak*100)}%`;
+  if (e.src) t += ` <span style="color:var(--text-secondary);font-size:11px;">${_dlEsc(e.src)}</span>`;
+  if (e.note) t += `<div style="color:var(--text-secondary);font-size:11px;margin-top:1px;">「${_dlEsc(e.note)}」</div>`;
+  return t;
+}
+
+function _dlEditRow(e, isDraft){
+  const ref = isDraft ? '_daylogDraft' : `_daylogData.entries[${_daylogEditIdx}]`;
+  return `<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;padding:8px;background:var(--bg-input);border:1px solid var(--accent);border-radius:8px;margin-bottom:6px;">
+    <input value="${_dlEsc(e.time)}" onchange="${ref}.time=this.value" maxlength="5"
+           style="width:48px;background:var(--bg-main);border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;color:var(--text-primary);outline:none;text-align:center;">
+    ${_dlSelect(DAYLOG_DRIVES, e.drive, `${ref}.drive=this.value`)}
+    ${_dlSelect(DAYLOG_KINDS, e.kind, `${ref}.kind=this.value`)}
+    <input value="${_dlEsc(e.note)}" onchange="${ref}.note=this.value" placeholder="备注/性质" maxlength="40"
+           style="flex:1;min-width:80px;background:var(--bg-main);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;color:var(--text-primary);outline:none;">
+    <button onclick="daylogConfirmEdit()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;">✓</button>
+    <button onclick="daylogCancelEdit()" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-secondary);padding:4px 8px;font-size:12px;cursor:pointer;">✕</button>
+  </div>`;
+}
+
 function renderDaylog(){
   const body = document.getElementById('daylogBody');
   const entries = (_daylogData && _daylogData.entries) || [];
   const date = (_daylogData && _daylogData.date) || '';
-  let h = `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;">${_dlEsc(date)}（凌晨4点翻篇）</div>`;
-  if (!entries.length){
+  const scenes = entries.filter(e=>e.kind==='scene').length;
+  const sparks = entries.filter(e=>e.kind==='satisfy'&&e.drive==='libido'&&e.src==='对话').length;
+  let h = `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">${_dlEsc(date)}（凌晨4点翻篇）</div>`;
+  h += `<div style="display:flex;align-items:center;gap:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:12px;">
+    <div style="flex:1;">
+      <div style="font-size:13px;color:var(--text-primary);">成场 <b style="font-size:20px;">${scenes}</b> 次</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">点燃 ${sparks} 次（对话内）</div>
+    </div>
+    <button onclick="daylogSceneAdj(-1)" ${scenes?'':'disabled'} style="width:32px;height:32px;border-radius:8px;background:var(--bg-main);border:1px solid var(--border);color:var(--text-primary);font-size:16px;cursor:pointer;${scenes?'':'opacity:.35;cursor:default;'}">−</button>
+    <button onclick="daylogSceneAdj(1)" style="width:32px;height:32px;border-radius:8px;background:var(--accent);border:none;color:#fff;font-size:16px;cursor:pointer;">＋</button>
+  </div>`;
+  if (_daylogEditIdx === -1 && _daylogDraft) h += _dlEditRow(_daylogDraft, true);
+  if (!entries.length && !(_daylogEditIdx === -1 && _daylogDraft)){
     body.innerHTML = h + '<div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">今天还没有痕迹</div>';
     return;
   }
-  h += entries.map((e,i)=>`
-    <div style="display:flex;gap:5px;margin-bottom:6px;align-items:center;">
-      <input value="${_dlEsc(e.time)}" onchange="_daylogData.entries[${i}].time=this.value" maxlength="5"
-             style="width:44px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px;font-size:11px;color:var(--text-primary);outline:none;text-align:center;">
-      ${_dlSelect(DAYLOG_DRIVES, e.drive, `_daylogData.entries[${i}].drive=this.value`)}
-      ${_dlSelect(DAYLOG_KINDS, e.kind, `_daylogData.entries[${i}].kind=this.value`)}
-      <input value="${_dlEsc(e.note)}" onchange="_daylogData.entries[${i}].note=this.value" placeholder="备注" maxlength="40"
-             style="flex:1;min-width:60px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;color:var(--text-primary);outline:none;">
+  h += entries.map((e,i)=>{
+    if (i === _daylogEditIdx) return _dlEditRow(e, false);
+    return `<div style="display:flex;align-items:flex-start;gap:6px;padding:7px 2px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.5;">
+      <div style="flex:1;cursor:pointer;color:var(--text-primary);" onclick="daylogEdit(${i})">${_dlRowText(e)}</div>
       <button onclick="daylogDel(${i})" style="background:none;border:none;color:var(--text-secondary);font-size:13px;cursor:pointer;padding:2px;">✕</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   body.innerHTML = h;
+}
+
+function daylogEdit(i){ _daylogEditIdx = i; renderDaylog(); }
+
+function daylogCancelEdit(){
+  _daylogEditIdx = null; _daylogDraft = null;
+  fetchDaylog();
 }
 
 function daylogAddRow(){
   if (!_daylogData) _daylogData = {date:'', entries:[]};
   const now = new Date();
   const hh = String(now.getHours()).padStart(2,'0'), mm = String(now.getMinutes()).padStart(2,'0');
-  _daylogData.entries.push({time:`${hh}:${mm}`, drive:'libido', kind:'scene', peak:0, note:'', src:'手动'});
+  _daylogDraft = {time:`${hh}:${mm}`, drive:'libido', kind:'scene', peak:0, note:'', src:'手动'};
+  _daylogEditIdx = -1;
   renderDaylog();
+}
+
+function daylogConfirmEdit(){
+  if (_daylogEditIdx === -1 && _daylogDraft) _daylogData.entries.push(_daylogDraft);
+  _daylogEditIdx = null; _daylogDraft = null;
+  daylogSave();
+}
+
+function daylogSceneAdj(d){
+  if (!_daylogData) return;
+  const es = _daylogData.entries;
+  if (d > 0){
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2,'0'), mm = String(now.getMinutes()).padStart(2,'0');
+    es.push({time:`${hh}:${mm}`, drive:'libido', kind:'scene', peak:0, note:'', src:'盖章'});
+  } else {
+    for (let i = es.length-1; i >= 0; i--){
+      if (es[i].kind === 'scene'){ es.splice(i,1); break; }
+    }
+  }
+  daylogSave();
 }
 
 function daylogDel(i){
   _daylogData.entries.splice(i,1);
-  renderDaylog();
+  daylogSave();
 }
 
 async function daylogSave(){
   const st = document.getElementById('daylogStatus');
   if (!_daylogData) return;
   st.textContent = '保存中…';
+  renderDaylog();
   try{
     const r = await fetch('/api/daylog', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_daylogData)});
     const d = await r.json();
-    st.textContent = d.ok ? `已保存（${d.count}条）` : (d.error || '失败');
-    if (d.ok) fetchDaylog();
+    if (d.ok){ st.textContent = `已保存（${d.count}条）`; await fetchDaylog(); }
+    else st.textContent = d.error || '保存失败';
   }catch(e){ st.textContent = '保存失败'; }
-  setTimeout(()=>{ st.textContent=''; }, 3000);
+  setTimeout(()=>{ st.textContent=''; }, 2500);
 }
 
 /* ── Desire Panel ── */
