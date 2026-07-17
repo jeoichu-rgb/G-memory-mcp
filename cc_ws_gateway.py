@@ -25,6 +25,7 @@ if _env_file.exists():
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -51,6 +52,14 @@ logging.basicConfig(
 log = logging.getLogger("cc-gw")
 
 app = FastAPI(title="CC WebSocket Gateway")
+
+# 前端可能从主域打开（管理面板入口），API 却走 chat 子域绝对地址——放行跨域。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://erikssheep.uk", "https://chat.erikssheep.uk"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 PALACE_SECRET = os.getenv("PALACE_SECRET", "")
 CC_CWD = os.getenv("CC_CWD", "/opt/G-memory-mcp")

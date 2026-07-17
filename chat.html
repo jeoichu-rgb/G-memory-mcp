@@ -1159,6 +1159,9 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 // WS gateway: always connect to chat subdomain
 const WS_URL = 'wss://chat.erikssheep.uk/ws';
 const MCP_API = 'https://erikssheep.uk';
+// Gateway HTTP API：和 WS 同一个子域的绝对地址。不能用相对路径——
+// 页面可能从主域打开（管理面板入口），主域的 /api/* 被认证层挡（401）。
+const GW_API = 'https://chat.erikssheep.uk';
 const EMOJIS = ['❤️','😂','😮','😢','🙏','👍','👍🏿','🔥','💀','🥺','😈','😄','☺️','💦','🤯','🥵','😡','😰','🥰','🙀','🦾','🖕','(￣ω￣)','(*≧ω≦)','♥'];
 
 let ws = null;
@@ -2508,15 +2511,17 @@ function _dlSelect(opts, cur, onchange){
   return h + '</select>';
 }
 
-async function fetchDaylog(){
-  if (_daylogEditIdx !== null) return;  // 编辑中不让轮询/事件覆盖手上的改动
+async function fetchDaylog(force){
+  if (!force && _daylogEditIdx !== null) return;  // 编辑中不让轮询/事件覆盖手上的改动
+  if (force && _daylogEditIdx !== null && _daylogEditIdx >= 0) _daylogEditIdx = null;  // 强刷时行号可能失效，收起编辑行（草稿态保留）
   const body = document.getElementById('daylogBody');
   try{
-    const r = await fetch('/api/daylog', {cache:'no-store'});
+    const r = await fetch(GW_API + '/api/daylog', {cache:'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     _daylogData = await r.json();
     renderDaylog();
   }catch(e){
-    body.innerHTML = '<div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">加载失败</div>';
+    body.innerHTML = `<div style="text-align:center;color:var(--text-secondary);font-size:12px;padding:20px;">加载失败（${_dlEsc(e.message)}）</div>`;
   }
 }
 
@@ -2625,11 +2630,12 @@ async function daylogSave(){
   st.textContent = '保存中…';
   renderDaylog();
   try{
-    const r = await fetch('/api/daylog', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_daylogData)});
+    const r = await fetch(GW_API + '/api/daylog', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_daylogData)});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    if (d.ok){ st.textContent = `已保存（${d.count}条）`; await fetchDaylog(); }
+    if (d.ok){ st.textContent = `已保存（${d.count}条）`; await fetchDaylog(true); }
     else st.textContent = d.error || '保存失败';
-  }catch(e){ st.textContent = '保存失败'; }
+  }catch(e){ st.textContent = `保存失败（${e.message}）`; }
   setTimeout(()=>{ st.textContent=''; }, 2500);
 }
 
