@@ -4821,18 +4821,26 @@ async def health():
     }
 
 
+# no-cache = 可以缓存但每次必须回源校验（没变就 304，极便宜）。不设这个
+# 头，iOS PWA 走启发式缓存，改完前端要靠杀进程/删图标才能拿到新版。
+_HTML_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/chat")
 @app.get("/chat.html")
 async def serve_chat():
-    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html")
+    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html",
+                        headers=_HTML_NO_CACHE)
 
 
 @app.get("/")
 async def serve_index():
     index = Path(CC_CWD) / "index.html"
     if index.exists():
-        return FileResponse(index, media_type="text/html")
-    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html")
+        return FileResponse(index, media_type="text/html",
+                            headers=_HTML_NO_CACHE)
+    return FileResponse(Path(CC_CWD) / "chat.html", media_type="text/html",
+                        headers=_HTML_NO_CACHE)
 
 
 if __name__ == "__main__":
