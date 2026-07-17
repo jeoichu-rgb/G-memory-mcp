@@ -2497,7 +2497,7 @@ let _daylogEditIdx = null;   // 正在编辑的行号；-1 = 新增草稿；null
 let _daylogDraft = null;     // 新增草稿对象
 let _daylogPoll = null;
 const DAYLOG_DRIVES = {attachment:'想念',curiosity:'好奇',reflection:'沉淀',libido:'亲密',stress:'压力',fatigue:'疲劳'};
-const DAYLOG_KINDS = {intent:'触发',satisfy:'满足',partial:'部分满足',scene:'场景完成'};
+const DAYLOG_KINDS = {intent:'触发',satisfy:'满足',partial:'部分满足',scene:'做了'};
 
 function _dlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -2522,7 +2522,7 @@ async function fetchDaylog(){
 
 function _dlRowText(e){
   if (e.kind === 'scene'){
-    let t = `<b>${_dlEsc(e.time)}</b> 场景完成${e.note?`（${_dlEsc(e.note)}）`:'（未记性质）'}`;
+    let t = `<b>${_dlEsc(e.time)}</b> 做了${e.note?`（${_dlEsc(e.note)}）`:'（未记性质）'}`;
     if (e.src) t += ` <span style="color:var(--text-secondary);font-size:11px;">${_dlEsc(e.src)}</span>`;
     return t;
   }
@@ -2556,8 +2556,8 @@ function renderDaylog(){
   let h = `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">${_dlEsc(date)}（凌晨4点翻篇）</div>`;
   h += `<div style="display:flex;align-items:center;gap:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:12px;">
     <div style="flex:1;">
-      <div style="font-size:13px;color:var(--text-primary);">成场 <b style="font-size:20px;">${scenes}</b> 次</div>
-      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">点燃 ${sparks} 次（对话内）</div>
+      <div style="font-size:13px;color:var(--text-primary);">今天做了 <b style="font-size:20px;">${scenes}</b> 次</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">撩拨 ${sparks} 次（对话内）</div>
     </div>
     <button onclick="daylogSceneAdj(-1)" ${scenes?'':'disabled'} style="width:32px;height:32px;border-radius:8px;background:var(--bg-main);border:1px solid var(--border);color:var(--text-primary);font-size:16px;cursor:pointer;${scenes?'':'opacity:.35;cursor:default;'}">−</button>
     <button onclick="daylogSceneAdj(1)" style="width:32px;height:32px;border-radius:8px;background:var(--accent);border:none;color:#fff;font-size:16px;cursor:pointer;">＋</button>
