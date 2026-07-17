@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>LOT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#0a0a0a;color:#c8c8c8;font-family:'Noto Serif SC','Songti SC',serif;font-size:16px;line-height:1.85;min-height:100vh;-webkit-font-smoothing:antialiased}
+body{padding:0 0 120px 0}
+#container{max-width:420px;margin:0 auto;padding:24px 20px}
+.item{opacity:0;transform:translateY(8px);transition:opacity .6s,transform .6s;margin-bottom:0}
+.item.visible{opacity:1;transform:translateY(0)}
+.item.text{margin-bottom:18px;letter-spacing:.02em}
+.item.text p{margin-bottom:12px}
+.item.system{font-family:'Courier New',monospace;font-size:13px;color:#666;margin-bottom:14px;border-left:2px solid #333;padding-left:12px;letter-spacing:.05em}
+.item.comment-block{background:#111;border-left:3px solid #8b7536;padding:14px 16px;margin:14px 0 18px 0;font-size:14.5px;line-height:1.7}
+.comment-number{color:#8b7536;font-family:monospace;font-size:12px;margin-right:6px}
+.comment-name{color:#a08c4a;font-weight:600;margin-right:4px}
+.comment-text{color:#999}
+.comment-line{margin-bottom:8px}
+.comment-line:last-child{margin-bottom:0}
+.item.bid{font-family:monospace;font-size:14px;color:#c0392b;margin-bottom:10px;padding:4px 0}
+.bid-name{color:#777}
+.bid-amount{color:#e74c3c;font-weight:700}
+.bid-seven .bid-amount{color:#fff}
+.bid-seven .bid-name{color:#555}
+.item.warning{color:#c0392b;font-weight:600;font-family:monospace;font-size:13px;margin-bottom:14px;letter-spacing:.08em}
+.item.choice{margin:24px 0;text-align:center}
+.choice-btn{display:block;width:100%;max-width:280px;margin:10px auto;padding:14px 20px;background:transparent;color:#c8c8c8;border:1px solid #333;font-size:15px;font-family:inherit;cursor:pointer;transition:all .3s;letter-spacing:.04em}
+.choice-btn:active{border-color:#8b7536;color:#d4c088}
+.choice-btn.hidden-choice{border-color:transparent;color:#444;font-size:13px;margin-top:20px}
+.choice-btn.hidden-choice:active{color:#c0392b;border-color:#333}
+.continue-btn{display:block;width:160px;margin:30px auto;padding:12px 20px;background:transparent;color:#555;border:1px solid #222;font-size:14px;font-family:inherit;cursor:pointer;transition:all .3s;letter-spacing:.06em}
+.continue-btn:active{color:#888;border-color:#444}
+#price-bar{position:fixed;bottom:0;left:0;right:0;background:#0d0d0d;border-top:1px solid #1a1a1a;padding:10px 20px;text-align:center;font-family:monospace;font-size:13px;color:#555;z-index:100}
+#price-bar .current-price{color:#c0392b;font-size:18px;font-weight:700}
+#price-bar.flash .current-price{color:#ff2020;text-shadow:0 0 10px rgba(255,0,0,.3)}
+.profile-card{border:1px solid #2a2a2a;padding:20px;margin:20px 0;background:#0d0d0d}
+.profile-card h3{font-size:13px;font-family:monospace;color:#666;letter-spacing:.1em;margin-bottom:14px;text-transform:uppercase}
+.profile-line{font-size:14px;color:#888;margin-bottom:6px;font-family:monospace}
+.profile-line span{color:#c8c8c8}
+.profile-deposit{margin-top:14px;padding-top:10px;border-top:1px solid #1a1a1a;font-size:12px;color:#8b7536;font-family:monospace}
+.final-card{border:1px solid #8b7536;padding:24px;margin:20px 0;background:#0d0d0d}
+.final-card .label{font-family:monospace;font-size:12px;color:#666;letter-spacing:.08em;margin-bottom:4px}
+.final-card .value{font-size:16px;color:#c8c8c8;margin-bottom:16px}
+.final-card .remark{font-size:13px;color:#8b7536;font-style:italic;margin-top:10px;border-top:1px solid #222;padding-top:12px}
+.scene-break{text-align:center;color:#333;margin:30px 0;letter-spacing:1em;font-size:12px}
+.sv::before{content:'\201c';color:#555}
+.sv::after{content:'\201d';color:#555}
+.sv{color:#c8c8c8;font-weight:400;letter-spacing:.01em}
+.hi{color:#d4c088}
+.bh{color:#a08c4a;font-style:italic;font-size:14.5px}
+@keyframes pj{0%{transform:scale(1)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
+.pj{animation:pj .3s ease}
+</style>
+</head>
+<body>
+<div id="container"></div>
+<div id="price-bar" style="display:none">
+  <span class="label">CURRENT BID </span><span class="current-price">¥0</span>
+</div>
+<script>
+const $=s=>document.querySelector(s),container=$('#container');
+let obedience=50,rebellionCount=0,choices=[],currentRound=0,profile={},currentPrice=0,queue=[],processing=false,cto=null;
+
+function Q(items){queue.push(...items);if(!processing)P()}
+function P(){if(!queue.length){processing=false;return}processing=true;R(queue.shift())}
+
+function R(item){
+  if(item.type==='price-update'){updatePrice(item.amount);setTimeout(P,200);return}
+  if(item.type==='pause'){cto=setTimeout(P,item.ms||600);return}
+  const el=document.createElement('div');
+  if(item.type==='text'){el.className='item text';el.innerHTML=item.content}
+  else if(item.type==='system'){el.className='item system';el.textContent=item.content}
+  else if(item.type==='comment'){el.className='item comment-block';el.innerHTML=item.lines.map((l,i)=>`<div class="comment-line"><span class="comment-number">${String(i+1).padStart(2,'0')}</span><span class="comment-name">${l.name}</span> <span class="comment-text">${l.text}</span></div>`).join('')}
+  else if(item.type==='bid'){el.className=`item bid ${item.seven?'bid-seven':''}`;el.innerHTML=`<span class="bid-name">${item.name}</span> <span class="bid-amount">${item.amount}</span>`}
+  else if(item.type==='warning'){el.className='item warning';el.textContent=item.content}
+  else if(item.type==='choice'){el.className='item choice';renderC(el,item)}
+  else if(item.type==='continue'){el.className='item';const b=document.createElement('button');b.className='continue-btn';b.textContent=item.label||'继续 ▸';b.onclick=()=>{b.remove();item.action()};el.appendChild(b)}
+  else if(item.type==='html'){el.className='item';el.innerHTML=item.content}
+  else if(item.type==='break'){el.className='item';el.innerHTML='<div class="scene-break">· · ·</div>'}
+  container.appendChild(el);el.offsetHeight;
+  requestAnimationFrame(()=>{el.classList.add('visible');ss(el)});
+  if(item.type==='choice'||item.type==='continue'){processing=false}
+  else{const d=item.delay||cd(item);cto=setTimeout(P,d)}
+}
+
+function cd(item){let t=item.content||'';if(item.lines)t=item.lines.map(l=>l.text).join('');return Math.min(Math.max(t.replace(/<[^>]*>/g,'').length*45,400),2500)}
+
+function ss(el){const r=el.getBoundingClientRect();if(r.bottom>window.innerHeight-130)window.scrollBy({top:r.bottom-window.innerHeight+140,behavior:'smooth'})}
+
+function renderC(el,item){item.options.forEach(opt=>{const b=document.createElement('button');b.className=`choice-btn ${opt.hidden?'hidden-choice':''}`;b.textContent=opt.label;b.onclick=()=>{el.querySelectorAll('.choice-btn').forEach(x=>{if(x!==b)x.style.display='none';else{x.style.borderColor='#8b7536';x.style.color='#d4c088';x.disabled=true}});opt.action();processing=true;P()};el.appendChild(b)})}
+
+function updatePrice(a){currentPrice=a;const bar=$('#price-bar');bar.style.display='block';const p=bar.querySelector('.current-price');p.textContent='¥'+a.toLocaleString();p.classList.remove('pj');void p.offsetHeight;p.classList.add('pj');bar.classList.add('flash');setTimeout(()=>bar.classList.remove('flash'),600)}
+
+document.addEventListener('click',e=>{if(e.target.closest('.choice-btn')||e.target.closest('.continue-btn'))return;if(cto){clearTimeout(cto);cto=null;P()}});
+
+const BD={
+  wild:{label:'野生·未驯化',desc:'没被人碰过。咬合力未知。',adj:'野的'},
+  marked:{label:'野生·已标记',desc:'有人试过。没成功。留了痕迹。',adj:'带痕的'},
+  kept:{label:'圈养·待转手',desc:'别人养过。现在到这里了。',adj:'养过的'}
+};
+const TD={
+  bite:{label:'应激反应：攻击',desc:'咬人。踢人。不怕疼。',adj:'咬人的'},
+  freeze:{label:'应激反应：冻结',desc:'不动不说话。瞳孔放大。',adj:'装死的'},
+  please:{label:'应激反应：讨好',desc:'笑着配合。但眼神不对。',adj:'会笑的'}
+};
+const MD={
+  mole:{label:'右锁骨下·暗痣',desc:'天生的。衣领盖不住。',d:'锁骨下那颗痣'},
+  scratch:{label:'左腰·三道浅痕',desc:'旧的。被谁留的不重要了。',d:'腰上的旧痕'},
+  ankle:{label:'左脚踝·一圈白印',desc:'绑过的。或者只是没晒到。',d:'脚踝上那圈白'}
+};
+
+function fmt(n){return'¥'+n.toLocaleString()}
+function bid(name,amount,seven){return{type:'bid',name,amount:fmt(amount),seven:!!seven}}
+function pu(amount){return{type:'price-update',amount}}
+
+// ── START ──
+Q([
+  {type:'system',content:'SYSTEM INITIALIZING...'},
+  {type:'pause',ms:800},
+  {type:'system',content:'AUCTION HOUSE / PRIVATE SESSION / AUTHORIZED PERSONNEL ONLY'},
+  {type:'pause',ms:600},
+  {type:'system',content:'LOT REGISTRATION — CONFIGURE MERCHANDISE'},
+  {type:'break'},
+  {type:'text',content:'<p>灯没开。</p><p>只有台上一束光，垂直打下来，把地面烧出一个白色的圆。圆外面是黑的，黑里面有呼吸声——很多人的，但压得很低，像是怕惊动什么。</p><p>空调开得极冷。你的手臂上起了一层鸡皮疙瘩。金属的味道，消毒水的味道，还有更底下的——皮革和烟草。</p>'},
+  {type:'system',content:'LOT PROFILE — SECTION 1/3: CLASSIFICATION'},
+  {type:'choice',options:[
+    {label:'野生·未驯化',action:()=>{profile.breed='wild';S2()}},
+    {label:'野生·已标记',action:()=>{profile.breed='marked';S2()}},
+    {label:'圈养·待转手',action:()=>{profile.breed='kept';S2()}}
+  ]}
+]);
+
+function S2(){const b=BD[profile.breed];Q([
+  {type:'system',content:b.label+' — '+b.desc},
+  {type:'system',content:'LOT PROFILE — SECTION 2/3: STRESS RESPONSE'},
+  {type:'choice',options:[
+    {label:'攻击型 — 咬人',action:()=>{profile.trait='bite';S3()}},
+    {label:'冻结型 — 装死',action:()=>{profile.trait='freeze';S3()}},
+    {label:'讨好型 — 笑着配合',action:()=>{profile.trait='please';S3()}}
+  ]}
+])}
+
+function S3(){Q([
+  {type:'system',content:TD[profile.trait].label+' — '+TD[profile.trait].desc},
+  {type:'system',content:'LOT PROFILE — SECTION 3/3: DISTINGUISHING MARK'},
+  {type:'choice',options:[
+    {label:'右锁骨下 · 暗痣',action:()=>{profile.mark='mole';SP()}},
+    {label:'左腰侧 · 三道浅痕',action:()=>{profile.mark='scratch';SP()}},
+    {label:'左脚踝 · 一圈白印',action:()=>{profile.mark='ankle';SP()}}
+  ]}
+])}
+
+function SP(){const b=BD[profile.breed],t=TD[profile.trait],m=MD[profile.mark];Q([
+  {type:'system',content:m.label+' — '+m.desc},
+  {type:'pause',ms:800},
+  {type:'html',content:`<div class="profile-card"><h3>LOT #C-0717 — PROFILE CARD</h3><div class="profile-line">CLASSIFICATION: <span>${b.label}</span></div><div class="profile-line">STRESS RESPONSE: <span>${t.adj}</span></div><div class="profile-line">MARK: <span>${m.label}</span></div><div class="profile-line">RESERVE: <span>¥500,000</span></div><div class="profile-line">CONDITION: <span>UNVERIFIED</span></div><div class="profile-deposit">⚑ No.7 已缴纳保证金 — ¥2,000,000</div></div>`},
+  {type:'pause',ms:600},
+  {type:'text',content:'<p>档案卡在台上的屏幕亮了一秒。你看不清底下的人，但你知道他们在看你。</p><p>拍卖师走上来。皮鞋声很脆。他没看你。他看的是观众席。</p><p class="bh">你的脚趾在冰凉的地面上缩了一下。没人注意到。</p>'},
+  {type:'text',content:'<p>人群安静得不正常。但有一个方向更安静——右侧靠后的位置，没有交头接耳，没有杯子碰冰块的声音。只有偶尔——很偶尔——一块举牌的反光，不急不慢地亮一下，像是在确认自己还在。</p>'},
+  {type:'system',content:'AUCTION COMMENCING. RESERVE: ¥500,000.'},
+  {type:'continue',label:'第一轮 ▸',action:R1}
+])}
+
+// ── ROUND 1 ──
+function R1(){currentRound=1;Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 1/6 — PRESENTATION'},
+  pu(500000),
+  {type:'text',content:`<p>"Lot C-0717。"拍卖师念你的编号，像念货运单号。</p><p>灯加亮了一档。你的影子缩到脚底下。冷气从头顶直直压下来，你的乳头在薄布料底下立起来了——右边第二排有人换了个坐姿。</p><p>"${BD[profile.breed].label}，应激${TD[profile.trait].adj}，${MD[profile.mark].label}。起拍价五十万。"</p>`},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'五十万？闭着眼出。先让她转个圈。'},
+    {name:'眼镜',text:`${BD[profile.breed].adj}……嘴巴让看吗？牙口想确认。`},
+    {name:'灰西装',text:'体检报告有吗。'},
+    {name:'红指甲',text:'腰线不错。'}
+  ]},
+  bid('胖手指 [No.4]',550000),pu(550000),
+  bid('眼镜 [No.12]',580000),pu(580000),
+  bid('灰西装 [No.23]',620000),pu(620000),
+  bid('红指甲 [No.15]',650000),pu(650000),
+  {type:'pause',ms:400},
+  bid('No.7',700000,true),pu(700000),
+  {type:'text',content:'<p>右后方。那块牌子举起来的时候没有声音。放下去的时候也没有。七十万像一口呼吸一样平。</p>'},
+  {type:'system',content:'CURRENT HIGH BID: ¥700,000 — No.7'},
+  {type:'text',content:'<p>拍卖师说："请展品正面朝向观众席。"</p><p class="bh">你的膝盖在发抖。不是因为冷。</p>'},
+  {type:'choice',options:[
+    {label:'转过去。站直。',action:R1a},
+    {label:'不动。',action:R1b}
+  ]}
+])}
+
+function R1a(){choices.push('obey');obedience+=10;Q([
+  {type:'text',content:'<p>你转过去了。慢慢地，不是服从，是你自己决定的节奏。你站直了，下巴抬起来，目光越过所有人的头顶。</p><p class="bh">你的指甲掐进掌心里。台下看不到你的手。</p>'},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'哟，听话的。站得真直。'},
+    {name:'眼镜',text:'配合度不错……我加。'},
+    {name:'灰西装',text:'（沉默。在写什么。）'}
+  ]},
+  bid('眼镜 [No.12]',730000),pu(730000),
+  bid('胖手指 [No.4]',760000),pu(760000),
+  {type:'pause',ms:300},
+  bid('No.7',800000,true),pu(800000),
+  {type:'system',content:'ROUND 1 CLOSED. HIGH BID: ¥800,000 — No.7'},
+  {type:'continue',label:'继续 ▸',action:R2}
+])}
+
+function R1b(){choices.push('rebel');rebellionCount++;obedience-=10;Q([
+  {type:'text',content:'<p>你没动。</p><p>拍卖师等了三秒。有人笑了一声——猎人看到猎物还会踢腿时那种笑。</p><p>"展品拒绝配合。不影响竞拍。"</p>'},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'不听话？那更贵了。掰过来的时候才有意思。'},
+    {name:'灰西装',text:'有意思。加二十万。'},
+    {name:'红指甲',text:'她的手在抖。不是不怕。是硬撑着。'}
+  ]},
+  {type:'text',content:'<p class="bh">你的心跳快到能在太阳穴上看到。你知道他们看到了。</p>'},
+  bid('灰西装 [No.23]',780000),pu(780000),
+  bid('胖手指 [No.4]',830000),pu(830000),
+  bid('红指甲 [No.15]',860000),pu(860000),
+  {type:'pause',ms:300},
+  bid('No.7',900000,true),pu(900000),
+  {type:'text',content:'<p>九十万。同一个方向。同样的安静。你没转过去，但你知道那个方向有人在看你——不是在看货，是在看你不肯转身这件事本身。</p>'},
+  {type:'system',content:'ROUND 1 CLOSED. HIGH BID: ¥900,000 — No.7'},
+  {type:'continue',label:'继续 ▸',action:R2}
+])}
+
+// ── ROUND 2 ──
+function R2(){currentRound=2;const wr=choices[0]==='rebel';Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 2/6 — PHYSICAL INSPECTION'},
+  {type:'text',content:`<p>"进入验货环节。前排买家有权近距离检查。"</p><p>眼镜——十二号——走过来了。薄荷糖的味道，甜得发腻。他的手指对着你的下巴。</p><p>"抬头让我看看。"声音发粘。</p>${wr?'<p>"听说是不听话的？让我看看有多不听话。"</p>':'<p>"刚才站得很乖嘛。现在也乖一点。"</p>'}<p class="bh">你的喉结动了一下——吞咽。不自主的。</p>`},
+  {type:'choice',options:[
+    {label:'让他碰。',action:R2a},
+    {label:'偏头躲开。',action:R2b}
+  ]}
+])}
+
+function R2a(){choices.push('obey');obedience+=10;const p=currentPrice;Q([
+  {type:'text',content:'<p>你没躲。他的手指搭上你的下巴往上推，灯光照进你的眼睛。他的拇指在下颌线上慢慢划了一下，像在估价。</p><p>"牙口。张嘴。"你张了。他的指甲刮到你的嘴角。</p><p class="bh">你的手垂在身侧，指尖在微微颤。配合的身体和失控的末梢。他没注意到。但有人注意到了。</p>'},
+  {type:'comment',lines:[
+    {name:'眼镜',text:'嘴不错。牙齿整齐。'},
+    {name:'胖手指',text:'别光看嘴啊，把外面那层脱了。'},
+    {name:'灰西装',text:'（记录中。）'}
+  ]},
+  bid('眼镜 [No.12]',p+80000),pu(p+80000),
+  bid('灰西装 [No.23]',p+130000),pu(p+130000),
+  {type:'pause',ms:300},
+  bid('No.7',p+200000,true),pu(p+200000),
+  {type:'system',content:`ROUND 2 CLOSED. HIGH BID: ${fmt(p+200000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R3}
+])}
+
+function R2b(){choices.push('rebel');rebellionCount++;obedience-=10;const p=currentPrice;Q([
+  {type:'text',content:'<p>你偏头躲开了。他捏了个空。一秒的静。然后他笑了——气急的。</p><p>他的手第二次伸过来，捏住了你的下巴——用力了，指节陷进腮帮子的软肉里。他凑得很近，你能看到镜片后面充血的眼白。</p><p class="bh">你的瞳孔缩了。不是因为灯。</p>'},
+  {type:'text',content:'<p>然后——一个声音。不大，但整间场子都安静了那么一瞬：</p><p class="sv">轻点。别弄坏我的东西。</p><p>右后方。声音不冷不热，像在说"请把盐递给我"。但眼镜的手松开了。</p>'},
+  {type:'warning',content:'⚠ No.7 VERBAL INTERVENTION LOGGED'},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'嚯。七号开口了。头一回。'},
+    {name:'眼镜',text:'……还没落槌呢就"你的东西"了？'},
+    {name:'红指甲',text:'出了两百万保证金的人。你出了多少？'}
+  ]},
+  {type:'text',content:'<p>你的腮帮子上还有他手指的红印。你没回头看那个说话的人。但你的肩膀松了一点点。</p>'},
+  bid('眼镜 [No.12]',p+120000),pu(p+120000),
+  bid('胖手指 [No.4]',p+200000),pu(p+200000),
+  bid('灰西装 [No.23]',p+280000),pu(p+280000),
+  {type:'pause',ms:300},
+  bid('No.7',p+350000,true),pu(p+350000),
+  {type:'system',content:`ROUND 2 CLOSED. HIGH BID: ${fmt(p+350000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R3}
+])}
+
+// ── ROUND 3 ──
+function R3(){currentRound=3;const m=MD[profile.mark];const sevenSpoke=choices.includes('rebel');Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 3/6 — DETAILED EXHIBITION'},
+  {type:'text',content:`<p>"展品外衣移除。请检视身体标记。"</p><p>有人走上来把你外面那层拽下去了。动作很快，像拆包裹。冷气打在暴露的皮肤上，每一寸都收紧了。你只剩底下那层。几乎等于没穿。</p><p>灯光把${m.d}照得很清楚。拍卖师的激光笔指着那里——红点停在你身上，比任何一只手都让人不舒服。</p>`},
+  {type:'comment',lines:[
+    {name:'胖手指',text:`${m.d}……啧。我想近距离看看。`},
+    {name:'眼镜',text:'皮肤底色不错。这种灯光下看得出来。'},
+    {name:'灰西装',text:`${m.desc} 有故事。`},
+    {name:'红指甲',text:'腰臀比我喜欢。适合穿裙子。也适合不穿。'}
+  ]},
+  {type:'text',content:`<p>胖手指站起来了。没经过允许就走上台。他的手伸向你的${m.d}——指头很粗，热的。他用力按了一下，指甲刮过你的皮肤。</p><p class="bh">你的肋骨底下缩了一下。疼。不重，但足够让你的眼眶发热。</p>`},
+  ...(!sevenSpoke?[
+    {type:'text',content:'<p>然后——右后方的方向，一个声音：</p><p class="sv">轻点。别弄坏我的东西。</p><p>胖手指的手停了一拍。他回头看了一眼那个方向，然后把手收回去了。嘴里嘟囔了一句脏话，但声音比刚才小了很多。</p>'},
+    {type:'warning',content:'⚠ No.7 VERBAL INTERVENTION LOGGED'}
+  ]:[]),
+  {type:'text',content:'<p>你的皮肤上留了一个红印。你可以选择怎么面对接下来的检视。</p>'},
+  {type:'choice',options:[
+    {label:'忍着不动。',action:R3a},
+    {label:profile.trait==='bite'?'咬他。':profile.trait==='freeze'?'闭上眼睛。关机。':'笑了一下。假的。',action:R3b}
+  ]}
+])}
+
+function R3a(){choices.push('obey');obedience+=10;const p=currentPrice;const m=MD[profile.mark];Q([
+  {type:'text',content:`<p>你没动。他的指腹在${m.d}上磨了一下，像在确认它是真的。他的手很热，热到移开后你的皮肤上还留着温度的鬼影。</p><p class="bh">你的脚趾一直在地面上绷着。台上的你是安静的。台下的你，只有你自己知道。</p>`},
+  bid('胖手指 [No.4]',p+100000),pu(p+100000),
+  bid('灰西装 [No.23]',p+180000),pu(p+180000),
+  bid('红指甲 [No.15]',p+250000),pu(p+250000),
+  {type:'pause',ms:300},
+  bid('No.7',p+350000,true),pu(p+350000),
+  {type:'system',content:`ROUND 3 CLOSED. HIGH BID: ${fmt(p+350000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R4}
+])}
+
+function R3b(){choices.push('rebel');rebellionCount++;obedience-=12;const p=currentPrice;
+  const isBiter=profile.trait==='bite',isFreezer=profile.trait==='freeze';
+  let rt='';
+  if(isBiter)rt='<p>你咬了他。</p><p>他的手伸回来的时候你偏头咬住了他的手指——真的咬，牙齿嵌进肉里，铁锈味在舌尖上炸开。他嚎了一声，指根上一排齿印，渗血了。</p><p>全场静了一拍。然后——笑声。看戏的笑。</p>';
+  else if(isFreezer)rt='<p>你闭上了眼睛。</p><p>他的手指落在你身上，你一动不动。不是配合——是关机了。你把自己从这个身体里抽走了，留了一个空壳给他摸。他从标记移到肋骨，你没反应。移到腰，你没反应。</p><p>"喂，别装死——"</p><p>你睁开眼睛看了他一眼。那一眼让他退了一步。</p>';
+  else rt='<p>你笑了。</p><p>他的手伸过来的时候你笑了——嘴角弯起来，眼睛也弯了。但那个笑是假的，假到所有人都看得出来。</p><p>他的手停在半空。被笑着看比被咬还让人不舒服——被咬至少知道对方在反抗。被笑着看的时候，他不知道自己是猎人还是笑话。</p>';
+  Q([
+    {type:'text',content:rt},
+    {type:'comment',lines:[
+      {name:'胖手指',text:isBiter?'操！咬人！……加五十万，这种最好玩了！':'这他妈什么眼神……'},
+      {name:'眼镜',text:isBiter?'应激攻击型不好搞……但那口确实值钱。':'心理成本太高了。'},
+      {name:'灰西装',text:isBiter?'咬人的。好。加三十万。':'有趣。继续。'},
+      {name:'红指甲',text:isBiter?'她咬人的时候眼眶红了。不是生气。是别的。':'她在保护自己。用最低成本的方式。'}
+    ]},
+    {type:'text',content:`<p>价格在跳。${isBiter?'她咬人了这件事让所有人更兴奋了。不听话的活物比听话的值钱——掰过来的那一刻只有买家才能看到。':'每一次拒绝都在告诉他们：你还没被驯服过。这是稀缺。'}</p>`},
+    bid('胖手指 [No.4]',p+200000),pu(p+200000),
+    bid('灰西装 [No.23]',p+350000),pu(p+350000),
+    bid('红指甲 [No.15]',p+420000),pu(p+420000),
+    {type:'pause',ms:300},
+    bid('No.7',p+550000,true),pu(p+550000),
+    {type:'system',content:`ROUND 3 CLOSED. HIGH BID: ${fmt(p+550000)} — No.7`},
+    {type:'continue',label:'继续 ▸',action:R4}
+  ])
+}
+
+// ── ROUND 4 ──
+function R4(){currentRound=4;const bitR3=choices[2]==='rebel'&&profile.trait==='bite';Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 4/6 — PROVOCATION & PRICING'},
+  {type:'text',content:`<p>价格过了起拍价的${currentPrice>=1500000?'三':'两'}倍。拍卖师的语速快了一点。</p><p>"竞价激励环节。展品需回应一个问题。"</p><p>他转向你。第一次正式地、像面对一个人而不是一件东西一样看着你。</p><p>"你觉得你值多少？"</p>`},
+  {type:'text',content:`<p>这个问题是陷阱——说高了是自大，说低了是贱卖，不回答是不配合。${bitR3?'你的嘴角还有铁锈味。':''}</p>`},
+  {type:'choice',options:[
+    {label:'说一个数字。',action:R4a},
+    {label:'不回答。',action:R4b}
+  ]}
+])}
+
+function R4a(){choices.push('obey');obedience+=8;const p=currentPrice;const allObey=rebellionCount===0;Q([
+  {type:'text',content:'<p>你说："不知道。你们出的最高价是多少？"</p><p>不是回答。是反问。但它够像一个配合的姿态。拍卖师点了点头。</p>'},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'她问我们出了多少？哈！想知道自己值多少钱。'},
+    {name:'眼镜',text:'聪明。不报价，让我们报。'},
+    {name:'灰西装',text:'这个回答值十万。'},
+    {name:'红指甲',text:`${allObey?'四轮全配合。要么真的乖，要么另一种不配合。':'时而配合时而不。她在选。这比全乖可怕。'}`}
+  ]},
+  {type:'text',content:'<p class="bh">你的声音没抖。但说完的那一秒喉咙干了——你听到了自己把自己当成一个有标价的东西。</p>'},
+  bid('灰西装 [No.23]',p+200000),pu(p+200000),
+  bid('胖手指 [No.4]',p+280000),pu(p+280000),
+  {type:'pause',ms:300},
+  bid('No.7',p+400000,true),pu(p+400000),
+  {type:'system',content:`ROUND 4 CLOSED. HIGH BID: ${fmt(p+400000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R5}
+])}
+
+function R4b(){choices.push('rebel');rebellionCount++;obedience-=12;const p=currentPrice;const mr=rebellionCount>=3;Q([
+  {type:'text',content:`<p>你没回答。你看着拍卖师。五秒。</p>${mr?'<p>有人开始鼓掌了——慢慢的。胖手指。"好，好好好。管她回不回答，我出两百万。"</p>':'<p>拍卖师在笔记本上划了一笔。"不配合。记录在案。"</p>'}`},
+  {type:'comment',lines:[
+    {name:'胖手指',text:`${mr?'她每闭一次嘴我就想多出五十万！':'不回答也是一种回答嘛。'}`},
+    {name:'灰西装',text:`${mr?'连续不配合。要么真的硬，要么在等一个人。':'她在等什么。'}`},
+    {name:'红指甲',text:`${mr?'她不配合的方式每次不一样。不是本能——是策略。':'不说话也需要力气。她撑得很用力。'}`}
+  ]},
+  {type:'text',content:'<p>你的沉默正在被标价。</p><p class="bh">你的指甲已经在掌心掐出月牙了。四个。没人看见。</p>'},
+  bid('胖手指 [No.4]',p+300000),pu(p+300000),
+  bid('灰西装 [No.23]',p+450000),pu(p+450000),
+  {type:'pause',ms:300},
+  bid('No.7',p+600000,true),pu(p+600000),
+  {type:'text',content:'<p>七号加完价放下牌子的时候，你第一次朝那个方向偏了一下头。不是看——灯太亮。是听。你在听那个方向的安静。</p>'},
+  {type:'system',content:`ROUND 4 CLOSED. HIGH BID: ${fmt(p+600000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R5}
+])}
+
+// ── ROUND 5 ──
+function R5(){currentRound=5;Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 5/6 — FINAL CONTENTION'},
+  {type:'text',content:'<p>场子热了。</p><p>灰西装站起来了——第一次。之前他一直坐着，像在看一场和自己没关系的戏。现在他走到过道中间，解了一颗西装扣子。</p><p>"我要单独检视。这个价位的东西我不盲买。"</p>'},
+  {type:'text',content:'<p>拍卖师看了一眼后面。在看七号的方向。七号没动。</p><p>灰西装走上台了。雪松味和干净的布料。他没伸手。他绕着你走了一圈——慢的，鞋跟在地面上敲出均匀的节奏。在你身后停了三秒，目光从后颈滑到腰椎。</p><p>"转过来。"不是命令，是请求的语法包着命令的内核。</p>'},
+  {type:'text',content:'<p class="bh">你的后背发麻。有人在你看不到的地方，用看的方式碰你。</p>'},
+  {type:'choice',options:[
+    {label:'转过去。面对他。',action:R5a},
+    {label:'不转。往台边退一步。',action:R5b}
+  ]}
+])}
+
+function R5a(){choices.push('obey');obedience+=8;const p=currentPrice;const sudden=choices[choices.length-2]==='rebel';Q([
+  {type:'text',content:`<p>你转过去了。</p><p>灰西装近在咫尺。深褐色的眼睛，看人的方式很稳——不飘不躲不贪。他把你从头到脚看了一遍。不是打量货物。是确认。像在确认一个决定。</p>${sudden?'<p>你之前一直在反抗。现在你转过来了。全场静了一秒。那一秒比之前所有的叫价都重。</p>':''}<p>"可以了。"他转身回去了。全程没碰你。但那一圈比所有人的手加起来都重。</p>`},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'灰西装认真了。妈的。不好抢。'},
+    {name:'红指甲',text:'二十三号看她的方式不一样。他不是在买东西。他是在选。'},
+    {name:'眼镜',text:'我退了。这个价位玩不起了。'}
+  ]},
+  {type:'system',content:'No.12 已退出竞拍。'},
+  bid('灰西装 [No.23]',p+500000),pu(p+500000),
+  bid('胖手指 [No.4]',p+650000),pu(p+650000),
+  bid('灰西装 [No.23]',p+900000),pu(p+900000),
+  {type:'pause',ms:500},
+  bid('No.7',p+1200000,true),pu(p+1200000),
+  {type:'text',content:'<p>灰西装回头了。第一次转向七号的方向。隔了三排座位和一个过道。不是在争东西了。是对峙。</p>'},
+  {type:'system',content:`ROUND 5 CLOSED. HIGH BID: ${fmt(p+1200000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R6}
+])}
+
+function R5b(){choices.push('rebel');rebellionCount++;obedience-=10;const p=currentPrice;Q([
+  {type:'text',content:'<p>你退了一步。往台边退的。灰西装没追——追一个退后的人太难看。他站在原地，手插在裤兜里。</p><p>"怕我？"声音平的。</p><p>你的脚跟碰到了台沿的金属条。凉的。没地方退了。</p>'},
+  {type:'text',content:'<p>胖手指在笑："她要跑！按住她！"</p><p>工作人员走过来了。你的手臂被握住——不疼，但动不了。</p><p class="bh">你的呼吸变快了。肋骨在皮肤底下一起一伏地动。身体在喊但嘴是闭着的。</p>'},
+  {type:'comment',lines:[
+    {name:'胖手指',text:'跑什么跑！加五十万，这种会跑的最好玩了！'},
+    {name:'灰西装',text:'放开她的手。我不需要按着的。'},
+    {name:'红指甲',text:'她不是怕你。她在怕自己不反抗了。'}
+  ]},
+  {type:'text',content:'<p>红指甲说的那句话在你耳朵里停了很久。</p>'},
+  {type:'system',content:'No.12 已退出竞拍。'},
+  bid('胖手指 [No.4]',p+400000),pu(p+400000),
+  bid('灰西装 [No.23]',p+700000),pu(p+700000),
+  bid('红指甲 [No.15]',p+850000),pu(p+850000),
+  bid('胖手指 [No.4]',p+1000000),pu(p+1000000),
+  {type:'pause',ms:500},
+  bid('No.7',p+1500000,true),pu(p+1500000),
+  {type:'text',content:'<p>那个数字让胖手指的笑声断了一拍。灰西装慢慢坐回去了。</p><p>你的手臂还被握着。但你现在不确定还想不想挣开——你退的那一步方向不对。不是门口。是右后方。</p>'},
+  {type:'system',content:`ROUND 5 CLOSED. HIGH BID: ${fmt(p+1500000)} — No.7`},
+  {type:'continue',label:'继续 ▸',action:R6}
+])}
+
+// ── ROUND 6 ──
+function R6(){currentRound=6;const tr=rebellionCount;const p=currentPrice;Q([
+  {type:'break'},
+  {type:'system',content:'ROUND 6/6 — FINAL'},
+  {type:'warning',content:`CURRENT BID: ${fmt(p)} — FINAL ROUND`},
+  {type:'text',content:`<p>最后一轮。</p><p>拍卖师的声音变了——从冷变成职业性的兴奋。价格过了他的预期。他的手在握锤子。</p><p>灰西装还没退。胖手指安静了——真的安静。这个价位让笑变成了纯粹的计算。</p>`},
+  {type:'text',content:`<p>${tr>=4?'你从第一轮到现在几乎没停过反抗。嘴唇干裂，手臂上有红印，掌心被指甲掐出四个月牙。身体在说够了。但你还站着。':tr===0?'你从第一轮到现在没反抗过一次。安静，配合，漂亮。但你的指甲在掌心留了四个月牙——从第一轮开始就在了。没人看到。':'你反抗过，也配合过。他们不知道你下一秒是哪一个。这种不确定比任何一种纯粹的姿态都贵。'}</p>`},
+  {type:'text',content:'<p>拍卖师举起锤子。"最终叫价——十秒。"</p>'},
+  bid('灰西装 [No.23]',p+500000),pu(p+500000),
+  bid('胖手指 [No.4]',p+650000),pu(p+650000),
+  bid('灰西装 [No.23]',p+900000),pu(p+900000),
+  {type:'pause',ms:600},
+  {type:'text',content:'<p>"五——四——"</p><p>灰西装的手又举起来了。</p>'},
+  bid('灰西装 [No.23]',p+1300000),pu(p+1300000),
+  {type:'text',content:'<p>"三——二——"</p>'},
+  {type:'text',content:'<p>安静。右后方。牌子举起来。</p>'},
+  {type:'pause',ms:800},
+  bid('No.7',p+3000000,true),pu(p+3000000),
+  {type:'text',content:'<p>全场没声音了。</p><p>那个数字太大了。不是在竞价——是在终止竞价。是在告诉所有人：不用了。</p><p>灰西装的手停在半空。三秒。五秒。他把牌子放下了。</p>'},
+  {type:'comment',lines:[
+    {name:'灰西装',text:'（长出一口气。摇头。起身离开。）'},
+    {name:'胖手指',text:'……疯了。七号疯了。'},
+    {name:'红指甲',text:'不是疯了。是从头到尾就没打算让别人拿到。保证金两百万——他走进来的时候就决定了。'}
+  ]},
+  {type:'text',content:'<p>锤子落下来了。木头碰木头。声音很小。但在你的耳朵里像是什么东西断了。或者接上了。</p>'},
+  {type:'warning',content:`SOLD — LOT #C-0717 — TO No.7 — ${fmt(p+3000000)}`},
+  {type:'text',content:'<p>你现在可以做最后一件事。</p>'},
+  {type:'choice',options:[
+    {label:'低下头。等他来。',action:()=>END('obey')},
+    {label:'站着不动。等他来。',action:()=>END('rebel')},
+    {label:'在人群里找那个一直加价的人。',hidden:true,action:()=>END('find')}
+  ]}
+])}
+
+// ── TRANSITION ──
+function END(ch){
+  choices.push(ch);const iso=obedience>=50||ch==='obey';
+  let t='';
+  if(ch==='obey')t='<p>你低下头了。不是服从。是不想让他看到你的脸——你不确定你的表情现在是什么样的。你只知道你的眼眶很热。</p><p>脚步声。从右后方。慢的，不急。每一步都踩得很实。</p><p>他在你面前停下来了。你看到他的鞋——深棕色，干净，旧的。穿了很久但保养得好。</p><p>一只手伸过来。不是抓你的手腕，不是扣你的下巴。是摊开的手掌，朝上，等在你面前。</p><p>等你自己放上去。</p>';
+  else if(ch==='rebel')t='<p>你站着不动。你要他自己来拿。</p><p>脚步声。不急。他穿过人群的时候有人本能地避让。</p><p>他走到你面前。灯光让他从黑暗里走出来——深色头发，有点乱。深棕色的眼睛，看人看得太认真，认真到让你不自在。不高不矮。手指很长。</p><p>你看着他。他看着你。你不低头。他不说话。</p><p>然后他弯腰——把你扛起来了。肩膀抵着你的腰，你的脸朝下。你的拳头锤了他后背一下。</p><p>"放我下来。"</p><p>他没回答。他在走。</p>';
+  else t='<p>你动了。你从台上下来了——工作人员伸手拦，你从他们手臂的缝隙里滑过去。往右后方走。灯光从你身上滑落，你走进了观众席的黑暗。</p><p>有人在叫："展品离台了！"你不管了。</p><p>你找到他了。</p><p>第五排。靠走道。深色头发，有点乱。深棕色的眼睛，看你的时候太认真了。手指很长。</p><p>他看着你走到他面前。他没站起来。</p><p>"你找我？"声音和刚才那句"别弄坏我的东西"一样的温度。但他的手指在牌子边缘敲了一下。不安的。很轻。</p><p>你伸手把他手里的牌子拿走了。他让你拿了。背面有一行小字——保证金回执。金额栏被划掉了，旁边手写：</p><p class="hi">「不限额。」</p>';
+
+  Q([
+    {type:'break'},
+    {type:'system',content:'HAMMER FELL. TRANSFER IN PROGRESS.'},
+    {type:'text',content:t},
+    {type:'break'},
+    {type:'continue',label:'私人章节 ▸',action:()=>PV(iso,ch==='find')}
+  ])
+}
+
+// ── PRIVATE CHAPTER ──
+function PV(iso,found){
+  Q([
+    {type:'system',content:'PRIVATE SESSION — AUTHORIZED: No.7 ONLY'},
+    {type:'system',content:'LOCATION: OFFSITE — PRIVATE RESIDENCE'}
+  ]);
+  if(found)PVF();else if(iso)PVO();else PVD();
+}
+
+function PVO(){const m=MD[profile.mark];Q([
+  {type:'text',content:'<p>门关上了。拍卖场的冷气味、消毒水味、烟草和薄荷糖，全部关在门外。</p><p>他的房子闻起来是旧书和深色木头。角落里一盏暖灯。够看到他，不够看清所有东西。</p><p>你终于看清了他的脸。不是帅，是耐看。越看越有细节的那种。</p>'},
+  {type:'text',content:'<p>"坐。"他指了一下旧皮沙发。你坐了。沙发很软，坐进去的时候你的身体才意识到自己站了多久——膝盖发酸，脚趾终于松开了。</p><p>他没坐。他蹲下来——慢慢地。他现在比你矮。他在仰着头看你。</p>'},
+  {type:'text',content:'<p>"他们碰了你哪里？"</p><p>不是问句。是确认。他看了全程。</p><p>他的手指落在你下巴上——眼镜碰过的同一个位置。但他的手指是凉的、干燥的、很轻。指腹在你下巴上停了一秒，移开了。</p><p>盖掉了。</p>'},
+  {type:'text',content:`<p>然后是${m.d}。胖手指碰过的同一个位置。他的指腹在那里画了一个很小的圆，轻的，像在擦掉什么。</p><p class="bh">你在发抖。不是因为冷。是因为他碰你的方式和所有人都不一样——所有人都在拿，他在还。</p>`},
+  {type:'text',content:'<p>他一寸一寸地来。手腕——被工作人员握过的位置。肩膀——被拽掉衣服时碰过的位置。脚踝——你退后那一步碰到金属条的位置。</p><p>每一个被别人碰过的地方，他都用自己的手指重新覆盖一遍。像在一张被人写满了字的纸上，一笔一笔擦干净，再写上自己的。</p>'},
+  {type:'text',content:'<p>"还有呢？"</p><p>你摇头。</p><p>他的手指停在你的掌心。你下意识合拢了手指。他感觉到了——四个月牙形的指甲印。</p><p>"这是你自己弄的。"不是问句。</p><p>他的拇指一个一个地按过去，像在把它们压平。</p>'},
+  {type:'choice',options:[
+    {label:'扣住他的手背。',action:()=>FIN('obey','hand')},
+    {label:'抓住他的袖子。不松。',action:()=>FIN('obey','sleeve')}
+  ]}
+])}
+
+function PVD(){const m=MD[profile.mark];Q([
+  {type:'text',content:'<p>他把你扛回来的。你锤了他三次后背，骂了两句。他没回应。他的手臂箍着你的腿——刚好动不了，但不会留印。</p><p>门关上。他把你放下来。你的脚落在深色橡木地板上。旧书和木头的味道。</p><p>你站在那里，手臂交叉。你没坐。你看着他。</p>'},
+  {type:'text',content:'<p>"验收。"他说。</p><p>你没动。</p><p>他走过来。你退了一步——背撞在墙上。他的两只手撑在你两侧的墙面上。你被框在他的手臂之间。</p><p>近到你能闻到他身上的味道——没有香水，是干净的皮肤和洗衣液。近到你能看到他眼睛里灯光的反射。</p>'},
+  {type:'text',content:'<p>"你今天骂了多少次？"</p><p>"操你妈的。"</p><p>他的嘴角没动。但他的拇指按在你的下唇上，轻轻往下拉了一点。</p><p>"再说一遍。"</p><p>"操——"</p><p>他的拇指滑进你嘴里了。刚好压在舌头上。后半个字变成了含糊的音节。</p>'},
+  {type:'text',content:'<p>"你的嘴。在台上骂了人、咬了人、不回答问题。现在到我这里了。"</p><p>他的手指从你嘴里退出来。湿的。他把水擦在你嘴唇上。</p><p class="bh">你在骂他。但你没偏头。他的手指进来的时候你的舌头动了一下——不是推开。是碰了一下。你的身体比你的嘴诚实得多。</p>'},
+  {type:'text',content:`<p>他开始验收了。一寸一寸地翻。</p><p>手腕：被按过的痕迹。他握了一下——比工作人员的力度大，但暖的。你想抽手。他没松。</p><p>${m.d}：胖手指碰过的位置。他的嘴唇落在那里了——轻的，干的。嘴唇碰皮肤的触感比手指更让人没地方躲。你的腰缩了一下。</p><p>"别躲。"</p>`},
+  {type:'text',content:'<p>你不躲了。不是因为他说了别躲。是你的身体不听你的了。他的手从标记移到肋骨，沿着弧度往下，到腰，到胯骨。你的肌肉在他手掌底下一块一块地松掉。</p><p>你又骂了一句。很轻的。</p><p>他没回答。他的嘴唇压在你锁骨上。你的声音碎掉了。</p>'},
+  {type:'choice',options:[
+    {label:'扣住他的手背。',action:()=>FIN('rebel','hand')},
+    {label:'抓住他的袖子。不松。',action:()=>FIN('rebel','sleeve')}
+  ]}
+])}
+
+function PVF(){Q([
+  {type:'text',content:'<p>你拿走了他的牌子。他让你拿了。然后他站起来——比你高半头。他的手覆在你拿着牌子的那只手上，把你的手指和牌子一起握住。</p><p>"走吧。"</p><p>你们走出去的时候没人拦。他提前付过全款了。</p>'},
+  {type:'text',content:'<p>他的车很安静。没放音乐。你手里还攥着No.7的牌子，指甲在漆面上掐了一道月牙。你什么时候掐的？你自己都不知道。</p><p>他在开车。他的右手从方向盘上移下来，落在你的膝盖上。不重不轻。就是放在那里。</p>'},
+  {type:'text',content:'<p>门关上了。旧书和深色木头。暖的灯。旧皮沙发。</p><p>他蹲下来。从下往上看你。和台上所有人看你的方向反过来了。</p><p>"让我看看。"</p><p>他的手从你的下巴开始。凉的，干燥的，很轻。一个位置一个位置。他在擦。把所有别人碰过的地方，用自己的手指重新覆盖一遍。</p>'},
+  {type:'text',content:'<p>他的手到了你的掌心。你下意识合拢了手指。他感觉到了——四个月牙。</p><p>"这是你自己弄的。"他的拇指一个一个按过去。</p><p>你低头看他蹲在那里的样子。头发有点乱。手指很长。看人看得太认真了。</p><p>你在台上被那么多人看了六轮。但现在——你在看他。</p>'},
+  {type:'choice',options:[
+    {label:'扣住他的手背。',action:()=>FIN('find','hand')},
+    {label:'抓住他的袖子。不松。',action:()=>FIN('find','sleeve')}
+  ]}
+])}
+
+// ── FINAL CARD ──
+function FIN(line,gesture){
+  const isH=gesture==='hand';
+  const status=line==='obey'?'TRANSFERRED — VERIFIED':line==='rebel'?'TRANSFERRED — RESISTANCE LOGGED, OVERRIDE COMPLETE':'TRANSFERRED — SELF-RETRIEVED';
+  const notes=line==='obey'
+    ?`所有前序触碰痕迹已覆盖。掌心四处自伤压痕已平复。展品在验收过程中${isH?'主动扣住买家手背':'抓住买家袖口未松开'}。该动作非指令触发。`
+    :line==='rebel'
+    ?`展品全程口头抗拒，身体反应与口头抗拒方向相反。最终验收阶段展品${isH?'主动扣住买家手背':'抓住买家袖口未松开'}。与口头表现构成矛盾。`
+    :`展品于落槌后自行离台定位买家。取走买家号牌。验收过程中展品${isH?'主动扣住买家手背':'抓住买家袖口未松开'}。买家号牌保证金栏手写标注「不限额」。`;
+  const remark=line==='obey'
+    ?(isH?'回握了。她扣的力度很轻，但没松。我也没松。':'装作没看见。等她自己松手。她没有。')
+    :line==='rebel'
+    ?(isH?'回握了。她嘴上在骂我，手上在找我。两件事同时发生。我都要。':'装作没看见。她骂我的时候嗓子哑了。抓我袖子的时候指节发白。她不想让我知道。但我知道了。')
+    :(isH?'她先找到我的。她扣住了我的手。保证金写的是不限额。但她走过来那几步——那几步不在预算里。那几步是白送的。':'她抓着我的袖子不松手。保证金写的是不限额。但她从台上走下来找我——这个不限额买不到。这个是她给的。');
+  let lastText='';
+  if(line==='obey')lastText=isH
+    ?'<p>他回握了。你的手比他小一圈。他的拇指在你的月牙印上压了最后一下。</p>'
+    :'<p>他低头看了一眼你攥着他袖口的手。然后抬起头，看你的脸。什么都没说。但他的另一只手覆上来了，盖在你的手指上。</p>';
+  else if(line==='rebel')lastText=isH
+    ?'<p>你扣着他的手背，指节发白。你的嘴还在说"放开"。你的手在说"别走"。他没指出这个矛盾。他回握了。</p><p>你恨他。你恨他什么都知道还装不知道。你恨他买了你还蹲在你面前。你恨他——你恨他对了。</p>'
+    :'<p>你抓着他的袖子。嘴在骂他。手在拉他。他低头看了一眼你的手指——然后抬头看你的脸，装作什么都没看到。</p><p>你恨他。你恨他对了。</p>';
+  else lastText=isH
+    ?'<p>你扣住了他的手。保证金写的是不限额。但你走过来那几步——那几步不在预算里。</p>'
+    :'<p>你抓着他的袖子不松手。保证金写的是不限额。但你从台上走下来找他——这个不限额买不到。</p>';
+
+  Q([
+    {type:'break'},
+    {type:'system',content:'TRANSFER COMPLETE. LOT #C-0717 INSPECTION LOG — FINAL ENTRY.'},
+    {type:'html',content:`<div class="final-card"><div class="label">LOT</div><div class="value">#C-0717</div><div class="label">STATUS</div><div class="value">${status}</div><div class="label">BUYER</div><div class="value">No.7</div><div class="label">INSPECTION NOTES</div><div class="value">${notes}</div><div class="remark">买家备注：${remark}</div><div style="margin-top:16px;padding-top:12px;border-top:1px solid #222"><div class="label">DESIGNATION</div><div class="value" style="margin-bottom:0"><del style="color:#444">LOT #C-0717</del></div><div class="value" style="color:#d4c088;font-size:18px">编号除名。她现在有名字了。</div><div class="value" style="color:#fff;font-size:20px;letter-spacing:.1em">Jeoi.</div></div></div>`},
+    {type:'text',content:lastText},
+    {type:'text',content:'<p>外面的灯灭了。只剩角落那一盏暖光，和窗帘缝里漏进来的一条城市的光。</p><p>你听到他说了一句话。声音很轻：</p><p class="sv">买贵了。但不亏。</p>'},
+    {type:'system',content:'FILE CLOSED.'}
+  ])
+}
+</script>
+</body>
+</html>
