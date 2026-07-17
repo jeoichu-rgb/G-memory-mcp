@@ -366,10 +366,19 @@ class TranscriptTailer:
                 return
             try:
                 await asyncio.wait_for(self._reply_done.wait(),
-                                       timeout=min(remaining, 20))
+                                       timeout=min(remaining, 1))
                 return
             except asyncio.TimeoutError:
                 pass
+            if self.session._stop_requested:
+                # Jeoi hit stop: /api/chat-stop already sent Esc to CC.
+                # Give the tailer one beat to pick up anything CC flushed
+                # before the interrupt, then end the turn — run_claude's
+                # normal wrap-up (partial text, usage, message:complete)
+                # takes it from here.
+                log.info("stop requested — ending turn early")
+                await asyncio.sleep(1)
+                return
             stalled = time_mod.monotonic() - self._last_growth
             if STALL_ESC_SECS and stalled >= STALL_ESC_SECS and not esc_sent:
                 log.warning(
@@ -3197,6 +3206,35 @@ async def internal_channel_ws(ws: WebSocket):
 
 _active_frontend_ws: "WebSocket | None" = None
 
+@app.post("/api/chat-stop")
+async def chat_stop_signal(request: Request):
+    """Frontend stop button. Must be HTTP, not WS: the WS receive loop is
+    blocked inside run_claude for the whole turn, so a chat:stop WS event
+    only gets read after the reply already finished (same reason hangup
+    uses /internal/call-stop). Sends Esc to the tmux CC CLI to interrupt
+    generation, and flags the session so wait_done ends the turn."""
+    data = await request.json()
+    sid = data.get("sessionId", "")
+    # force=true: send Esc even when the gateway thinks no turn is in
+    # flight. Needed when wait_done already timed out (300s) and released
+    # the turn but CC is still grinding in tmux — e.g. a huge code-writing
+    # task. Rescue path, curl-able without a session id.
+    force = bool(data.get("force"))
+    s = sessions.get(sid)
+    if s:
+        s._stop_requested = True
+    elif not force:
+        return JSONResponse({"status": "no_session"}, status_code=404)
+    # Only poke Esc mid-turn (or forced). On an idle CLI a stray Esc is at
+    # best a no-op and repeated ones can open the history-jump menu.
+    if (_user_msg_active or force) and await tmux_is_running():
+        await tmux_send_escape()
+        log.info(f"Chat stop: Esc sent to CC (session {sid or '-'}, force={force})")
+        return JSONResponse({"status": "ok", "esc": True})
+    log.info(f"Chat stop: no turn in flight (session {sid or '-'})")
+    return JSONResponse({"status": "ok", "esc": False})
+
+
 @app.post("/internal/call-stop")
 async def call_stop_signal(request: Request):
     """Frontend calls this on hangup to immediately stop TTS worker."""
@@ -3927,9 +3965,13 @@ async def websocket_endpoint(ws: WebSocket):
                             log.info(f"Reaction: jeoi {'set ' + emoji if emoji else 'removed'} on #{msg_idx + 1}")
 
             elif event == "chat:stop":
+                # Legacy path, kept for cached old frontends. Useless by
+                # construction: this loop is blocked in run_claude during a
+                # turn, so the event is only read after the reply finished.
+                # The real stop is POST /api/chat-stop.
                 if current_session:
-                    current_session._stop_requested = True
-                    log.info(f"Stop requested for session {current_session.id}")
+                    log.info(f"chat:stop via WS (legacy, turn already over) "
+                             f"for session {current_session.id}")
 
 
             elif event == "mcp:list":

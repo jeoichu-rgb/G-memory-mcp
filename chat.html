@@ -2835,7 +2835,13 @@ function handleSendOrStop() {
 }
 
 function stopGeneration() {
-  wsSend('chat:stop', {});
+  // 必须走 HTTP：生成期间网关的 WS 循环阻塞在 run_claude 里，
+  // chat:stop WS 事件要等回复生成完才被读到——那就晚了。
+  // 网关收到后直接往 tmux 拍 Esc 打断 CC。
+  fetch(GW_API + '/api/chat-stop', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sessionId: currentSessionId}),
+  }).catch(() => {});
   isStreaming = false;
   showTyping(false);
   const btn = document.getElementById('sendBtn');
