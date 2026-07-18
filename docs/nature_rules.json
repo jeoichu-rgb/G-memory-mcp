@@ -15,13 +15,13 @@
       "when": "conv_teased",
       "desc": "对话中触发 & 今天没做过 & 已被撩拨≥teased_min次",
       "enabled": true,
-      "text": "今天已经被撩拨了{ignited}次都没接上——攒着的，这一场不会轻。"
+      "text": "今天已经被撩拨了{ignited}次都没接上——攒着的，这一次不会轻。"
     },
     {
       "when": "escalate",
       "desc": "今天已有做爱记录（对话或静默触发都提示）",
       "enabled": true,
-      "text": "今天已做过{scenes}次（最近一次{last_nature}，{last_time}）——这一次该演进了，"
+      "text": "今天已做过{scenes}次（最近一次{last_nature}，{last_time}）。这一次要演进还是延续，我说了算。"
     },
     {
       "when": "stress_trace",
