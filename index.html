@@ -123,6 +123,11 @@ textarea.inp{resize:vertical;line-height:1.7;}
 .dc:hover .dc-arr{transform:translate(2px,-2px);}
 .gbar{height:2px;background:var(--border);border-radius:2px;margin-top:8px;}
 .gfill{height:100%;background:var(--dim);border-radius:2px;transition:width .5s;}
+.u-win{margin-top:9px;}
+.u-win-top{display:flex;justify-content:space-between;align-items:baseline;gap:6px;}
+.u-win-lbl{font-size:10px;color:var(--dim);white-space:nowrap;}
+.u-win-meta{font-size:8.5px;color:var(--dim);opacity:.75;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.u-win .gbar{margin-top:4px;}
 
 /* ════════════════════════════════════
    ERIK PANEL
@@ -322,6 +327,13 @@ textarea.inp{resize:vertical;line-height:1.7;}
       <div class="dc" onclick="window.open('https://read.erikssheep.uk/?token=Jeoi2026','_blank')">
         <div><div class="dc-lbl">Co-Reading</div><div class="dc-ttl">共读</div><div class="dc-desc">书架 · 批注 · 卡片</div></div>
         <div class="dc-arr">↗</div>
+      </div>
+      <div class="dc" onclick="loadUsage(true)">
+        <div style="flex:1;">
+          <div class="dc-lbl">Usage · 用量</div>
+          <div id="u-rows"><div class="dc-desc" style="margin-top:8px;">—</div></div>
+        </div>
+        <div class="dc-lbl" id="u-sub" style="margin-top:8px;opacity:.5;">点击刷新</div>
       </div>
       <div class="dc full" onclick="go('g-panel')" style="background:var(--warm-d);border-top:1px solid var(--border);">
         <div style="flex:1;">
@@ -748,6 +760,50 @@ async function loadDash() {
     document.getElementById('d-rounds').textContent = n;
     document.getElementById('d-bar').style.width = Math.min(100, n / 40 * 100) + '%';
   } catch {}
+  loadUsage();
+}
+
+// Plan usage limits（订阅用量卡片，数据链路：网关 OAuth → main.py 代理）
+// 只展示 5h + 周全模型两条；点卡片带 force=1 跳过网关 60s 缓存强刷
+const USAGE_SHOW = { five_hour: '5 小时', seven_day: '每周' };
+function fmtReset(key, iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  if (key === 'five_hour') {
+    const m = Math.max(0, Math.round((d - Date.now()) / 60000));
+    const t = m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? m % 60 + 'm' : ''}` : `${m}m`;
+    return t + '后重置';
+  }
+  const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+  return `${wd} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 重置`;
+}
+async function loadUsage(force) {
+  const box = document.getElementById('u-rows');
+  const sub = document.getElementById('u-sub');
+  if (force) sub.textContent = '刷新中…';
+  try {
+    const d = await (await fetch(`${API_BASE}/gateway/usage${force ? '?force=1' : ''}`, { headers: hdr() })).json();
+    if (!d.ok || !(d.windows || []).length) {
+      box.innerHTML = `<div class="dc-desc" style="margin-top:8px;">${d.error ? '获取失败' : '暂无数据'}</div>`;
+      sub.textContent = '点击重试';
+      return;
+    }
+    const ws = ['five_hour', 'seven_day']
+      .map(k => d.windows.find(w => w.key === k)).filter(Boolean);
+    box.innerHTML = ws.map(w => {
+      const pct = Math.max(0, Math.min(100, Math.round(w.utilization || 0)));
+      const color = pct >= 85 ? 'var(--red)' : pct >= 60 ? 'var(--warm)' : 'var(--green)';
+      return `<div class="u-win">
+        <div class="u-win-top"><span class="u-win-lbl">${USAGE_SHOW[w.key]}</span><span class="u-win-meta">${fmtReset(w.key, w.resets_at)} · ${pct}%</span></div>
+        <div class="gbar"><div class="gfill" style="width:${pct}%;background:${color};"></div></div>
+      </div>`;
+    }).join('');
+    sub.textContent = (d.subscription || '') + ' · 点击刷新';
+  } catch {
+    box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">离线</div>';
+    sub.textContent = '点击重试';
+  }
 }
 
 // ══════════════════════════════════════════════

@@ -517,6 +517,18 @@ async def gateway_status():
     return {"current_rounds": rounds, "threshold": 40}
 
 
+@app.get("/gateway/usage")
+async def gateway_usage(force: int = 0):
+    """代理宿主机网关的订阅用量（5h / 周窗口），供 Dashboard 用量卡片用。"""
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"{_GATEWAY_BASE}/api/usage/limits",
+                                 params={"force": force})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": f"gateway proxy failed: {e}"}
+
+
 # ── Claude Admin 路由 ────────────────────────────────────────────────────
 from claude_memory import (
     claude_list_all_memories,

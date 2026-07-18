@@ -4849,6 +4849,52 @@ async def health():
     }
 
 
+# ── Plan usage limits（订阅用量：5h / 周窗口，/usage 面板同款数据）──────
+# 数据源：读 erik 的 CC OAuth token 调 Anthropic usage 端点。只读不 refresh——
+# CC CLI 常驻会自己保鲜 token，网关抢 refresh 会把 CC 手里的 refreshToken 作废。
+_USAGE_CACHE = {"ts": 0.0, "data": None}
+_USAGE_CACHE_SECS = 60
+
+
+@app.get("/api/usage/limits")
+async def usage_limits(force: int = 0):
+    now = time_mod.time()
+    if not force and _USAGE_CACHE["data"] and now - _USAGE_CACHE["ts"] < _USAGE_CACHE_SECS:
+        return _USAGE_CACHE["data"]
+    cred_path = Path(f"/home/{CC_USER}/.claude/.credentials.json")
+    try:
+        oauth = json.loads(cred_path.read_text()).get("claudeAiOauth") or {}
+    except Exception as e:
+        return {"ok": False, "error": f"credentials unreadable: {e}"}
+    token = oauth.get("accessToken")
+    if not token:
+        return {"ok": False, "error": "no access token in credentials"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.anthropic.com/api/oauth/usage",
+                headers={"Authorization": f"Bearer {token}",
+                         "anthropic-beta": "oauth-2025-04-20"},
+            )
+    except Exception as e:
+        return {"ok": False, "error": f"usage api unreachable: {e}"}
+    if r.status_code != 200:
+        # 401 多半是 token 刚好过期——CC 下次说话会自己刷新，稍后重试即可
+        return {"ok": False, "error": f"usage api {r.status_code}: {r.text[:200]}"}
+    raw = r.json()
+    windows = []
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if isinstance(v, dict) and "utilization" in v:
+                windows.append({"key": k, "utilization": v.get("utilization"),
+                                "resets_at": v.get("resets_at")})
+    data = {"ok": True, "subscription": oauth.get("subscriptionType", ""),
+            "windows": windows, "raw": raw}
+    _USAGE_CACHE["ts"] = now
+    _USAGE_CACHE["data"] = data
+    return data
+
+
 # no-cache = 可以缓存但每次必须回源校验（没变就 304，极便宜）。不设这个
 # 头，iOS PWA 走启发式缓存，改完前端要靠杀进程/删图标才能拿到新版。
 _HTML_NO_CACHE = {"Cache-Control": "no-cache"}
