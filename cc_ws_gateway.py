@@ -2186,6 +2186,7 @@ async def run_cc_oneshot(
     prompt: str, session: "Session", max_turns=None
 ) -> tuple:
     """Returns (text, thinking, tools). Sends via tmux and reads transcript."""
+    global _transcript_path_cache
     if _tmux_send_lock.locked() or _user_msg_active:
         log.info(f"run_cc_oneshot: busy (lock={_tmux_send_lock.locked()}, user_msg={_user_msg_active}), skipping")
         return "", "", []
@@ -2203,11 +2204,16 @@ async def run_cc_oneshot(
             await tmux_send_message(prompt)
 
         offset = start_offset
+        # 半行缓冲：CLI 正在写一条长 JSON 行时我们可能读到一半——残行留到下次拼完整，
+        # 否则前后两半各自 json.loads 失败被丢，整条长回复（工具后的详细内容）就消失了
+        line_buf = ""
         text_parts, thinking_parts, tool_parts = [], [], []
         done = False
         stale_ticks = 0
-        deadline = asyncio.get_event_loop().time() + 120
-        while not done and asyncio.get_event_loop().time() < deadline:
+        loop_time = asyncio.get_event_loop().time
+        hard_deadline = loop_time() + 420
+        idle_deadline = loop_time() + 180  # 滑动超时：transcript 只要在长就顺延（慢工具不被砍）
+        while not done and loop_time() < hard_deadline:
             if _user_msg_active:
                 log.info("oneshot: user message arrived, aborting poll")
                 break
@@ -2226,14 +2232,22 @@ async def run_cc_oneshot(
                         log.info(f"oneshot transcript switch: {transcript.name} -> {newer.name}")
                         transcript = newer
                         offset = 0
+                        line_buf = ""
                         stale_ticks = 0
+                if loop_time() > idle_deadline:
+                    log.info("oneshot: idle timeout (180s no transcript growth)")
+                    break
                 continue
             stale_ticks = 0
+            idle_deadline = loop_time() + 180
             with open(transcript, "r", encoding="utf-8", errors="replace") as f:
                 f.seek(offset)
                 new_data = f.read()
             offset = sz
-            for line in new_data.strip().split(chr(10)):
+            line_buf += new_data
+            new_lines = line_buf.split(chr(10))
+            line_buf = new_lines.pop()  # 尾段可能不完整，留到下一轮
+            for line in new_lines:
                 if not line.strip():
                     continue
                 try:
