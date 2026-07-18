@@ -761,18 +761,21 @@ index.html loadUsage()
 **设计要点：**
 
 - 网关**只读 token 不做 refresh**——CC CLI 常驻会自己保鲜 token；网关抢着 refresh 会把 CC 手里的 refreshToken 作废（OAuth refresh token 是轮换的），把 tmux 里的 CC 顶下线
-- 网关返回**全部**窗口并透传 `raw`（API 原始响应），前端只挑 `five_hour` / `seven_day` 两条显示；想加 Fable/Opus 等窗口只改前端 `USAGE_SHOW`
-- 数据不敏感（只有百分比），端点无鉴权，与 `/gateway/status` 一致
+- 网关返回**全部**窗口并透传 `raw`（API 原始响应），前端只挑 `five_hour` / `seven_day` 两条显示
+- `/gateway/usage` 走 main.py 全局 `CheckSecretMiddleware` 鉴权，请求须带 `x-secret: PALACE_SECRET` 头（面板 fetch 自带；curl 调试要手动加）
 
-**⚠️ 未在生产验证的部分（2026-07-18）：**
+**✓ 已生产验证（2026-07-18 实测 raw）：**
 
-Anthropic OAuth usage 端点的**真实响应字段名**只在本地 mock 验证过渲染，没在 VPS 上打过真实 API。代码按社区已知格式写：顶层 key `five_hour` / `seven_day` / `seven_day_xxx`，值 `{"utilization": 0-100, "resets_at": ISO时间}`。如果 API 格式变了，按下面排查。
+- 顶层平铺 key `five_hour` / `seven_day` 真实存在，值 `{"utilization": 59.0, "resets_at": "2026-07-18T16:49:59+00:00", ...}`——utilization 是 **0-100 浮点**，resets_at 是 ISO 时间，与代码假设一致，卡片开箱即显
+- **模型级窗口（Fable/Opus 等）不在平铺 key 里**：顶层 `seven_day_opus` / `seven_day_sonnet` 等全是 `null`。官方 /usage 面板的三条真正来自 **`raw.limits` 数组**：`{kind: "session"|"weekly_all"|"weekly_scoped", percent: 整数, severity, resets_at, scope}`，其中 Fable 那条是 `kind: "weekly_scoped"` + `scope.model.display_name: "Fable"`。**想加 Fable 条要从 `raw.limits` 取 weekly_scoped**，不要等 `seven_day_fable` 出现——没有这个 key
+- `windows` 里会混入 `extra_usage`（utilization 为 null 的额度购买信息）——前端按 `USAGE_SHOW` 白名单过滤，不受影响
+- raw 里还有一堆内部实验 key（tangelo、nimbus_quill 之类）全为 null，无视即可
 
 **傻瓜排查（卡片不显示数据时按顺序做）：**
 
-1. 卡片显示**「暂无数据」**→ 浏览器直接开 `https://erikssheep.uk/gateway/usage` 看 JSON
-2. `windows` 是空数组但 `raw` 里有数据 → 字段名变了。看 `raw` 顶层真实 key 叫什么（比如变成了 `seven_day_fable` 之外的新名字），然后改 `index.html`：`USAGE_SHOW` 的两个 key、`fmtReset()` 里的 `'five_hour'` 判断，换成真实 key
-3. 百分比全是 0% 或 1% 但 `raw` 里 utilization 是 0.4 这种小数 → API 单位从 0-100 变成了 0-1，`loadUsage()` 里 `pct` 计算处乘 100
+1. 卡片显示**「暂无数据」**→ 看真实响应：`curl -H "x-secret: <PALACE_SECRET>" https://erikssheep.uk/gateway/usage`（浏览器直接开会 401，中间件拦 x-secret）
+2. `windows` 是空数组但 `raw` 里有数据 → API 改版了字段名。看 `raw` 顶层真实 key，改 `index.html`：`USAGE_SHOW` 的两个 key、`fmtReset()` 里的 `'five_hour'` 判断；若平铺 key 整体消失，改从 `raw.limits` 数组取（kind 见上）
+3. 百分比全是 0% 或 1% 但 `raw` 里 utilization 是 0.4 这种小数 → API 单位变成了 0-1，`loadUsage()` 里 `pct` 计算处乘 100
 4. 显示**「获取失败」**且 `/gateway/usage` 返回 `usage api 401` → CC 的 accessToken 刚好过期，CC CLI 在 tmux 里说过一句话就会自动刷新，之后点卡片重试即可
 5. 显示**「离线」**或 `gateway proxy failed` → 宿主机网关没起（查 3000 端口）或 Docker 内 `GATEWAY_URL` 不通——和 pebbling 代理同一条路，pebbling 好使这条就该好使
 
