@@ -311,6 +311,9 @@ class TranscriptTailer:
         self.session = session
         self._path = None
         self._offset = 0
+        # 字节级残行缓冲：CLI写长JSON行写到一半被读走时留到下次拼完整，
+        # 不然前后两半各自parse失败，整条消息静默丢失
+        self._line_buf = b""
         self._task = None
         self._stop = asyncio.Event()
         self._reply_done = asyncio.Event()
@@ -344,6 +347,7 @@ class TranscriptTailer:
             self._anchored = False
             self._anchor_armed_at = time_mod.monotonic()
         self._path = _find_active_transcript()
+        self._line_buf = b""
         if self._path:
             try:
                 self._offset = self._path.stat().st_size
@@ -419,6 +423,7 @@ class TranscriptTailer:
                         log.info(f"tailer switch: {self._path.name if self._path else 'none'} -> {latest.name}")
                         self._path = latest
                         self._offset = 0
+                        self._line_buf = b""
                         # New file, old byte offset is meaningless. Usage
                         # accounting is guarded by _started_at instead.
                         self._start_offset = 0
@@ -428,12 +433,19 @@ class TranscriptTailer:
                     sz = self._path.stat().st_size
                     if sz > self._offset:
                         self._last_growth = time_mod.monotonic()
-                        with open(self._path, "r", encoding="utf-8", errors="replace") as fh:
+                        # 二进制读取：文本模式会把撕在UTF-8多字节字符中间的
+                        # 残行先污染（errors=replace），拼回也救不活；bytes缓冲
+                        # 到完整行再decode才安全。完整行仍逐条实时_handle，
+                        # 分段推送节奏不变。
+                        with open(self._path, "rb") as fh:
                             fh.seek(self._offset)
                             chunk = fh.read()
                             self._offset = fh.tell()
-                        for ln in chunk.split(chr(10)):
-                            ln = ln.strip()
+                        self._line_buf += chunk
+                        pieces = self._line_buf.split(b"\n")
+                        self._line_buf = pieces.pop()
+                        for raw in pieces:
+                            ln = raw.decode("utf-8", errors="replace").strip()
                             if not ln:
                                 continue
                             try:
@@ -2204,9 +2216,10 @@ async def run_cc_oneshot(
             await tmux_send_message(prompt)
 
         offset = start_offset
-        # 半行缓冲：CLI 正在写一条长 JSON 行时我们可能读到一半——残行留到下次拼完整，
+        # 字节级半行缓冲：CLI 正在写一条长 JSON 行时我们可能读到一半——残行留到
+        # 下次拼完整再 decode（文本模式会先把撕开的多字节字符污染掉，救不回来），
         # 否则前后两半各自 json.loads 失败被丢，整条长回复（工具后的详细内容）就消失了
-        line_buf = ""
+        line_buf = b""
         text_parts, thinking_parts, tool_parts = [], [], []
         done = False
         stale_ticks = 0
@@ -2240,14 +2253,15 @@ async def run_cc_oneshot(
                 continue
             stale_ticks = 0
             idle_deadline = loop_time() + 180
-            with open(transcript, "r", encoding="utf-8", errors="replace") as f:
+            with open(transcript, "rb") as f:
                 f.seek(offset)
                 new_data = f.read()
-            offset = sz
+                offset = f.tell()  # 不用 sz：read 可能已读到更新的数据，回退会重复拼接
             line_buf += new_data
-            new_lines = line_buf.split(chr(10))
+            new_lines = line_buf.split(b"\n")
             line_buf = new_lines.pop()  # 尾段可能不完整，留到下一轮
-            for line in new_lines:
+            for raw in new_lines:
+                line = raw.decode("utf-8", errors="replace")
                 if not line.strip():
                     continue
                 try:
