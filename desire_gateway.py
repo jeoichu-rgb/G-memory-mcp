@@ -140,8 +140,8 @@ def _mins_since_rollover(hhmm: str) -> int:
 
 
 def log_scene_done(nature: str, at_time: str = "") -> str:
-    """Erik 场毕盖章：<!--scene-done:性质--> 或 <!--scene-done:性质@HH:MM-->（补记）。
-    成场计数的权威来源——satisfy 分不清聊得凶和做得快，盖章分得清。"""
+    """Erik 做完记录：<!--scene-done:性质--> 或 <!--scene-done:性质@HH:MM-->（补记）。
+    成场计数的权威来源——satisfy 分不清聊得凶和做得快，我自己的记录分得清。"""
     data = _load_day_log()
     t = (at_time or "").strip() or datetime.now(SGT).strftime("%H:%M")
     data["entries"].append({
