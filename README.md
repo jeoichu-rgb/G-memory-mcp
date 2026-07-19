@@ -13,6 +13,21 @@ Claude 每次开新窗口就失忆。这个项目做了两件事：
 
 ---
 
+## 文档地图
+
+本 README 只讲网关和整体架构。子系统设计、约定、运行时规则都在 `docs/`，完整索引见 **[docs/README.md](docs/README.md)**。最常找的几个：
+
+| 想找 | 在哪 |
+| --- | --- |
+| 渴望系统（内驱力引擎）设计 | [`docs/desire-system.md`](docs/desire-system.md) |
+| 情绪残留系统设计 | [`docs/emotion-residue-system.md`](docs/emotion-residue-system.md)（原 `pulse.md`，已改名） |
+| libido 性质候选提示词规则 | [`docs/nature_rules.json`](docs/nature_rules.json) ⚠️ 运行时文件，网关按此路径现读，不能改名/移动 |
+| 固定注入词条表 | [`docs/pinned_memories.json`](docs/pinned_memories.json) ⚠️ 同上，运行时文件 |
+| 日记 / 共读约定 | [`docs/diary_convention.md`](docs/diary_convention.md) / [`docs/coreading_convention.md`](docs/coreading_convention.md) |
+| 记忆分流工程总图 | [`docs/记忆工程说明.md`](docs/记忆工程说明.md) |
+
+---
+
 ## 架构
 
 ### 数据流
