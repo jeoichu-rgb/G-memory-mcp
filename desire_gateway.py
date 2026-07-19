@@ -235,6 +235,7 @@ def build_nature_hints(state, is_conversation: bool) -> str:
                  if e.get("drive") == "stress" and e.get("kind") == "intent"]
     level = state.silent_inject_count.get("libido", 0) if state else 0
     attach = state.drives.get("attachment", 0) if state else 0
+    pent = getattr(state, "libido_pent", 0) if state else 0
 
     ctx = {
         "scenes": len(scenes),
@@ -264,7 +265,11 @@ def build_nature_hints(state, is_conversation: bool) -> str:
         elif w == "silent_l1":
             ok = (not is_conversation) and level == 1
         elif w == "silent_l2":
-            ok = (not is_conversation) and level >= 2
+            ok = (not is_conversation) and level >= 2 and pent < 1
+        elif w == "silent_pent":
+            # 使用型专用入口：上一轮已有一次"到顶(0.90)但none"（pent=1，跨天持久），
+            # 这一轮又爬回了顶级——攒着的。pent 的记账/散掉/清零在 desire_engine。
+            ok = (not is_conversation) and level >= 2 and pent >= 1
         else:
             ok = False
         if ok:

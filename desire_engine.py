@@ -121,6 +121,11 @@ class DesireState:
     prev_drives: dict = field(default_factory=dict)
     trails: dict = field(default_factory=lambda: {k: [] for k in DRIVE_KEYS})
     intent: dict = field(default_factory=lambda: None)
+    # libido 顶级挫败计数（跨天持久，不走 day log）：
+    # 静默中到顶（0.90）选 none → 记 1；带着 pent=1 再到顶还是 none → 散掉归零；
+    # 任何一次完整 satisfy（对话接上/静默发了消息）→ 归零。
+    # pent=1 时下一次 L2 注入使用型文案（见 desire_gateway.build_nature_hints 的 silent_pent）。
+    libido_pent: int = 0
 
     def to_dict(self):
         return dict(
@@ -133,6 +138,7 @@ class DesireState:
             prev_drives={k: round(v, 4) for k, v in self.prev_drives.items()},
             trails={k: v[-8:] for k, v in self.trails.items() if v},
             intent=self.intent,
+            libido_pent=self.libido_pent,
         )
 
     @classmethod
@@ -147,6 +153,7 @@ class DesireState:
         s.trails = {k: list(d.get("trails", {}).get(k, [])) for k in DRIVE_KEYS}
         s.silent_inject_count = {k: d.get("silent_inject_count", {}).get(k, 0) for k in DRIVE_KEYS}
         s.intent = d.get("intent")
+        s.libido_pent = d.get("libido_pent", 0)
         return s
 
 
@@ -346,6 +353,8 @@ def satisfy(state, drive_key):
     state.trails[drive_key] = []
     state.intent = None
     state.silent_inject_count[drive_key] = 0
+    if drive_key == "libido":
+        state.libido_pent = 0  # 接上了，攒的清零
     return dict(drive=drive_key, old=round(old, 4), new=round(state.drives[drive_key], 4))
 
 
@@ -363,10 +372,18 @@ def partial_satisfy(state, drive_key, factor=0.95):
     count = state.silent_inject_count.get(drive_key, 0)
     multi = BG_THRESHOLDS_MULTI.get(drive_key)
 
-    if multi and count >= len(multi) - 1:
-        result = satisfy(state, drive_key)
+    # 到顶判据：走满了阶梯（count），或水位已压着顶级阈值（计数和水位脱钩时兜底，
+    # 保证"到了 0.90 选 none 就马上砸回去"而不是 ×0.95 的轻降）。
+    if multi and (count >= len(multi) - 1 or old >= multi[-1]):
+        was_pent = state.libido_pent if drive_key == "libido" else 0
+        result = satisfy(state, drive_key)  # 内部会把 libido_pent 清零，故先存 was_pent
+        if drive_key == "libido":
+            # 到顶-none 记账：第一次 pent=1（下次 L2 注入使用型）；
+            # 带着 pent 再次到顶还是 none → 散掉归零，使用型重新攒。
+            state.libido_pent = 0 if was_pent >= 1 else 1
         state.silent_inject_count[drive_key] = 0
         result["reset"] = True
+        result["pent"] = state.libido_pent if drive_key == "libido" else 0
         return result
 
     state.drives[drive_key] = _clamp(old * factor)
