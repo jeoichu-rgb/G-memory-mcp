@@ -4976,6 +4976,17 @@ async def save_daylog(request: Request):
     return {"ok": True, "count": len(cleaned)}
 
 
+@app.get("/api/event-store")
+async def get_event_store_api():
+    return JSONResponse(load_event_store())
+
+@app.put("/api/event-store")
+async def put_event_store_api(request: Request):
+    body = await request.json()
+    save_event_store(body)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/health")
 async def health():
     return {

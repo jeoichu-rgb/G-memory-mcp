@@ -72,8 +72,16 @@ CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 
 EVENT_STORE_PATH = "./event_store.json"
+GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
 
-def _load_events() -> dict:
+async def _load_events() -> dict:
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{GATEWAY_URL}/api/event-store", timeout=5)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
     if os.path.exists(EVENT_STORE_PATH):
         try:
             with open(EVENT_STORE_PATH, "r", encoding="utf-8") as f:
@@ -82,9 +90,12 @@ def _load_events() -> dict:
             pass
     return {"events": {}}
 
-def _save_events(store: dict):
-    with open(EVENT_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
+async def _save_events(store: dict):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.put(f"{GATEWAY_URL}/api/event-store", json=store, timeout=5)
+    except Exception:
+        pass
 
 FOLDER_MAP = {
     "情感": "床边",
@@ -688,7 +699,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         name = data.get("name", "").strip()
         if not name:
             return f"错误：event_create 需要 name 参数。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         slug = re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time.time())}"
         if slug in store["events"]:
             return f"事件「{name}」已存在（slug: {slug}）。"
@@ -699,7 +710,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "updated_at": now,
             "entries": [],
         }
-        _save_events(store)
+        await _save_events(store)
         return f"事件「{name}」已创建。slug: {slug}"
 
     # ── event_post ────────────────────────────────────────────
@@ -708,7 +719,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         content = data.get("content", "").strip()
         if not event_slug or not content:
             return f"错误：event_post 需要 event 和 content。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         if event_slug not in store["events"]:
             return f"事件「{event_slug}」不存在。用 event_ls 查看所有事件。"
         now = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
@@ -720,7 +731,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "updated_at": None,
         })
         store["events"][event_slug]["updated_at"] = now
-        _save_events(store)
+        await _save_events(store)
         return f"已写入。entry_id: {entry_id}"
 
     # ── event_edit ────────────────────────────────────────────
@@ -730,7 +741,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         content = data.get("content", "").strip()
         if not event_slug or not entry_id or not content:
             return f"错误：event_edit 需要 event、entry_id、content。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         if event_slug not in store["events"]:
             return f"事件「{event_slug}」不存在。"
         evt = store["events"][event_slug]
@@ -739,7 +750,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
                 ent["content"] = content
                 ent["updated_at"] = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
                 evt["updated_at"] = ent["updated_at"]
-                _save_events(store)
+                await _save_events(store)
                 return f"已更新 {entry_id}。"
         return f"未找到 entry_id: {entry_id}"
 
@@ -749,7 +760,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         entry_id = data.get("entry_id", "").strip()
         if not event_slug or not entry_id:
             return f"错误：event_rm 需要 event 和 entry_id。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         if event_slug not in store["events"]:
             return f"事件「{event_slug}」不存在。"
         evt = store["events"][event_slug]
@@ -758,7 +769,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if len(evt["entries"]) == before:
             return f"未找到 entry_id: {entry_id}"
         evt["updated_at"] = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        _save_events(store)
+        await _save_events(store)
         return f"已删除 {entry_id}。"
 
     # ── event_list ────────────────────────────────────────────
@@ -766,7 +777,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         event_slug = data.get("event", "").strip()
         if not event_slug:
             return f"错误：event_list 需要 event 参数。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         if event_slug not in store["events"]:
             return f"事件「{event_slug}」不存在。"
         evt = store["events"][event_slug]
@@ -788,17 +799,17 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         event_slug = data.get("event", "").strip()
         if not event_slug:
             return f"错误：event_drop 需要 event 参数。收到的 data: {data}"
-        store = _load_events()
+        store = await _load_events()
         if event_slug not in store["events"]:
             return f"事件「{event_slug}」不存在。"
         name = store["events"][event_slug]["name"]
         del store["events"][event_slug]
-        _save_events(store)
+        await _save_events(store)
         return f"事件「{name}」已删除。"
 
     # ── event_ls ──────────────────────────────────────────────
     elif cmd == "event_ls":
-        store = _load_events()
+        store = await _load_events()
         if not store["events"]:
             return "暂无挂载事件。"
         lines = []
