@@ -71,29 +71,12 @@ EMAIL_163_PASS  = os.getenv("EMAIL_163_PASS", "LYr64QwxLwt9P2QJ")
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 
-EVENT_STORE_PATH = "./event_store.json"
 GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
 
-def _load_events() -> dict:
-    try:
-        resp = httpx.get(f"{GATEWAY_URL}/api/event-store", timeout=5)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    if os.path.exists(EVENT_STORE_PATH):
-        try:
-            with open(EVENT_STORE_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"events": {}}
-
-def _save_events(store: dict):
-    try:
-        httpx.put(f"{GATEWAY_URL}/api/event-store", json=store, timeout=5)
-    except Exception:
-        pass
+def _evt_api(method, path, **kwargs):
+    url = f"{GATEWAY_URL}{path}"
+    resp = httpx.request(method, url, timeout=5, **kwargs)
+    return resp
 
 FOLDER_MAP = {
     "情感": "床边",
@@ -697,19 +680,16 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         name = data.get("name", "").strip()
         if not name:
             return f"错误：event_create 需要 name 参数。收到的 data: {data}"
-        store = _load_events()
-        slug = re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time.time())}"
-        if slug in store["events"]:
-            return f"事件「{name}」已存在（slug: {slug}）。"
-        now = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        store["events"][slug] = {
-            "name": name,
-            "created_at": now,
-            "updated_at": now,
-            "entries": [],
-        }
-        _save_events(store)
-        return f"事件「{name}」已创建。slug: {slug}"
+        try:
+            resp = _evt_api("POST", "/api/events", json={"name": name})
+            r = resp.json()
+            if resp.status_code == 409:
+                return f"事件「{name}」已存在（slug: {r.get('slug')}）。"
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            return f"事件「{name}」已创建。slug: {r['slug']}"
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_post ────────────────────────────────────────────
     elif cmd == "event_post":
@@ -717,20 +697,14 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         content = data.get("content", "").strip()
         if not event_slug or not content:
             return f"错误：event_post 需要 event 和 content。收到的 data: {data}"
-        store = _load_events()
-        if event_slug not in store["events"]:
-            return f"事件「{event_slug}」不存在。用 event_ls 查看所有事件。"
-        now = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        entry_id = f"e_{int(time.time())}"
-        store["events"][event_slug]["entries"].append({
-            "id": entry_id,
-            "content": content,
-            "ts": now,
-            "updated_at": None,
-        })
-        store["events"][event_slug]["updated_at"] = now
-        _save_events(store)
-        return f"已写入。entry_id: {entry_id}"
+        try:
+            resp = _evt_api("POST", f"/api/events/{event_slug}/entries", json={"content": content})
+            r = resp.json()
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            return f"已写入。entry_id: {r['entry_id']}"
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_edit ────────────────────────────────────────────
     elif cmd == "event_edit":
@@ -739,18 +713,14 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         content = data.get("content", "").strip()
         if not event_slug or not entry_id or not content:
             return f"错误：event_edit 需要 event、entry_id、content。收到的 data: {data}"
-        store = _load_events()
-        if event_slug not in store["events"]:
-            return f"事件「{event_slug}」不存在。"
-        evt = store["events"][event_slug]
-        for ent in evt["entries"]:
-            if ent["id"] == entry_id:
-                ent["content"] = content
-                ent["updated_at"] = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-                evt["updated_at"] = ent["updated_at"]
-                _save_events(store)
-                return f"已更新 {entry_id}。"
-        return f"未找到 entry_id: {entry_id}"
+        try:
+            resp = _evt_api("PUT", f"/api/events/{event_slug}/entries/{entry_id}", json={"content": content})
+            r = resp.json()
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            return f"已更新 {entry_id}。"
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_rm ──────────────────────────────────────────────
     elif cmd == "event_rm":
@@ -758,64 +728,67 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         entry_id = data.get("entry_id", "").strip()
         if not event_slug or not entry_id:
             return f"错误：event_rm 需要 event 和 entry_id。收到的 data: {data}"
-        store = _load_events()
-        if event_slug not in store["events"]:
-            return f"事件「{event_slug}」不存在。"
-        evt = store["events"][event_slug]
-        before = len(evt["entries"])
-        evt["entries"] = [e for e in evt["entries"] if e["id"] != entry_id]
-        if len(evt["entries"]) == before:
-            return f"未找到 entry_id: {entry_id}"
-        evt["updated_at"] = datetime.now(SGT).strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        _save_events(store)
-        return f"已删除 {entry_id}。"
+        try:
+            resp = _evt_api("DELETE", f"/api/events/{event_slug}/entries/{entry_id}")
+            r = resp.json()
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            return f"已删除 {entry_id}。"
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_list ────────────────────────────────────────────
     elif cmd == "event_list":
         event_slug = data.get("event", "").strip()
         if not event_slug:
             return f"错误：event_list 需要 event 参数。收到的 data: {data}"
-        store = _load_events()
-        if event_slug not in store["events"]:
-            return f"事件「{event_slug}」不存在。"
-        evt = store["events"][event_slug]
-        entries = list(reversed(evt["entries"]))
-        latest = data.get("latest")
-        if latest:
-            entries = entries[:int(latest)]
-        if not entries:
-            return f"事件「{evt['name']}」暂无更新。"
-        lines = [f"事件：{evt['name']}（共 {len(evt['entries'])} 条）\n"]
-        for e in entries:
-            ts = e["ts"][:16].replace("T", " ")
-            edited = " (已编辑)" if e.get("updated_at") else ""
-            lines.append(f"[{e['id']}] {ts}{edited}\n{e['content']}\n")
-        return "\n---\n".join(lines)
+        try:
+            latest = int(data.get("latest", 0))
+            resp = _evt_api("GET", f"/api/events/{event_slug}", params={"latest": latest} if latest else None)
+            r = resp.json()
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            entries = r.get("entries", [])
+            if not entries:
+                return f"事件「{r['name']}」暂无更新。"
+            lines = [f"事件：{r['name']}（共 {r['count']} 条）\n"]
+            for e in entries:
+                ts = e["ts"][:16].replace("T", " ")
+                edited = " (已编辑)" if e.get("updated_at") else ""
+                lines.append(f"[{e['id']}] {ts}{edited}\n{e['content']}\n")
+            return "\n---\n".join(lines)
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_drop ────────────────────────────────────────────
     elif cmd == "event_drop":
         event_slug = data.get("event", "").strip()
         if not event_slug:
             return f"错误：event_drop 需要 event 参数。收到的 data: {data}"
-        store = _load_events()
-        if event_slug not in store["events"]:
-            return f"事件「{event_slug}」不存在。"
-        name = store["events"][event_slug]["name"]
-        del store["events"][event_slug]
-        _save_events(store)
-        return f"事件「{name}」已删除。"
+        try:
+            resp = _evt_api("DELETE", f"/api/events/{event_slug}")
+            r = resp.json()
+            if resp.status_code >= 400:
+                return f"错误：{r.get('error', resp.text)}"
+            return f"事件「{r['name']}」已删除。"
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── event_ls ──────────────────────────────────────────────
     elif cmd == "event_ls":
-        store = _load_events()
-        if not store["events"]:
-            return "暂无挂载事件。"
-        lines = []
-        for slug, evt in store["events"].items():
-            count = len(evt["entries"])
-            ts = evt["updated_at"][:16].replace("T", " ")
-            lines.append(f"[{slug}] {evt['name']}（{count}条）— 最后更新 {ts}")
-        return "\n".join(lines)
+        try:
+            resp = _evt_api("GET", "/api/event-store")
+            store = resp.json()
+            if not store.get("events"):
+                return "暂无挂载事件。"
+            lines = []
+            for slug, evt in store["events"].items():
+                count = len(evt.get("entries", []))
+                ts = evt.get("updated_at", "")[:16].replace("T", " ")
+                lines.append(f"[{slug}] {evt['name']}（{count}条）— 最后更新 {ts}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"gateway 不可达：{e}"
 
     # ── unknown ───────────────────────────────────────────────
     else:
