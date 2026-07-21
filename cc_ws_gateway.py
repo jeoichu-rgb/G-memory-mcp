@@ -4226,7 +4226,7 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     import re as _re
                     store = load_event_store()
-                    slug = _re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time.time())}"
+                    slug = _re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time_mod.time())}"
                     if slug in store.get("events", {}):
                         await ws.send_json({"event": "event:error", "message": f"事件「{name}」已存在"})
                     else:
@@ -4270,7 +4270,7 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "event:error", "message": "内容不能为空"})
                 else:
                     now = _utc8_now()
-                    entry_id = f"e_{int(time.time())}"
+                    entry_id = f"e_{int(time_mod.time())}"
                     evt.setdefault("entries", []).append({
                         "id": entry_id, "content": content, "ts": now, "updated_at": None,
                     })
@@ -4988,7 +4988,7 @@ async def api_event_create(request: Request):
         return JSONResponse({"error": "需要 name"}, status_code=400)
     import re as _re
     store = load_event_store()
-    slug = _re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time.time())}"
+    slug = _re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time_mod.time())}"
     if slug in store.get("events", {}):
         return JSONResponse({"error": f"事件「{name}」已存在", "slug": slug}, status_code=409)
     now = _utc8_now()
@@ -5007,7 +5007,7 @@ async def api_event_post(slug: str, request: Request):
     if not evt:
         return JSONResponse({"error": f"事件 {slug} 不存在"}, status_code=404)
     now = _utc8_now()
-    entry_id = f"e_{int(time.time())}"
+    entry_id = f"e_{int(time_mod.time())}"
     evt.setdefault("entries", []).append({"id": entry_id, "content": content, "ts": now, "updated_at": None})
     evt["updated_at"] = now
     save_event_store(store)
