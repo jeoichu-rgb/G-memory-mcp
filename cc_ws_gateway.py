@@ -4216,7 +4216,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "event": "event:get",
                         "slug": slug,
                         "name": evt["name"],
-                        "entries": list(reversed(evt.get("entries", []))),
+                        "entries": evt.get("entries", []),
                     })
 
             elif event == "event:create":
@@ -5062,7 +5062,7 @@ async def api_event_get(slug: str, latest: int = 0):
     evt = store.get("events", {}).get(slug)
     if not evt:
         return JSONResponse({"error": f"事件 {slug} 不存在"}, status_code=404)
-    entries = list(reversed(evt.get("entries", [])))
+    entries = evt.get("entries", [])
     if latest > 0:
         entries = entries[:latest]
     return JSONResponse({"slug": slug, "name": evt["name"], "count": len(evt.get("entries", [])), "entries": entries})
