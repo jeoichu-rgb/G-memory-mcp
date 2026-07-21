@@ -238,6 +238,42 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   font-size:11px; padding:4px 0; text-align:center; color:var(--text-secondary);
 }
 
+/* Event panels */
+.evt-body { flex:1; overflow-y:auto; padding:12px 16px; }
+.evt-empty { font-size:11px; color:var(--text-secondary); text-align:center; padding:20px; }
+.evt-footer {
+  padding:12px 16px; border-top:1px solid var(--border);
+  display:flex; align-items:center;
+}
+.evt-add-btn {
+  background:var(--bg-input); color:var(--text-primary);
+  border:1px solid var(--border); border-radius:4px;
+  padding:6px 12px; font-size:12px; cursor:pointer;
+  font-family:var(--font);
+}
+.evt-add-btn:hover { border-color:var(--accent); }
+.evt-card {
+  background:var(--bg-input); border:1px solid var(--border);
+  border-radius:6px; padding:10px 12px; margin-bottom:6px;
+  cursor:pointer; position:relative; transition:border-color .15s;
+}
+.evt-card:hover { border-color:var(--accent); }
+.evt-card-name {
+  font-size:13px; line-height:1.4; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; padding-right:20px;
+}
+.evt-card-meta {
+  font-size:10px; color:var(--text-secondary); text-align:right; margin-top:4px;
+}
+.evt-card-del {
+  position:absolute; top:6px; right:6px;
+  background:none; border:none; cursor:pointer;
+  font-size:13px; color:var(--text-secondary); padding:0 2px;
+  opacity:0; transition:opacity .15s;
+}
+.evt-card:hover .evt-card-del { opacity:1; }
+.evt-card-del:hover { color:var(--context-red); }
+
 /* Messages area */
 .messages {
   flex:1; overflow-y:auto; padding:8px 60px; display:flex;
@@ -1026,6 +1062,10 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <span class="panel-menu-label">Erik的内心</span>
           <span class="panel-menu-arrow">›</span>
         </div>
+        <div class="panel-menu-item" onclick="openPanelView('events')">
+          <span class="panel-menu-label">挂载事件</span>
+          <span class="panel-menu-arrow">›</span>
+        </div>
         <div class="panel-menu-item" onclick="openPanelView('curiosity')">
           <span class="panel-menu-label">好奇池</span>
           <span id="curiosityMenuBadge" style="font-size:11px;color:var(--text-secondary);margin-right:6px"></span>
@@ -1085,6 +1125,39 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         </label>
       </div>
     </div>
+    <!-- View: 挂载事件 - 列表 -->
+    <div class="panel-view" id="panelEvents">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="openPanelView('menu')">‹</button>
+        <span class="panel-header-title">挂载事件</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="evt-body" id="evtBody">
+        <div class="evt-empty">暂无事件</div>
+      </div>
+      <div class="evt-footer">
+        <button class="evt-add-btn" onclick="evtCreatePrompt()">+ 新建事件</button>
+        <span id="evtStatus" style="font-size:11px;color:var(--text-secondary);margin-left:8px;"></span>
+      </div>
+    </div>
+
+    <!-- View: 挂载事件 - 详情 -->
+    <div class="panel-view" id="panelEventDetail">
+      <div class="mcp-panel-header">
+        <button class="panel-back-btn" onclick="evtBackToList()">‹</button>
+        <span class="panel-header-title" id="evtDetailTitle">事件</span>
+        <button class="panel-close-btn" onclick="closeMcpPanel()">✕</button>
+      </div>
+      <div class="ctx-section">
+        <div class="ctx-header">
+          <button class="ctx-generate-btn" onclick="evtPostPrompt()">+ 写入</button>
+        </div>
+        <div class="ctx-list" id="evtEntryList">
+          <div style="font-size:11px;color:var(--text-secondary);text-align:center;padding:8px;">暂无更新</div>
+        </div>
+      </div>
+    </div>
+
     <!-- View: 好奇池 -->
     <div class="panel-view" id="panelCuriosity">
       <div class="mcp-panel-header">
@@ -1373,6 +1446,38 @@ function handleWSMessage(data) {
       showCtxStatus('✗ ' + (data.message || '生成失败'), true);
       document.getElementById('ctxGenerateBtn').disabled = false;
       document.getElementById('ctxGenerateBtn').textContent = '生成摘要';
+      break;
+
+    // Events (挂载事件)
+    case 'event:list':
+      renderEventList(data.events || []);
+      break;
+    case 'event:get':
+      renderEventEntries(data.slug, data.name, data.entries || []);
+      break;
+    case 'event:created':
+      evtLoad();
+      break;
+    case 'event:deleted':
+      if (_evtCurrentSlug === data.slug) evtBackToList();
+      else evtLoad();
+      break;
+    case 'event:renamed':
+      if (_evtCurrentSlug === data.slug) {
+        document.getElementById('evtDetailTitle').textContent = data.name;
+      }
+      break;
+    case 'event:posted':
+      if (_evtCurrentSlug === data.slug) evtOpen(data.slug);
+      break;
+    case 'event:edit_entry:ok':
+      break;
+    case 'event:entry_removed':
+      if (_evtCurrentSlug === data.slug) evtOpen(data.slug);
+      break;
+    case 'event:error':
+      document.getElementById('evtStatus').textContent = data.message || '操作失败';
+      setTimeout(() => { document.getElementById('evtStatus').textContent = ''; }, 3000);
       break;
 
     // Pomodoro
@@ -2467,11 +2572,14 @@ function openPanelView(view) {
   
   
   document.getElementById('panelDesire').classList.toggle('active', view === 'desire');
+  document.getElementById('panelEvents').classList.toggle('active', view === 'events');
+  document.getElementById('panelEventDetail').classList.toggle('active', view === 'eventDetail');
   document.getElementById('panelCuriosity').classList.toggle('active', view === 'curiosity');
   document.getElementById('panelDaylog').classList.toggle('active', view === 'daylog');
      document.getElementById('panelMcp').classList.toggle('active', view === 'mcp');
   document.getElementById('panelCli').classList.toggle('active', view === 'cli');
   if (view === 'ctx') wsSend('context:list', {});
+  if (view === 'events') evtLoad();
      if (view === 'mcp') loadMcpServers();
   if (view === 'cli') fetchCliStatus();
   if (view === 'curiosity') wsSend('curiosity:list', {});
@@ -2937,6 +3045,109 @@ function showCtxStatus(msg, isError) {
   if (!isError && !msg.includes('正在')) {
     setTimeout(() => { el.style.display = 'none'; }, 5000);
   }
+}
+
+/* ══════════════════════════════════════
+   EVENTS (挂载事件)
+══════════════════════════════════════ */
+let _evtCurrentSlug = null;
+
+function evtLoad() {
+  wsSend('event:list', {});
+}
+
+function renderEventList(events) {
+  const body = document.getElementById('evtBody');
+  if (!events || events.length === 0) {
+    body.innerHTML = '<div class="evt-empty">暂无事件</div>';
+    return;
+  }
+  body.innerHTML = events.map(evt => {
+    const ts = (evt.updated_at || '').slice(0, 16).replace('T', ' ');
+    return `
+    <div class="evt-card" onclick="evtOpen('${escapeHtml(evt.slug)}')">
+      <div class="evt-card-name">${escapeHtml(evt.name)}</div>
+      <div class="evt-card-meta">${escapeHtml(ts)}　${evt.count}条</div>
+      <button class="evt-card-del" onclick="event.stopPropagation();evtDelete('${escapeHtml(evt.slug)}','${escapeHtml(evt.name)}')" title="删除">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function evtCreatePrompt() {
+  const name = prompt('事件名称：');
+  if (name && name.trim()) {
+    wsSend('event:create', { name: name.trim() });
+  }
+}
+
+function evtDelete(slug, name) {
+  if (confirm(`删除事件「${name}」？所有更新将丢失。`)) {
+    wsSend('event:delete', { slug });
+  }
+}
+
+function evtOpen(slug) {
+  _evtCurrentSlug = slug;
+  wsSend('event:get', { slug });
+}
+
+function evtBackToList() {
+  _evtCurrentSlug = null;
+  openPanelView('events');
+  evtLoad();
+}
+
+function renderEventEntries(slug, name, entries) {
+  _evtCurrentSlug = slug;
+  document.getElementById('evtDetailTitle').textContent = name;
+  const list = document.getElementById('evtEntryList');
+  if (!entries || entries.length === 0) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-secondary);text-align:center;padding:8px;">暂无更新</div>';
+  } else {
+    list.innerHTML = entries.map(ent => {
+      const ts = (ent.ts || '').slice(0, 16).replace('T', ' ');
+      const edited = ent.updated_at ? ' · 已编辑' : '';
+      const safeId = escapeHtml(ent.id);
+      return `
+      <div class="ctx-item" data-id="${safeId}">
+        <div class="ctx-item-date">${escapeHtml(ts)}${edited}</div>
+        <div class="ctx-item-content" contenteditable="true"
+          oninput="debounceEvtEdit(this, '${escapeHtml(slug)}', '${safeId}')">${escapeHtml(ent.content || '')}</div>
+        <div class="ctx-item-actions">
+          <button onclick="evtRmEntry('${escapeHtml(slug)}','${safeId}')" title="删除">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  openPanelView('eventDetail');
+}
+
+function evtPostPrompt() {
+  if (!_evtCurrentSlug) return;
+  const content = prompt('写入内容：');
+  if (content && content.trim()) {
+    wsSend('event:post', { slug: _evtCurrentSlug, content: content.trim() });
+  }
+}
+
+const _evtEditTimers = {};
+function debounceEvtEdit(el, slug, entryId) {
+  const key = slug + ':' + entryId;
+  clearTimeout(_evtEditTimers[key]);
+  const dateEl = el.closest('.ctx-item').querySelector('.ctx-item-date');
+  _evtEditTimers[key] = setTimeout(() => {
+    wsSend('event:edit_entry', { slug, entry_id: entryId, content: el.textContent.trim() });
+    if (dateEl) {
+      const orig = dateEl.dataset.orig || dateEl.textContent;
+      dateEl.dataset.orig = orig;
+      dateEl.textContent = orig + ' · ✓';
+      setTimeout(() => { dateEl.textContent = orig; }, 1500);
+    }
+  }, 600);
+}
+
+function evtRmEntry(slug, entryId) {
+  wsSend('event:rm_entry', { slug, entry_id: entryId });
 }
 
 /* ══════════════════════════════════════

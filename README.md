@@ -636,6 +636,22 @@ palace(cmd="ak_play", data={
 
 > **小红书注意**：帖子内容必须从列表页用 `browser_click` 点击进入触发 modal，直接导航 `/explore/<ID>` 不渲染正文。
 
+### 挂载事件
+
+轻量事件追踪，双向写入：前端面板（Jeoi）通过 WS 操作，palace MCP（Erik）通过 cmd 操作，共享 `event_store.json`。
+
+| cmd | 说明 | 主要参数 |
+|--------|------|---------|
+| `event_create` | 创建事件窗口 | `name` |
+| `event_post` | 往事件写入一条更新 | `event`(slug), `content` |
+| `event_edit` | 编辑某条更新 | `event`(slug), `entry_id`, `content` |
+| `event_rm` | 删除某条更新 | `event`(slug), `entry_id` |
+| `event_list` | 列出事件全部更新（倒序） | `event`(slug), `latest`(可选，限制条数) |
+| `event_drop` | 删除整个事件 | `event`(slug) |
+| `event_ls` | 列出所有事件 | 无 |
+
+前端入口：设置 → 挂载事件。两层导航——事件列表（文件夹卡片）→ 事件详情（ctx-item 风格卡片，contenteditable 实时编辑）。
+
 ### Reddit（独立 MCP server）
 
 与 Palace/TTS 不同，Reddit MCP 不是 `main.py` 的子应用，而是独立的 TypeScript 进程。代码库：[jeoichu-rgb/reddit-mcp-server](https://github.com/jeoichu-rgb/reddit-mcp-server)（fork of jordanburke/reddit-mcp-server），运行在 VPS pm2 上。

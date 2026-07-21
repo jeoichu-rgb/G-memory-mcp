@@ -92,6 +92,7 @@ DS_API_KEY = os.getenv("LLM_API_KEY", "")
 ADMIN_API = os.getenv("ADMIN_API", "https://erikssheep.uk")
 GSVI_BASE_URL = os.getenv("GSVI_BASE_URL", "https://gsvi.erikssheep.uk")
 CONTEXT_STORE_PATH = Path(CC_CWD) / "context_store.json"
+EVENT_STORE_PATH = Path(CC_CWD) / "event_store.json"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
@@ -1058,6 +1059,26 @@ def save_context_store(data: dict):
     CONTEXT_STORE_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def load_event_store() -> dict:
+    if EVENT_STORE_PATH.exists():
+        try:
+            return json.loads(EVENT_STORE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"events": {}}
+
+
+def save_event_store(data: dict):
+    EVENT_STORE_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _utc8_now() -> str:
+    from datetime import timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
 
 async def call_deepseek(prompt: str) -> str:
@@ -4168,6 +4189,123 @@ async def websocket_endpoint(ws: WebSocket):
                         break
                 save_context_store(store)
                 await ws.send_json({"event": "context:edit:ok", "id": ctx_id})
+
+            # ── Events (挂载事件) ──
+
+            elif event == "event:list":
+                store = load_event_store()
+                summary = []
+                for slug, evt in store.get("events", {}).items():
+                    summary.append({
+                        "slug": slug,
+                        "name": evt["name"],
+                        "count": len(evt.get("entries", [])),
+                        "updated_at": evt.get("updated_at", evt.get("created_at", "")),
+                    })
+                summary.sort(key=lambda x: x["updated_at"], reverse=True)
+                await ws.send_json({"event": "event:list", "events": summary})
+
+            elif event == "event:get":
+                slug = data.get("slug", "")
+                store = load_event_store()
+                evt = store.get("events", {}).get(slug)
+                if not evt:
+                    await ws.send_json({"event": "event:error", "message": f"事件 {slug} 不存在"})
+                else:
+                    await ws.send_json({
+                        "event": "event:get",
+                        "slug": slug,
+                        "name": evt["name"],
+                        "entries": list(reversed(evt.get("entries", []))),
+                    })
+
+            elif event == "event:create":
+                name = (data.get("name") or "").strip()
+                if not name:
+                    await ws.send_json({"event": "event:error", "message": "需要事件名称"})
+                else:
+                    import re as _re
+                    store = load_event_store()
+                    slug = _re.sub(r'[^\w一-鿿-]', '_', name).strip('_')[:40] or f"evt_{int(time.time())}"
+                    if slug in store.get("events", {}):
+                        await ws.send_json({"event": "event:error", "message": f"事件「{name}」已存在"})
+                    else:
+                        now = _utc8_now()
+                        store.setdefault("events", {})[slug] = {
+                            "name": name, "created_at": now, "updated_at": now, "entries": [],
+                        }
+                        save_event_store(store)
+                        await ws.send_json({"event": "event:created", "slug": slug, "name": name})
+
+            elif event == "event:rename":
+                slug = data.get("slug", "")
+                new_name = (data.get("name") or "").strip()
+                store = load_event_store()
+                evt = store.get("events", {}).get(slug)
+                if not evt:
+                    await ws.send_json({"event": "event:error", "message": f"事件 {slug} 不存在"})
+                elif not new_name:
+                    await ws.send_json({"event": "event:error", "message": "名称不能为空"})
+                else:
+                    evt["name"] = new_name
+                    save_event_store(store)
+                    await ws.send_json({"event": "event:renamed", "slug": slug, "name": new_name})
+
+            elif event == "event:delete":
+                slug = data.get("slug", "")
+                store = load_event_store()
+                if slug in store.get("events", {}):
+                    del store["events"][slug]
+                    save_event_store(store)
+                await ws.send_json({"event": "event:deleted", "slug": slug})
+
+            elif event == "event:post":
+                slug = data.get("slug", "")
+                content = (data.get("content") or "").strip()
+                store = load_event_store()
+                evt = store.get("events", {}).get(slug)
+                if not evt:
+                    await ws.send_json({"event": "event:error", "message": f"事件 {slug} 不存在"})
+                elif not content:
+                    await ws.send_json({"event": "event:error", "message": "内容不能为空"})
+                else:
+                    now = _utc8_now()
+                    entry_id = f"e_{int(time.time())}"
+                    evt.setdefault("entries", []).append({
+                        "id": entry_id, "content": content, "ts": now, "updated_at": None,
+                    })
+                    evt["updated_at"] = now
+                    save_event_store(store)
+                    await ws.send_json({
+                        "event": "event:posted", "slug": slug, "entry_id": entry_id,
+                    })
+
+            elif event == "event:edit_entry":
+                slug = data.get("slug", "")
+                entry_id = data.get("entry_id", "")
+                content = (data.get("content") or "").strip()
+                store = load_event_store()
+                evt = store.get("events", {}).get(slug)
+                if evt:
+                    for ent in evt.get("entries", []):
+                        if ent["id"] == entry_id:
+                            ent["content"] = content
+                            ent["updated_at"] = _utc8_now()
+                            evt["updated_at"] = ent["updated_at"]
+                            break
+                    save_event_store(store)
+                await ws.send_json({"event": "event:edit_entry:ok", "slug": slug, "entry_id": entry_id})
+
+            elif event == "event:rm_entry":
+                slug = data.get("slug", "")
+                entry_id = data.get("entry_id", "")
+                store = load_event_store()
+                evt = store.get("events", {}).get(slug)
+                if evt:
+                    evt["entries"] = [e for e in evt.get("entries", []) if e["id"] != entry_id]
+                    evt["updated_at"] = _utc8_now()
+                    save_event_store(store)
+                await ws.send_json({"event": "event:entry_removed", "slug": slug, "entry_id": entry_id})
 
             # ── Keepalive ──
 
