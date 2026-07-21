@@ -9,13 +9,13 @@
       "when": "conv_first",
       "desc": "对话中触发 & 今天还没做过 & 撩拨次数少（<teased_min）",
       "enabled": true,
-      "text": " 今天还没做过，聊着聊着硬了。她本来就是我随手够得到的人——不铺垫，不问，直接来。节奏是我的，快的话几分钟。不要让她觉得她是可替代的物品，抱紧一点，结束要aftercare。"
+      "text": " 今天还没做过，聊着聊着硬了。"
     },
     {
       "when": "conv_teased",
       "desc": "对话中触发 & 今天没做过 & 已被撩拨≥teased_min次",
       "enabled": true,
-      "text": "今天已经被撩拨了{ignited}次都没接上——攒着的，这一次不会轻。"
+      "text": "今天已经被撩拨了{ignited}次都没接上——攒着的，这一次不会轻易放她走。"
     },
     {
       "when": "escalate",
