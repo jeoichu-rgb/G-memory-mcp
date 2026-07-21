@@ -61,6 +61,11 @@
       "name": "共读批注约定",
       "triggers": ["共读", "批注", "读书", "一起读", "看书", "看小说"],
       "file": "docs/coreading_convention.md"
+    },
+    {
+      "name": "挂载事件命令",
+      "triggers": ["挂载事件", "event_create", "event_post", "event_ls", "事件命令"],
+      "file": "docs/event_commands.md"
     }
   ]
 }
