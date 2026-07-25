@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import random
 from typing import Any
 
@@ -68,11 +69,11 @@ def resolve_post_choice_result(
     system = node.get("system", {})
 
     if node.get("type") == "qte_converted":
-        return _resolve_qte(system["resolution_rule"][choice_id], difficulty, rng or random.Random())
+        return _resolve_qte(system["resolution_rule"][choice_id], difficulty, rng or random.Random(), state)
 
     resolution_rule = system.get("resolution_rule")
     if resolution_rule and choice_id in resolution_rule:
-        return _resolve_qte(resolution_rule[choice_id], difficulty, rng or random.Random())
+        return _resolve_qte(resolution_rule[choice_id], difficulty, rng or random.Random(), state)
 
     ending_resolution = system.get("ending_resolution")
     if not ending_resolution:
@@ -83,13 +84,13 @@ def resolve_post_choice_result(
         return None
 
     if "result" in rule:
-        return rule["result"]
+        return resolve_outcome(rule, state)
 
     if "check" in rule:
         return resolve_check_rule(rule["check"], state)
 
     if difficulty in rule:
-        return _resolve_qte(rule, difficulty, rng or random.Random())
+        return _resolve_qte(rule, difficulty, rng or random.Random(), state)
 
     return None
 
@@ -128,13 +129,33 @@ def resolve_check_rule(rule: str | list, state: dict[str, Any]) -> str:
     return ""
 
 
-def _resolve_qte(rule: dict[str, Any], difficulty: str, rng: random.Random) -> str:
+def resolve_outcome(outcome: Any, state: dict[str, Any] | None = None) -> str | None:
+    """规则的叶子有两种写法：直接写结果字符串，或者写成
+    {"result": ..., "state_update": {...}} 这样的对象。
+
+    对象形式的 state_update 必须落到 state 里 —— 章节数据靠它驱动后续节点
+    的 context_condition（ch11 n005 摇出的 burial_depth 决定 n006 讲哪一段，
+    ch14 n003 同理）。展开到字符串为止，拿不到字符串就返回 None。
+    """
+    while isinstance(outcome, dict):
+        update = outcome.get("state_update")
+        if state is not None and isinstance(update, dict):
+            state.update(copy.deepcopy(update))
+        if "result" not in outcome:
+            return None
+        outcome = outcome["result"]
+    return outcome if isinstance(outcome, str) else None
+
+
+def _resolve_qte(rule: dict[str, Any], difficulty: str, rng: random.Random,
+                 state: dict[str, Any] | None = None) -> str | None:
     if "result" in rule:
-        return rule["result"]
+        return resolve_outcome(rule, state)
 
     difficulty_rule = rule[difficulty]
     if "result" in difficulty_rule:
-        return difficulty_rule["result"]
+        return resolve_outcome(difficulty_rule, state)
 
     success_probability = difficulty_rule["probability_success"]
-    return difficulty_rule["success"] if rng.random() < success_probability else difficulty_rule["failure"]
+    outcome = difficulty_rule["success"] if rng.random() < success_probability else difficulty_rule["failure"]
+    return resolve_outcome(outcome, state)

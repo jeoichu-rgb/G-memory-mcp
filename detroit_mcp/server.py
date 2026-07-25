@@ -39,6 +39,7 @@ from resolver import (
     resolve_check_rule,
     resolve_choices,
     resolve_context,
+    resolve_outcome,
     resolve_post_choice_result,
 )
 from state import apply_effects, evaluate_condition, extract_cross_chapter_state, initial_state, snapshot
@@ -173,14 +174,22 @@ class GameEngine:
 
         selected = valid[choice_id]
 
-        effects = node.get("system", {}).get("effects", {}).get(choice_id, {})
-        apply_effects(self.state, effects)
-        self._record_aliases(node["id"], choice_id)
+        before = snapshot(self.state)
+        try:
+            effects = node.get("system", {}).get("effects", {}).get(choice_id, {})
+            apply_effects(self.state, effects)
+            self._record_aliases(node["id"], choice_id)
 
-        result = resolve_post_choice_result(
-            node, choice_id, self.state, self.difficulty, self.rng
-        )
-        self._handle_result(node, result)
+            result = resolve_post_choice_result(
+                node, choice_id, self.state, self.difficulty, self.rng
+            )
+            self._handle_result(node, result)
+        except Exception:
+            # 半途抛错时 effects 已经落进 state，而 current_choice_node 还没清，
+            # 于是重试会把数值型 effects 再累加一遍。回滚到入口状态，让重试幂等。
+            self.state.clear()
+            self.state.update(before)
+            raise
 
         self.decisions.append({
             "node_id": node["id"],
@@ -376,9 +385,9 @@ class GameEngine:
     def _mandatory_result(self, node: dict) -> str | None:
         system = node.get("system", {})
         if "result" in system:
-            return system["result"]
+            return resolve_outcome(system["result"], self.state)
         if "ending" in system:
-            return system["ending"]
+            return resolve_outcome(system["ending"], self.state)
         ending_resolution = system.get("ending_resolution")
         if not isinstance(ending_resolution, dict):
             return None
@@ -388,11 +397,15 @@ class GameEngine:
         if len(ending_resolution) == 1:
             rule = next(iter(ending_resolution.values()))
             if isinstance(rule, dict):
-                return rule.get("result")
+                return resolve_outcome(rule, self.state)
         return None
 
     def _handle_result(self, node: dict, result: str | None):
         if not result:
+            return
+        if not isinstance(result, str):
+            # resolver 负责交出字符串。真冒出别的形状就丢掉，别让它写进
+            # state 和存档 —— 存档得能 json 序列化。
             return
         if result.startswith("ending_"):
             self.final_ending_id = result
