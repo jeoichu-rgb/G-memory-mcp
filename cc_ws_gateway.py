@@ -1684,8 +1684,11 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
         return {"error": "no user/assistant events"}
 
     # Drop thinking blocks + compress tool_result bodies. Every other field
-    # (usage, model, message id, cwd, version…) stays untouched so events
-    # keep CC CLI's native shape. Background oneshot rounds (patrol/pebbling)
+    # (model, message id, cwd, version…) stays untouched so events keep CC
+    # CLI's native shape — except the input-side usage counters, which the
+    # rewrite pass below zeroes on purpose: keeping them "native" is exactly
+    # what made the CLI think a forged 27KB session was 152k tokens and stop
+    # to ask about it. Background oneshot rounds (patrol/pebbling)
     # are dropped whole; gateway injection prefixes are stripped from real
     # messages so the token budget buys conversation, not noise.
     TOOL_RESULT_MAX = 300
@@ -1947,6 +1950,23 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
         if not ev.get("uuid"):
             ev["uuid"] = str(uuid.uuid4())
         prev = ev["uuid"]
+        # Zero the input-side usage counters on carried-over events. CC CLI
+        # sizes a resumed session from these numbers, NOT from the file: a
+        # 27KB transcript whose last assistant still reports cache_read=152k
+        # makes the CLI open a blocking prompt ("This session is 152.2k
+        # tokens · 1. Resume from summary (recommended)"). It then sits there
+        # waiting for a keypress — and tmux_send_message's trailing Enter
+        # answers it, picking the default "resume from summary", which runs a
+        # ~60s compact, swallows the verify ping and times the forge out.
+        # These counters describe API calls belonging to the OLD session; the
+        # forged one has made none yet, so 0 is the honest value.
+        # output_tokens is this message's own length — that stays true.
+        msg = ev.get("message")
+        if isinstance(msg, dict) and isinstance(msg.get("usage"), dict):
+            for _k in ("input_tokens", "cache_read_input_tokens",
+                       "cache_creation_input_tokens"):
+                if _k in msg["usage"]:
+                    msg["usage"][_k] = 0
 
     new_path = CC_TRANSCRIPT_DIR / f"{new_id}.jsonl"
     with open(new_path, "w", encoding="utf-8") as f:
