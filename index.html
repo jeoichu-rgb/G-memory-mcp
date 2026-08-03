@@ -160,6 +160,18 @@ textarea.inp{resize:vertical;line-height:1.7;}
 ════════════════════════════════════ */
 #chron-editor{background:var(--bg);}
 
+/* month picker overlay */
+.mp-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center;}
+.mp-sheet{background:var(--bg);border-top:1px solid var(--border);border-radius:16px 16px 0 0;width:100%;max-height:75vh;display:flex;flex-direction:column;padding:18px;gap:12px;}
+.mp-title{font-family:var(--serif);font-size:14px;color:var(--violet);}
+.mp-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;}
+.mp-item{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;cursor:pointer;transition:border-color .15s;}
+.mp-item.on{border-color:var(--violet);}
+.mp-item input[type=checkbox]{accent-color:var(--violet);margin-top:2px;flex-shrink:0;width:16px;height:16px;}
+.mp-item-info{flex:1;min-width:0;}
+.mp-item-date{font-size:10px;color:var(--dim);}
+.mp-item-preview{font-size:11px;color:var(--dim);margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.5;}
+
 /* ════════════════════════════════════
    G PANEL (GEMINI)
 ════════════════════════════════════ */
@@ -526,7 +538,22 @@ textarea.inp{resize:vertical;line-height:1.7;}
       <input class="inp" id="ce-date" type="date" style="flex:1;">
     </div>
     <textarea class="inp" id="ce-content" style="min-height:320px;font-size:12px;line-height:1.8;" placeholder="内容（支持 Markdown 格式）…"></textarea>
-    <div class="st" id="ce-st"></div>
+    <div class="row" style="justify-content:space-between;align-items:center;">
+      <div class="st" id="ce-st"></div>
+      <button class="btn btn-sm" id="ce-delete-btn" onclick="deleteChronicle()" style="display:none;color:var(--red);border-color:var(--red);font-size:10px;">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- MONTH PICKER OVERLAY -->
+<div id="mp-overlay" class="mp-overlay" style="display:none;" onclick="if(event.target===this)closeMonthPicker()">
+  <div class="mp-sheet">
+    <div class="mp-title">选择要纳入月画像的周历</div>
+    <div class="mp-list" id="mp-list"></div>
+    <div class="row" style="justify-content:flex-end;gap:8px;flex-shrink:0;">
+      <button class="btn btn-sm" onclick="closeMonthPicker()">取消</button>
+      <button class="btn btn-v btn-sm" id="mp-confirm" onclick="confirmMonthSynthesis()">确认生成</button>
+    </div>
   </div>
 </div>
 
@@ -1318,8 +1345,9 @@ let chronEditId = '';
 let chronEditMode = 'new'; // 'new' | 'edit'
 
 async function runSynthesis(type) {
+  if (type === 'month') { openMonthPicker(); return; }
   const st = document.getElementById('synthesis-st');
-  st.textContent = type === 'week' ? '正在生成周画像…（约30-60秒）' : '正在生成月画像…';
+  st.textContent = '正在生成周画像…（约30-60秒）';
   try {
     const r = await fetch(`${API_BASE}/admin/synthesis`, {
       method: 'POST', headers: hdr(),
@@ -1335,6 +1363,46 @@ async function runSynthesis(type) {
   } catch(e) {
     st.textContent = '✗ 请求失败';
   }
+}
+
+async function openMonthPicker() {
+  const overlay = document.getElementById('mp-overlay');
+  const list = document.getElementById('mp-list');
+  list.innerHTML = '<div style="font-size:11px;color:var(--dim);">加载中…</div>';
+  document.getElementById('mp-confirm').textContent = '确认生成';
+  overlay.style.display = 'flex';
+  const r = await fetch(`${API_BASE}/admin/chronicle?type=${encodeURIComponent('周历')}`, { headers: hdr() });
+  const items = await r.json();
+  if (!items.length) { list.innerHTML = '<div style="font-size:11px;color:var(--dim);">暂无周历</div>'; return; }
+  list.innerHTML = items.map(item => `<label class="mp-item">
+    <input type="checkbox" value="${item.id.replace(/"/g,'&quot;')}" onchange="this.closest('.mp-item').classList.toggle('on',this.checked);updateMpCount();">
+    <div class="mp-item-info">
+      <div class="mp-item-date">${item.meta?.date||''}</div>
+      <div class="mp-item-preview">${item.text.slice(0,100)}</div>
+    </div>
+  </label>`).join('');
+}
+function closeMonthPicker() { document.getElementById('mp-overlay').style.display = 'none'; }
+function updateMpCount() {
+  const n = document.querySelectorAll('#mp-list input:checked').length;
+  document.getElementById('mp-confirm').textContent = n ? `确认生成（${n}篇）` : '确认生成';
+}
+async function confirmMonthSynthesis() {
+  const checked = document.querySelectorAll('#mp-list input:checked');
+  if (!checked.length) return;
+  const ids = Array.from(checked).map(cb => cb.value);
+  closeMonthPicker();
+  const st = document.getElementById('synthesis-st');
+  st.textContent = `正在生成月画像…（${ids.length}篇周历）`;
+  try {
+    const r = await fetch(`${API_BASE}/admin/synthesis`, {
+      method: 'POST', headers: hdr(),
+      body: JSON.stringify({ type: 'month', chronicle_ids: ids })
+    });
+    const d = await r.json();
+    if (d.status === 'ok') { st.textContent = '✓ 生成成功'; loadChronicle(''); }
+    else { st.textContent = '✗ 失败：' + (d.output || '').slice(0, 60); }
+  } catch(e) { st.textContent = '✗ 请求失败'; }
 }
 
 async function loadChronicle(type) {
@@ -1371,6 +1439,7 @@ function openChronNew() {
   document.getElementById('ce-date').value = today();
   document.getElementById('ce-content').value = '';
   document.getElementById('ce-st').textContent = '';
+  document.getElementById('ce-delete-btn').style.display = 'none';
   go('chron-editor');
 }
 
@@ -1386,6 +1455,7 @@ async function openChronEdit(id) {
   document.getElementById('ce-date').value = item.meta?.date || today();
   document.getElementById('ce-content').value = item.text;
   document.getElementById('ce-st').textContent = '';
+  document.getElementById('ce-delete-btn').style.display = 'inline-block';
   go('chron-editor');
 }
 
@@ -1405,6 +1475,18 @@ async function saveChronicle() {
     st.className = 'st ok'; st.textContent = '✓ 已保存';
     setTimeout(() => { go('erik'); erikTab('chronicle'); }, 800);
   } catch (e) { st.className = 'st err'; st.textContent = '保存失败：' + e.message; }
+}
+
+async function deleteChronicle() {
+  if (!chronEditId || chronEditMode !== 'edit') return;
+  if (!confirm('确认删除这条记录？')) return;
+  try {
+    await fetch(`${API_BASE}/admin/chronicle/${encodeURIComponent(chronEditId)}`, { method: 'DELETE', headers: hdr() });
+    go('erik'); erikTab('chronicle');
+  } catch(e) {
+    const st = document.getElementById('ce-st');
+    st.textContent = '删除失败'; st.className = 'st err';
+  }
 }
 
 function openChat(){

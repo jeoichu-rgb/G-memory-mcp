@@ -779,6 +779,9 @@ async def admin_synthesis(payload: dict):
     args = ["python3", "weekly_synthesis.py"]
     if stype == "month":
         args.append("--month")
+        chronicle_ids = payload.get("chronicle_ids", [])
+        if chronicle_ids:
+            args.extend(["--ids", ",".join(chronicle_ids)])
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,

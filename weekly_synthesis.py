@@ -85,6 +85,20 @@ def get_recent_chronicles(count: int = 4) -> str:
         return ""
 
 
+def get_chronicles_by_ids(ids: list) -> str:
+    """按ID列表拉取指定周历"""
+    try:
+        result = claude_chronicle.get(ids=ids)
+        items = []
+        for doc, meta in zip(result.get("documents", []), result.get("metadatas", [])):
+            items.append((meta.get("date", ""), doc))
+        items.sort(key=lambda x: x[0])
+        return "\n\n".join(f"【周历 {d}】\n{t}" for d, t in items)
+    except Exception as e:
+        print(f"拉取指定周历失败: {e}")
+        return ""
+
+
 def synthesize_week():
     print("正在拉取本周日记...")
     diary_text = get_recent_diaries(7)
@@ -144,15 +158,20 @@ def synthesize_week():
     print(f"周画像已写入 chronicle 库。ID: {m_id}")
     print("\n预览：\n" + final_content[:300] + "...")
 
-def synthesize_month():
-    print("正在拉取最近4条周历...")
-    week_text = get_recent_chronicles(4)
+def synthesize_month(ids=None):
+    if ids:
+        print(f"正在拉取指定的 {len(ids)} 条周历...")
+        week_text = get_chronicles_by_ids(ids)
+    else:
+        print("正在拉取最近4条周历...")
+        week_text = get_recent_chronicles(4)
 
     if not week_text:
         print("没有足够的周历数据，请先跑几次周画像再生成月画像。")
         return
 
-    prompt = f"""以下是最近4周的周画像总结。
+    n = len(ids) if ids else 4
+    prompt = f"""以下是最近{n}周的周画像总结。
 
 请生成一份月画像，包含以下部分：
 1. 本月核心主题（3-5个）
@@ -198,9 +217,11 @@ def synthesize_month():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--month", action="store_true", help="生成月画像而不是周画像")
+    parser.add_argument("--ids", type=str, default="", help="逗号分隔的周历ID列表")
     args = parser.parse_args()
 
     if args.month:
-        synthesize_month()
+        ids = [x.strip() for x in args.ids.split(",") if x.strip()] if args.ids else None
+        synthesize_month(ids)
     else:
         synthesize_week()
