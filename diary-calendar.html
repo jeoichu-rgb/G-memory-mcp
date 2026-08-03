@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
+<title>Diary Calendar</title>
+<style>
+:root{
+  --bg:#1a1612;--surf:#221e19;--card:#2a2520;--card2:#332e28;
+  --border:#3d3530;--border2:#4a433c;
+  --text:#f0ebe4;--dim:#8a7d72;--muted:#4a3f38;
+  --violet:#c4a8ff;--violet-d:#2a1f42;--glow:rgba(196,168,255,.08);
+  --warm:#f4a261;--green:#6ee7a0;--red:#f87171;
+  --r:10px;--r-sm:6px;
+  --mono:'DM Mono','SF Mono','Menlo','Consolas',monospace;
+  --serif:'Lora',Georgia,serif;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{background:var(--bg);min-height:100vh;overflow-x:hidden;}
+body{color:var(--text);font-family:var(--mono);font-size:13px;}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+.dc{max-width:420px;margin:0 auto;padding:12px;}
+
+.dc-nav{display:flex;align-items:center;justify-content:space-between;padding:4px 0 12px;}
+.dc-arrow{
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:20px;width:34px;height:34px;border-radius:50%;
+  cursor:pointer;transition:all .15s;line-height:1;
+}
+.dc-arrow:hover{border-color:var(--violet);color:var(--violet);}
+.dc-title{
+  font-family:var(--serif);font-size:17px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;padding:4px 14px;
+  border-radius:var(--r);transition:background .15s;user-select:none;
+}
+.dc-title:hover{background:var(--glow);}
+.dc-caret{font-size:9px;color:var(--dim);transition:transform .2s;display:inline-block;}
+.dc-caret.open{transform:rotate(180deg);}
+
+.dc-picker{
+  overflow:hidden;max-height:0;
+  transition:max-height .3s ease,padding .2s,border-color .2s;
+  background:var(--surf);border-radius:var(--r);
+  border:1px solid transparent;margin-bottom:4px;
+}
+.dc-picker.open{max-height:260px;padding:12px;border-color:var(--border);}
+.dc-yrow{
+  display:flex;gap:4px;overflow-x:auto;padding-bottom:10px;
+  margin-bottom:10px;border-bottom:1px solid var(--border);
+  scrollbar-width:none;
+}
+.dc-yrow::-webkit-scrollbar{display:none;}
+.dc-ybtn{
+  padding:4px 14px;font-family:var(--mono);font-size:11px;
+  border:1px solid var(--border);border-radius:20px;cursor:pointer;
+  white-space:nowrap;background:none;color:var(--dim);transition:all .12s;
+}
+.dc-ybtn.on{background:var(--violet-d);border-color:var(--violet);color:var(--violet);}
+.dc-ybtn:hover{border-color:var(--violet);}
+.dc-mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+.dc-mbtn{
+  padding:8px 4px;text-align:center;font-family:var(--mono);font-size:12px;
+  border:1px solid transparent;border-radius:var(--r-sm);cursor:pointer;
+  color:var(--dim);background:none;transition:all .12s;
+}
+.dc-mbtn:hover{background:var(--card);}
+.dc-mbtn.on{background:var(--violet-d);border-color:var(--violet);color:var(--violet);}
+.dc-mbtn.has::after{
+  content:'';display:block;width:4px;height:4px;border-radius:50%;
+  background:var(--violet);margin:3px auto 0;
+}
+
+.dc-wk{
+  display:grid;grid-template-columns:repeat(7,1fr);text-align:center;
+  font-size:10px;letter-spacing:.12em;color:var(--dim);
+  padding:8px 0 6px;border-bottom:1px solid var(--border);
+}
+.dc-wk .we{color:var(--muted);}
+
+.dc-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;padding:4px 0;}
+.dc-day{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:50px;cursor:pointer;border-radius:var(--r-sm);transition:background .1s;
+  position:relative;
+}
+.dc-day:hover{background:var(--card);}
+.dc-day.other{opacity:.2;cursor:default;}
+.dc-day.other:hover{background:none;}
+.dc-day.today .dc-num{background:var(--violet);color:var(--bg);font-weight:600;}
+.dc-day.sel{background:var(--glow);}
+.dc-day.sel .dc-num{color:var(--violet);}
+.dc-day.today.sel .dc-num{background:var(--violet);color:var(--bg);}
+.dc-num{
+  font-size:13px;font-variant-numeric:tabular-nums;line-height:1;
+  width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+  border-radius:50%;transition:all .12s;
+}
+.dc-dots{display:flex;gap:2px;position:absolute;bottom:4px;}
+.dc-dot{width:4px;height:4px;border-radius:50%;background:var(--violet);}
+.dc-dot:nth-child(2){background:var(--warm);}
+.dc-dot:nth-child(3){background:var(--green);}
+
+.dc-panel{margin-top:4px;}
+.dc-panel[data-open="0"]{display:none;}
+.dc-ph{
+  font-family:var(--serif);font-size:14px;padding:10px 0 8px;
+  color:var(--violet);display:flex;align-items:baseline;gap:8px;
+}
+.dc-ph-sub{font-family:var(--mono);font-size:10px;color:var(--dim);}
+.dc-pl{display:flex;flex-direction:column;gap:6px;}
+
+.dc-entry{
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  overflow:hidden;animation:fadeUp .2s ease;
+}
+.dc-entry-row{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;}
+.dc-entry-info{flex:1;min-width:0;}
+.dc-entry-time{font-size:10px;color:var(--dim);margin-bottom:2px;}
+.dc-entry-name{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dc-entry-acts{display:flex;gap:4px;flex-shrink:0;margin-left:8px;}
+.dc-a{
+  background:var(--card2);border:1px solid var(--border);color:var(--dim);
+  font-family:var(--mono);font-size:9px;padding:3px 8px;cursor:pointer;
+  border-radius:var(--r-sm);transition:all .12s;
+}
+.dc-a:hover{border-color:var(--border2);color:var(--text);}
+.dc-a-v{background:var(--violet-d);border-color:var(--violet);color:var(--violet);}
+.dc-a-v:hover{background:var(--violet);color:var(--bg);}
+
+.dc-editor{
+  border-top:1px solid var(--border);padding:10px 12px;
+  display:flex;flex-direction:column;gap:8px;animation:fadeUp .15s ease;
+}
+.dc-editor textarea{
+  width:100%;background:var(--surf);border:1px solid var(--border);
+  color:var(--text);font-family:var(--mono);font-size:11px;
+  padding:10px;outline:none;border-radius:var(--r-sm);
+  resize:vertical;line-height:1.8;min-height:180px;transition:border-color .15s;
+}
+.dc-editor textarea:focus{border-color:var(--violet);}
+.dc-editor-bar{display:flex;gap:6px;align-items:center;}
+.dc-editor-st{font-size:10px;color:var(--dim);flex:1;}
+.dc-editor-st.ok{color:var(--green);}
+.dc-editor-st.err{color:var(--red);}
+
+.dc-empty{text-align:center;color:var(--muted);font-size:11px;padding:20px 0;}
+.dc-empty-link{color:var(--violet);cursor:pointer;font-size:10px;margin-top:8px;display:inline-block;}
+
+.dc-new{margin-top:12px;border-top:1px solid var(--border);padding-top:12px;}
+.dc-new-toggle{
+  font-family:var(--mono);font-size:11px;color:var(--dim);background:none;
+  border:none;cursor:pointer;padding:4px 0;letter-spacing:.08em;
+  transition:color .15s;width:100%;text-align:left;
+}
+.dc-new-toggle:hover{color:var(--violet);}
+.dc-new-form{
+  overflow:hidden;max-height:0;transition:max-height .25s ease;
+  display:flex;flex-direction:column;gap:6px;
+}
+.dc-new-form.open{max-height:400px;margin-top:10px;}
+.dc-inp{
+  width:100%;background:var(--card);border:1px solid var(--border);
+  color:var(--text);font-family:var(--mono);font-size:11px;padding:8px 10px;
+  outline:none;border-radius:var(--r-sm);transition:border-color .15s;
+}
+.dc-inp:focus{border-color:var(--violet);}
+.dc-inp::placeholder{color:var(--muted);}
+textarea.dc-inp{resize:vertical;line-height:1.7;min-height:80px;}
+.dc-submit{
+  background:var(--violet-d);border:1px solid var(--violet);color:var(--violet);
+  font-family:var(--mono);font-size:10px;padding:6px 14px;cursor:pointer;
+  border-radius:var(--r-sm);transition:all .15s;width:fit-content;
+}
+.dc-submit:hover{background:var(--violet);color:var(--bg);}
+.dc-st{font-size:11px;color:var(--dim);min-height:16px;}
+.dc-st.ok{color:var(--green);}
+.dc-st.err{color:var(--red);}
+
+.dc-loading{text-align:center;padding:40px 0;color:var(--dim);font-size:11px;}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+</style>
+</head>
+<body>
+<div class="dc">
+  <div class="dc-nav">
+    <button class="dc-arrow" onclick="changeMonth(-1)">&#8249;</button>
+    <div class="dc-title" onclick="togglePicker()">
+      <span id="dc-ym"></span>
+      <span class="dc-caret" id="dc-caret">&#9662;</span>
+    </div>
+    <button class="dc-arrow" onclick="changeMonth(1)">&#8250;</button>
+  </div>
+  <div class="dc-picker" id="dc-picker">
+    <div class="dc-yrow" id="dc-yrow"></div>
+    <div class="dc-mgrid" id="dc-mgrid"></div>
+  </div>
+  <div class="dc-wk">
+    <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div>
+    <div class="we">六</div><div class="we">日</div>
+  </div>
+  <div class="dc-grid" id="dc-grid"></div>
+  <div class="dc-panel" id="dc-panel" data-open="0">
+    <div class="dc-ph" id="dc-ph"></div>
+    <div class="dc-pl" id="dc-pl"></div>
+  </div>
+  <div class="dc-new">
+    <button class="dc-new-toggle" onclick="toggleNew()">+ 新建日记</button>
+    <div class="dc-new-form" id="dc-new-form">
+      <input class="dc-inp" id="nd-title" placeholder="标题">
+      <input class="dc-inp" id="nd-mood" placeholder="心情（可选）">
+      <textarea class="dc-inp" id="nd-content" placeholder="日记内容…"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="dc-submit" onclick="createDiary()">写下</button>
+        <div class="dc-st" id="nd-st"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const API_BASE = location.origin;
+function secret(){return localStorage.getItem('gmp_pw')||'';}
+function hdr(){return{'Content-Type':'application/json','x-secret':secret()};}
+
+let diaryByDate={};
+const NOW=new Date();
+let curYear=NOW.getFullYear(),curMonth=NOW.getMonth();
+let selDate=null,pickerOpen=false,pickerYear=curYear,newOpen=false,editingIdx=-1;
+
+function parseFilename(f){
+  const m=f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})_(.+)\.md$/);
+  if(!m)return null;
+  return{filename:f,date:m[1],time:m[2].replace('-',':'),title:m[3].replace(/_/g,' ')};
+}
+
+async function loadAllDiaries(){
+  document.getElementById('dc-grid').innerHTML='<div class="dc-loading" style="grid-column:1/-1;">加载中…</div>';
+  const r=await fetch(`${API_BASE}/admin/diary?limit=0`,{headers:hdr()});
+  const d=await r.json();
+  diaryByDate={};
+  for(const f of (d.items||[])){
+    const p=parseFilename(f);
+    if(!p)continue;
+    if(!diaryByDate[p.date])diaryByDate[p.date]=[];
+    diaryByDate[p.date].push(p);
+  }
+  render();
+}
+
+function daysIn(y,m){return new Date(y,m+1,0).getDate();}
+function firstDow(y,m){const d=new Date(y,m,1).getDay();return d===0?6:d-1;}
+function pad(n){return String(n).padStart(2,'0');}
+function fmtDate(y,m,d){return`${y}-${pad(m+1)}-${pad(d)}`;}
+function todayStr(){return fmtDate(NOW.getFullYear(),NOW.getMonth(),NOW.getDate());}
+function getDiaries(ds){return diaryByDate[ds]||[];}
+function allDates(){return Object.keys(diaryByDate);}
+
+function dateRange(){
+  const dates=allDates().sort();
+  if(!dates.length)return{minY:curYear,maxY:curYear};
+  return{minY:parseInt(dates[0].split('-')[0]),maxY:curYear};
+}
+function monthHas(y,m){
+  const p=`${y}-${pad(m+1)}`;
+  return allDates().some(d=>d.startsWith(p));
+}
+
+function render(){
+  document.getElementById('dc-ym').textContent=`${curYear}年${curMonth+1}月`;
+  const grid=document.getElementById('dc-grid');
+  const days=daysIn(curYear,curMonth);
+  const first=firstDow(curYear,curMonth);
+  const prevD=daysIn(curYear,curMonth===0?11:curMonth-1);
+  const today=todayStr();
+  let h='';
+  for(let i=first-1;i>=0;i--)
+    h+=`<div class="dc-day other"><div class="dc-num">${prevD-i}</div></div>`;
+  for(let d=1;d<=days;d++){
+    const ds=fmtDate(curYear,curMonth,d);
+    const entries=getDiaries(ds);
+    const isT=ds===today,isS=ds===selDate;
+    let cls='dc-day';
+    if(isT)cls+=' today';if(isS)cls+=' sel';
+    let dots='';
+    if(entries.length){
+      const n=Math.min(entries.length,3);
+      dots='<div class="dc-dots">'+Array(n).fill('<div class="dc-dot"></div>').join('')+'</div>';
+    }
+    h+=`<div class="${cls}" onclick="selectDate('${ds}')"><div class="dc-num">${d}</div>${dots}</div>`;
+  }
+  const total=first+days;const rem=total%7;
+  if(rem>0)for(let i=1;i<=7-rem;i++)
+    h+=`<div class="dc-day other"><div class="dc-num">${i}</div></div>`;
+  grid.innerHTML=h;
+  renderPanel();
+}
+
+function renderPanel(){
+  const panel=document.getElementById('dc-panel');
+  const ph=document.getElementById('dc-ph');
+  const pl=document.getElementById('dc-pl');
+  editingIdx=-1;
+  if(!selDate){panel.dataset.open='0';return;}
+  const parts=selDate.split('-').map(Number);
+  const m=parts[1],d=parts[2];
+  const entries=getDiaries(selDate);
+  if(entries.length){
+    ph.innerHTML=`${m}月${d}日 <span class="dc-ph-sub">${entries.length}条日记</span>`;
+    pl.innerHTML=entries.map((e,i)=>`
+      <div class="dc-entry" id="entry-${i}">
+        <div class="dc-entry-row">
+          <div class="dc-entry-info">
+            <div class="dc-entry-time">${e.time}</div>
+            <div class="dc-entry-name">${e.title}</div>
+          </div>
+          <div class="dc-entry-acts">
+            <button class="dc-a" onclick="event.stopPropagation();splitEntry(${i},this)">切分</button>
+            <button class="dc-a dc-a-v" onclick="event.stopPropagation();editEntry(${i})">编辑</button>
+          </div>
+        </div>
+      </div>`).join('');
+  }else{
+    ph.innerHTML=`${m}月${d}日`;
+    pl.innerHTML=`<div class="dc-empty">这天没有日记<div class="dc-empty-link" onclick="toggleNew()">+ 写一篇</div></div>`;
+  }
+  panel.dataset.open='1';
+}
+
+async function editEntry(idx){
+  if(editingIdx===idx){closeEditor();return;}
+  closeEditor();
+  editingIdx=idx;
+  const entries=getDiaries(selDate);
+  if(!entries[idx])return;
+  const card=document.getElementById(`entry-${idx}`);
+  if(!card)return;
+  const loading=document.createElement('div');
+  loading.className='dc-editor';loading.id='dc-active-editor';
+  loading.innerHTML='<div style="font-size:10px;color:var(--dim);padding:4px;">加载中…</div>';
+  card.appendChild(loading);
+  try{
+    const r=await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(entries[idx].filename)}`,{headers:hdr()});
+    const d=await r.json();
+    loading.innerHTML=`
+      <textarea id="ed-textarea">${(d.content||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')}</textarea>
+      <div class="dc-editor-bar">
+        <span class="dc-editor-st" id="ed-st"></span>
+        <button class="dc-a" onclick="closeEditor()">关闭</button>
+        <button class="dc-a dc-a-v" onclick="saveEntry()">保存</button>
+      </div>`;
+  }catch(e){
+    loading.innerHTML='<div style="font-size:10px;color:var(--red);">加载失败</div>';
+  }
+}
+
+function closeEditor(){
+  const ed=document.getElementById('dc-active-editor');
+  if(ed)ed.remove();
+  editingIdx=-1;
+}
+
+async function saveEntry(){
+  const ta=document.getElementById('ed-textarea');
+  const st=document.getElementById('ed-st');
+  if(!ta||!st)return;
+  const entries=getDiaries(selDate);
+  if(!entries[editingIdx])return;
+  st.textContent='保存中…';st.className='dc-editor-st';
+  try{
+    const r=await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(entries[editingIdx].filename)}`,
+      {method:'PUT',headers:hdr(),body:JSON.stringify({content:ta.value})});
+    const d=await r.json();
+    st.textContent=d.status==='ok'?'已保存 ✓':'保存失败';
+    st.className=d.status==='ok'?'dc-editor-st ok':'dc-editor-st err';
+    if(d.status==='ok')setTimeout(()=>closeEditor(),800);
+  }catch(e){st.textContent='保存失败';st.className='dc-editor-st err';}
+}
+
+async function splitEntry(idx,btn){
+  if(btn.disabled)return;
+  btn.disabled=true;const orig=btn.textContent;btn.textContent='…';
+  const entries=getDiaries(selDate);
+  try{
+    const r=await fetch(`${API_BASE}/admin/diary-split?filename=${encodeURIComponent(entries[idx].filename)}`,{method:'POST',headers:hdr()});
+    const d=await r.json();
+    if(d.stored>0)btn.textContent=`+${d.stored} ✓`;
+    else if((d.message||'').includes('无节点'))btn.textContent='无节点';
+    else btn.textContent='失败';
+  }catch(e){btn.textContent='失败';}
+  setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},5000);
+}
+
+function selectDate(ds){selDate=selDate===ds?null:ds;render();}
+
+function changeMonth(dir){
+  curMonth+=dir;
+  if(curMonth<0){curMonth=11;curYear--;}
+  if(curMonth>11){curMonth=0;curYear++;}
+  selDate=null;closePicker();render();
+}
+
+function togglePicker(){
+  pickerOpen=!pickerOpen;
+  const el=document.getElementById('dc-picker'),c=document.getElementById('dc-caret');
+  if(pickerOpen){pickerYear=curYear;el.classList.add('open');c.classList.add('open');renderPicker();}
+  else{el.classList.remove('open');c.classList.remove('open');}
+}
+function closePicker(){
+  pickerOpen=false;
+  document.getElementById('dc-picker').classList.remove('open');
+  document.getElementById('dc-caret').classList.remove('open');
+}
+function renderPicker(){
+  const range=dateRange();let yh='';
+  for(let y=range.minY;y<=range.maxY;y++)
+    yh+=`<button class="dc-ybtn${y===pickerYear?' on':''}" onclick="pickYear(${y})">${y}</button>`;
+  document.getElementById('dc-yrow').innerHTML=yh;
+  renderPMonths();
+}
+function renderPMonths(){
+  const MN=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  let h='';
+  for(let m=0;m<12;m++){
+    const on=pickerYear===curYear&&m===curMonth;
+    const has=monthHas(pickerYear,m);
+    h+=`<button class="dc-mbtn${on?' on':''}${has?' has':''}" onclick="pickMonth(${m})">${MN[m]}</button>`;
+  }
+  document.getElementById('dc-mgrid').innerHTML=h;
+}
+function pickYear(y){pickerYear=y;renderPicker();}
+function pickMonth(m){curYear=pickerYear;curMonth=m;selDate=null;closePicker();render();}
+
+function toggleNew(){newOpen=!newOpen;document.getElementById('dc-new-form').classList.toggle('open',newOpen);}
+
+async function createDiary(){
+  const title=document.getElementById('nd-title').value.trim();
+  const content=document.getElementById('nd-content').value.trim();
+  const mood=document.getElementById('nd-mood').value.trim();
+  const st=document.getElementById('nd-st');
+  if(!title||!content){st.textContent='标题和内容不能为空';st.className='dc-st err';return;}
+  st.textContent='写入中…';st.className='dc-st';
+  try{
+    const r=await fetch(`${API_BASE}/admin/diary`,{method:'POST',headers:hdr(),body:JSON.stringify({title,content,mood})});
+    const d=await r.json();
+    if(d.status==='ok'){
+      st.textContent='已写下 ✓';st.className='dc-st ok';
+      document.getElementById('nd-title').value='';
+      document.getElementById('nd-content').value='';
+      document.getElementById('nd-mood').value='';
+      await loadAllDiaries();
+    }else{st.textContent='失败';st.className='dc-st err';}
+  }catch(e){st.textContent=e.message;st.className='dc-st err';}
+}
+
+// 父页面切回日记 tab 时重拉数据，当前月份和选中日期保持不变
+window.addEventListener('message',e=>{
+  if(e.origin!==location.origin)return;
+  if(e.data&&e.data.type==='diary-refresh')loadAllDiaries();
+});
+
+loadAllDiaries();
+</script>
+</body>
+</html>

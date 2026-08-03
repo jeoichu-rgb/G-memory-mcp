@@ -141,6 +141,9 @@ textarea.inp{resize:vertical;line-height:1.7;}
 .erik-tab.on{color:var(--violet);border-bottom-color:var(--violet);}
 .erik-pane{display:none;flex:1;overflow-y:auto;}
 .erik-pane.on{display:block;}
+/* diary pane hosts the calendar iframe — it scrolls itself */
+#ep-diary.on{display:flex;flex-direction:column;overflow:hidden;}
+#ep-diary iframe{flex:1;width:100%;border:none;display:block;}
 
 /* draft */
 .draft-seg{background:var(--card);border:1px solid var(--violet-d);border-radius:var(--r-sm);padding:10px;margin-bottom:10px;}
@@ -467,37 +470,9 @@ textarea.inp{resize:vertical;line-height:1.7;}
     </div>
   </div>
 
-  <!-- DIARY TAB -->
+  <!-- DIARY TAB — 日历视图，独立页面 diary-calendar.html -->
   <div class="erik-pane" id="ep-diary">
-    <div class="pad col">
-      <div class="lbl">Diary · Claude日记</div>
-      <button class="btn btn-sm" style="width:fit-content;" onclick="erikLoadDiaries()">刷新</button>
-      <div id="e-diary-list" class="col" style="gap:6px;"></div>
-      <div class="pager" id="e-diary-pager" style="display:none;">
-        <button class="pager-btn" id="e-diary-prev" onclick="erikDiaryPage(-1)">← 上一页</button>
-        <span class="pager-info" id="e-diary-info"></span>
-        <button class="pager-btn" id="e-diary-next" onclick="erikDiaryPage(1)">下一页 →</button>
-      </div>
-      <div class="sep" style="margin:12px 0;"></div>
-      <div class="lbl">+ 新建日记</div>
-      <input class="inp" id="new-diary-title" placeholder="标题" style="font-size:11px;padding:6px 8px;">
-      <input class="inp" id="new-diary-mood" placeholder="心情（可选）" style="font-size:11px;padding:6px 8px;margin-top:4px;">
-      <textarea class="inp" id="new-diary-content" placeholder="日记内容…" style="min-height:100px;font-size:11px;line-height:1.8;margin-top:4px;"></textarea>
-      <div class="row" style="margin-top:4px;">
-        <button class="btn btn-v btn-sm" onclick="erikCreateDiary()">写下</button>
-      </div>
-      <div class="st" id="new-diary-st"></div>
-      <!-- diary editor inline -->
-      <div id="e-diary-editor" style="display:none;" class="col">
-        <div style="font-size:10px;color:var(--violet);" id="e-diary-name"></div>
-        <textarea class="inp" id="e-diary-content" style="min-height:220px;font-size:12px;line-height:1.8;"></textarea>
-        <div class="row">
-          <button class="btn btn-v btn-sm" onclick="erikSaveDiary()">保存</button>
-          <button class="btn btn-sm" onclick="closeErikDiaryEditor()">关闭</button>
-        </div>
-        <div class="st" id="e-diary-st"></div>
-      </div>
-    </div>
+    <iframe id="diary-frame" title="Erik的日记"></iframe>
   </div>
 
   <!-- CHRONICLE TAB -->
@@ -844,6 +819,14 @@ function erikTab(name) {
   document.querySelectorAll('.erik-tab')[idx].classList.add('on');
   document.getElementById('ep-' + name).classList.add('on');
   if (name === 'chronicle') loadChronicle('');
+  if (name === 'diary') openDiaryCalendar();
+}
+
+// 日历页面首次打开时才载入；之后每次进来让它自己重拉数据（保留当前月份）
+function openDiaryCalendar() {
+  const f = document.getElementById('diary-frame');
+  if (!f.src) { f.src = '/diary-calendar.html'; return; }
+  f.contentWindow.postMessage({ type: 'diary-refresh' }, location.origin);
 }
 
 function gTab(name) {
@@ -1080,12 +1063,11 @@ async function writeDiary() {
 // ══════════════════════════════════════════════
 //  ERIK PANEL
 // ══════════════════════════════════════════════
-let erikCurrentDiaryFile = '';
 let erikDraftSegments = [];
-let dynPage = 0, corePage = 0, diaryPage = 0;
-let dynTotal = 0, coreTotal = 0, diaryTotal = 0;
+let dynPage = 0, corePage = 0;
+let dynTotal = 0, coreTotal = 0;
 let coreFilter = 'all';
-const PAGE_MEM = 10, PAGE_DIARY = 5;
+const PAGE_MEM = 10;
 
 async function erikInit() {
   await erikCheckDraft();
@@ -1247,59 +1229,7 @@ async function erikRecompressSelected() {
   } catch (e) { st.className = 'st err'; st.textContent = '请求失败：' + e.message; }
 }
 
-// DIARY (Erik panel)
-async function erikLoadDiaries() {
-  const r = await fetch(`${API_BASE}/admin/diary?offset=${diaryPage * PAGE_DIARY}&limit=${PAGE_DIARY}`, { headers: hdr() });
-  const d = await r.json();
-  diaryTotal = d.total || 0;
-  const list = document.getElementById('e-diary-list');
-  const files = d.items || [];
-  if (!files.length) { list.innerHTML = '<div style="font-size:11px;color:var(--muted);">— 暂无日记 —</div>'; return; }
-  list.innerHTML = files.map(f => `
-    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);padding:9px 12px;border-radius:var(--r-sm);">
-      <div style="font-size:11px;color:var(--dim);">${f}</div>
-      <div style="display:flex;gap:4px;align-items:center;">
-        <button class="btn btn-xs" onclick="erikSplitDiary('${f}', this)" title="DS按【】节点切进动态库，重按=重切不重复">切分</button>
-        <button class="btn btn-xs btn-v" onclick="erikOpenDiary('${f}')">编辑</button>
-      </div>
-    </div>`).join('');
-  updatePager('e-diary', diaryPage, diaryTotal, PAGE_DIARY);
-}
-function erikDiaryPage(dir) { diaryPage = Math.max(0, Math.min(diaryPage + dir, Math.ceil(diaryTotal / PAGE_DIARY) - 1)); erikLoadDiaries(); }
-async function erikSplitDiary(filename, btn) {
-  if (btn.disabled) return;
-  btn.disabled = true;
-  const orig = btn.textContent;
-  btn.textContent = 'DS切分中…';
-  try {
-    const r = await fetch(`${API_BASE}/admin/diary-split?filename=${encodeURIComponent(filename)}`, { method: 'POST', headers: hdr() });
-    const d = await r.json();
-    if (d.stored > 0) btn.textContent = `+${d.stored}条记忆 ✓`;
-    else if ((d.message || '').includes('无节点')) btn.textContent = '无节点标记';
-    else btn.textContent = '切分失败';
-  } catch (e) {
-    btn.textContent = '切分失败';
-  }
-  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
-}
-async function erikOpenDiary(filename) {
-  erikCurrentDiaryFile = filename;
-  const r = await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(filename)}`, { headers: hdr() });
-  const d = await r.json();
-  document.getElementById('e-diary-name').textContent = filename;
-  document.getElementById('e-diary-content').value = d.content;
-  document.getElementById('e-diary-editor').style.display = 'flex';
-  document.getElementById('e-diary-st').textContent = '';
-}
-function closeErikDiaryEditor() { document.getElementById('e-diary-editor').style.display = 'none'; }
-async function erikSaveDiary() {
-  const content = document.getElementById('e-diary-content').value;
-  const r = await fetch(`${API_BASE}/admin/diary/${encodeURIComponent(erikCurrentDiaryFile)}`, { method: 'PUT', headers: hdr(), body: JSON.stringify({ content }) });
-  const d = await r.json();
-  const st = document.getElementById('e-diary-st');
-  st.textContent = d.status === 'ok' ? '已保存 ✓' : '保存失败';
-  st.className = d.status === 'ok' ? 'st ok' : 'st err';
-}
+// DIARY — 日历视图在 diary-calendar.html 里，见 openDiaryCalendar()
 
 async function erikAddMemory(collection) {
   const content = document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-content').value.trim();
@@ -1317,25 +1247,6 @@ async function erikAddMemory(collection) {
       document.getElementById('new-' + (collection === 'core' ? 'core' : 'dyn') + '-cat').value = '';
       if (collection === 'core') document.getElementById('new-core-folder').value = '';
       if (collection === 'dynamic') erikLoadDynamic(); else erikLoadCore(coreFilter);
-    } else { st.textContent = '失败'; st.className = 'st err'; }
-  } catch(e) { st.textContent = e.message; st.className = 'st err'; }
-}
-
-async function erikCreateDiary() {
-  const title = document.getElementById('new-diary-title').value.trim();
-  const content = document.getElementById('new-diary-content').value.trim();
-  const mood = document.getElementById('new-diary-mood').value.trim();
-  const st = document.getElementById('new-diary-st');
-  if (!title || !content) { st.textContent = '标题和内容不能为空'; st.className = 'st err'; return; }
-  try {
-    const r = await fetch(API_BASE + '/admin/diary', { method: 'POST', headers: hdr(), body: JSON.stringify({ title, content, mood }) });
-    const d = await r.json();
-    if (d.status === 'ok') {
-      st.textContent = '已写下 ✓ ' + d.filename; st.className = 'st ok';
-      document.getElementById('new-diary-title').value = '';
-      document.getElementById('new-diary-content').value = '';
-      document.getElementById('new-diary-mood').value = '';
-      erikLoadDiaries();
     } else { st.textContent = '失败'; st.className = 'st err'; }
   } catch(e) { st.textContent = e.message; st.className = 'st err'; }
 }

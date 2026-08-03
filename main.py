@@ -88,6 +88,7 @@ class CheckSecretMiddleware:
             or path == "/panel"
             or path == "/chat.html"
             or path == "/call.html"
+            or path == "/diary-calendar.html"
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
@@ -216,6 +217,15 @@ async def serve_call(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>call.html not found</h1>", status_code=500)
+
+@app.get("/diary-calendar.html")
+async def serve_diary_calendar(request: Request):
+    # 页面本身不含数据，鉴权在它调用的 /admin/diary* 接口上
+    try:
+        with open("diary-calendar.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>diary-calendar.html not found</h1>", status_code=500)
 
 
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts
@@ -672,6 +682,8 @@ async def admin_compress_confirm(payload: ConfirmPayload):
 @app.get("/admin/diary")
 async def admin_list_diary(offset: int = 0, limit: int = 5):
     files = claude_list_diaries()
+    if limit <= 0:
+        return {"total": len(files), "items": files}
     return {"total": len(files), "items": files[offset:offset+limit]}
 
 # 周历/月历
