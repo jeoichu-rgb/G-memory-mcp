@@ -66,6 +66,11 @@
       "name": "挂载事件命令",
       "triggers": ["挂载事件", "event_create", "event_post", "event_ls", "事件命令"],
       "file": "docs/event_commands.md"
+    },
+    {
+      "name": "假面之宴·大纲",
+      "triggers": ["假面之宴", "华懋庭", "文芝歆", "华胜庭", "小说大纲"],
+      "file": "Obsidian_Core/Eric_memory/Switch/Jeoi的小说/假面之宴/大纲.md"
     }
   ]
 }
