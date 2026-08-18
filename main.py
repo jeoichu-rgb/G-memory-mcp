@@ -101,7 +101,7 @@ class CheckSecretMiddleware:
             or path == "/manifest.json"
             or path.startswith("/icon-")
             or path == "/api/push/vapid-key"
-            or path == "/health/update"
+            or path.startswith("/health/")
         ):
             await self.app(scope, receive, send)
             return
