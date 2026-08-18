@@ -494,9 +494,13 @@ HEALTH_DATA_FILE = Path("/app/health_data.json")
 
 @app.post("/health/update")
 async def health_update(request: Request):
+    import re
     try:
-        body = await request.body()
-        data = _json.loads(body.decode("utf-8"))
+        body_str = (await request.body()).decode("utf-8")
+        # 快捷指令拼的 JSON 值里可能含裸换行/回车/制表符，清理掉
+        body_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', body_str)  # 保留 \n(\x0a) \r(\x0d)
+        body_str = body_str.replace('\r\n', ',').replace('\n', ',').replace('\r', ',')
+        data = _json.loads(body_str)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
