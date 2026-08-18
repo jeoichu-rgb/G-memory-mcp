@@ -101,7 +101,7 @@ class CheckSecretMiddleware:
             or path == "/manifest.json"
             or path.startswith("/icon-")
             or path == "/api/push/vapid-key"
-            or path.startswith("/health/")
+            or path == "/health/update"
         ):
             await self.app(scope, receive, send)
             return
@@ -499,7 +499,7 @@ async def github_webhook(request: Request):
 import json as _json
 from pathlib import Path
 
-HEALTH_DATA_FILE = Path("/app/health_data.json")
+HEALTH_DATA_FILE = Path(os.getenv("HEALTH_DATA_FILE", "/app/palace-data/health_data.json"))
 
 @app.post("/health/update")
 async def health_update(request: Request):

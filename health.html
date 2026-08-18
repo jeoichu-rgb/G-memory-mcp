@@ -125,6 +125,7 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 <!-- ═══ DAY VIEW ═══ -->
 <div id="day-view" class="view on">
   <div class="hd">
+    <button class="hd-btn" onclick="goBack()" title="返回" style="font-size:18px;">✕</button>
     <button class="hd-btn hd-cal" onclick="showCal()" title="日历">📅</button>
     <button class="hd-btn" onclick="navDay(-1)">←</button>
     <div class="hd-date">
@@ -141,7 +142,7 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 <!-- ═══ CALENDAR VIEW ═══ -->
 <div id="cal-view" class="view">
   <div class="hd">
-    <button class="hd-btn" onclick="showDay()">←</button>
+    <button class="hd-btn" onclick="goBack()" title="返回">←</button>
     <div class="hd-date">日历</div>
   </div>
   <div class="cal-nav">
@@ -174,6 +175,14 @@ let allData = [];
 let curDate = today();
 let calYear, calMonth;
 
+function secret(){return localStorage.getItem('gmp_pw')||'';}
+function hdr(){return{'Content-Type':'application/json','x-secret':secret()};}
+
+function goBack(){
+  if(window.parent!==window){window.parent.postMessage({type:'health-back'},'*');}
+  else{window.history.back();}
+}
+
 function today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -191,7 +200,7 @@ function weekday(ds) {
 // ── Data ──
 async function loadData() {
   try {
-    const r = await fetch('/health/data');
+    const r = await fetch('/health/data',{headers:hdr()});
     allData = await r.json();
   } catch(e) { allData = []; }
   renderDay();

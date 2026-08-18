@@ -144,6 +144,8 @@ textarea.inp{resize:vertical;line-height:1.7;}
 /* diary pane hosts the calendar iframe — it scrolls itself */
 #ep-diary.on{display:flex;flex-direction:column;overflow:hidden;}
 #ep-diary iframe{flex:1;width:100%;border:none;display:block;}
+/* health view — full-height iframe like diary */
+#health.active{display:flex!important;flex-direction:column;overflow:hidden;}
 
 /* draft */
 .draft-seg{background:var(--card);border:1px solid var(--violet-d);border-radius:var(--r-sm);padding:10px;margin-bottom:10px;}
@@ -335,9 +337,9 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <div><div class="dc-lbl">Journal</div><div class="dc-ttl">写日记</div><div class="dc-desc">新建 · 纸张 · 字体</div></div>
         <div class="dc-arr">↗</div>
       </div>
-      <div class="dc" onclick="window.open('/health.html','_blank')">
+      <div class="dc" onclick="go('health')">
         <div><div class="dc-lbl">Health</div><div class="dc-ttl">健康</div><div class="dc-desc">心率 · 睡眠 · 步数</div></div>
-        <div class="dc-arr">↗</div>
+        <div class="dc-arr">→</div>
       </div>
       <div class="dc" onclick="window.open('https://read.erikssheep.uk/?token=Jeoi2026','_blank')">
         <div><div class="dc-lbl">Co-Reading</div><div class="dc-ttl">共读</div><div class="dc-desc">书架 · 批注 · 卡片</div></div>
@@ -622,6 +624,13 @@ textarea.inp{resize:vertical;line-height:1.7;}
 <!-- ═══════════════════════════════════
      DIARY WRITE
 ═══════════════════════════════════ -->
+<!-- ═══════════════════════════════════
+     HEALTH
+═══════════════════════════════════ -->
+<div id="health" class="view" style="display:none;flex-direction:column;">
+  <iframe id="health-frame" title="健康数据" style="flex:1;width:100%;border:none;display:block;"></iframe>
+</div>
+
 <div id="diary" class="view">
   <div class="hd">
     <button class="back" onclick="go('dash')">←</button>
@@ -755,8 +764,22 @@ function go(id) {
   if (id === 'gallery-view') renderGallery();
   if (id === 'diary') { document.getElementById('d-date').value = today(); applyDiary(); }
   if (id === 'erik') erikInit();
+  if (id === 'health') openHealth();
   if (id === 'g-panel') { /* nothing on load */ }
 }
+
+// 健康页面首次打开时载入 iframe；之后每次进来让它重拉数据
+function openHealth() {
+  const f = document.getElementById('health-frame');
+  if (!f.src) { f.src = '/health.html'; return; }
+  f.contentWindow.postMessage({ type: 'health-refresh' }, location.origin);
+}
+
+// 健康页面 postMessage 返回 dashboard
+window.addEventListener('message', e => {
+  if (e.data?.type === 'health-back') go('dash');
+});
+
 function today() { return new Date().toISOString().split('T')[0]; }
 function ft() { return new Date().toLocaleTimeString('zh', { hour: '2-digit', minute: '2-digit' }); }
 
