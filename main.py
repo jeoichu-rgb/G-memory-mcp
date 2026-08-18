@@ -516,19 +516,25 @@ async def health_update(request: Request):
 
     data["synced_at"] = datetime.now(SGT).isoformat()
 
-    records = []
-    if HEALTH_DATA_FILE.exists():
-        try:
-            records = _json.loads(HEALTH_DATA_FILE.read_text())
-        except:
-            records = []
+    try:
+        HEALTH_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # 同日期覆盖，否则追加
-    records = [r for r in records if r.get("date") != data.get("date")]
-    records.append(data)
-    records.sort(key=lambda r: r.get("date", ""), reverse=True)
+        records = []
+        if HEALTH_DATA_FILE.exists():
+            try:
+                records = _json.loads(HEALTH_DATA_FILE.read_text())
+            except:
+                records = []
 
-    HEALTH_DATA_FILE.write_text(_json.dumps(records, ensure_ascii=False, indent=2))
+        # 同日期覆盖，否则追加
+        records = [r for r in records if r.get("date") != data.get("date")]
+        records.append(data)
+        records.sort(key=lambda r: r.get("date", ""), reverse=True)
+
+        HEALTH_DATA_FILE.write_text(_json.dumps(records, ensure_ascii=False, indent=2))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"写入失败: {e}"})
+
     return {"status": "ok", "date": data.get("date"), "saved_keys": list(data.keys()), "data": data}
 
 @app.get("/health/data")
