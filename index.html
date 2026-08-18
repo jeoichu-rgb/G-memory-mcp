@@ -335,8 +335,8 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <div><div class="dc-lbl">Journal</div><div class="dc-ttl">写日记</div><div class="dc-desc">新建 · 纸张 · 字体</div></div>
         <div class="dc-arr">↗</div>
       </div>
-      <div class="dc" onclick="go('gallery-view')">
-        <div><div class="dc-lbl">Gallery</div><div class="dc-ttl">画廊</div><div class="dc-desc">图片 · 收藏</div></div>
+      <div class="dc" onclick="window.open('/health.html','_blank')">
+        <div><div class="dc-lbl">Health</div><div class="dc-ttl">健康</div><div class="dc-desc">心率 · 睡眠 · 步数</div></div>
         <div class="dc-arr">↗</div>
       </div>
       <div class="dc" onclick="window.open('https://read.erikssheep.uk/?token=Jeoi2026','_blank')">
@@ -349,6 +349,14 @@ textarea.inp{resize:vertical;line-height:1.7;}
           <div id="u-rows"><div class="dc-desc" style="margin-top:8px;">—</div></div>
         </div>
         <div class="dc-lbl" id="u-sub" style="margin-top:8px;opacity:.5;">点击刷新</div>
+      </div>
+      <div class="dc full" onclick="go('gallery-view')" style="border-top:1px solid var(--border);">
+        <div style="flex:1;">
+          <div class="dc-lbl">Gallery</div>
+          <div class="dc-ttl">画廊</div>
+          <div class="dc-desc">图片 · 收藏</div>
+        </div>
+        <div class="dc-arr">↗</div>
       </div>
       <div class="dc full" onclick="go('g-panel')" style="background:var(--warm-d);border-top:1px solid var(--border);">
         <div style="flex:1;">

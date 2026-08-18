@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
+<title>Health</title>
+<style>
+:root{
+  --bg:#1a1612;--surf:#221e19;--card:#2a2520;--card2:#332e28;
+  --border:#3d3530;--border2:#4a433c;
+  --text:#f0ebe4;--dim:#8a7d72;--muted:#4a3f38;
+  --violet:#c4a8ff;--violet-d:#2a1f42;--glow:rgba(196,168,255,.08);
+  --warm:#f4a261;--green:#6ee7a0;--red:#f87171;--pink:#f9a8d4;
+  --r:10px;--r-sm:6px;
+  --mono:'DM Mono','SF Mono','Menlo','Consolas',monospace;
+  --serif:'Lora',Georgia,serif;
+  --hr:#f87171;
+  --s-deep:#1e3a8a;--s-core:#3b82f6;--s-rem:#93c5fd;--s-awake:#ef4444;--s-bed:#374151;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{background:var(--bg);min-height:100vh;overflow-x:hidden;}
+body{color:var(--text);font-family:var(--mono);font-size:13px;}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+.container{max-width:420px;margin:0 auto;padding:12px;}
+
+/* Header */
+.hd{display:flex;align-items:center;gap:10px;padding:8px 0 16px;position:sticky;top:0;background:var(--bg);z-index:10;}
+.hd-btn{
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:16px;width:32px;height:32px;border-radius:50%;cursor:pointer;
+  transition:all .15s;display:flex;align-items:center;justify-content:center;
+}
+.hd-btn:hover{border-color:var(--violet);color:var(--violet);}
+.hd-date{flex:1;text-align:center;font-family:var(--serif);font-size:15px;}
+.hd-date-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px;}
+.hd-cal{font-size:14px;}
+
+/* Views */
+.view{display:none;}.view.on{display:block;}
+
+/* Cards */
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:12px;}
+.stat-lbl{font-size:10px;color:var(--dim);letter-spacing:.08em;margin-bottom:6px;}
+.stat-val{font-size:22px;font-weight:600;}
+.stat-unit{font-size:11px;color:var(--dim);font-weight:400;}
+.stat-sub{font-size:10px;color:var(--dim);margin-top:4px;}
+
+/* Section */
+.sec{margin-bottom:20px;}
+.sec-title{font-size:11px;color:var(--dim);letter-spacing:.1em;margin-bottom:10px;padding-left:2px;}
+
+/* Chart container */
+.chart-wrap{
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  padding:14px 10px 10px;overflow:hidden;
+}
+.chart-wrap svg{width:100%;display:block;}
+
+/* HR Zones */
+.hr-zones{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;padding:0 2px;}
+.hr-zone{
+  font-size:9px;padding:2px 8px;border-radius:10px;
+  border:1px solid var(--border);color:var(--dim);
+}
+.hr-zone.active{border-color:var(--hr);color:var(--hr);background:rgba(248,113,113,.08);}
+
+/* Sleep legend */
+.sleep-legend{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;}
+.sleep-leg{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--dim);}
+.sleep-dot{width:10px;height:10px;border-radius:2px;}
+
+/* Time labels */
+.time-row{display:flex;justify-content:space-between;margin-top:4px;padding:0 2px;}
+.time-lbl{font-size:9px;color:var(--muted);}
+
+/* Period markers */
+.period-row{display:flex;margin-top:6px;}
+.period{flex:1;text-align:center;font-size:9px;color:var(--muted);
+  border-top:1px solid var(--border);padding-top:4px;margin:0 1px;}
+.period:first-child{margin-left:0;}.period:last-child{margin-right:0;}
+
+/* No data */
+.no-data{
+  text-align:center;color:var(--muted);font-size:12px;padding:30px 0;
+  font-style:italic;
+}
+
+/* Calendar */
+.cal-nav{display:flex;align-items:center;justify-content:space-between;padding:4px 0 12px;}
+.cal-title{font-family:var(--serif);font-size:17px;}
+.cal-wk{
+  display:grid;grid-template-columns:repeat(7,1fr);text-align:center;
+  font-size:10px;letter-spacing:.12em;color:var(--dim);
+  padding:8px 0 6px;border-bottom:1px solid var(--border);
+}
+.cal-wk .we{color:var(--muted);}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;padding:4px 0;}
+.cal-day{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:48px;cursor:pointer;border-radius:var(--r-sm);transition:background .1s;
+  position:relative;
+}
+.cal-day:hover{background:var(--card);}
+.cal-day.other{opacity:.2;cursor:default;}
+.cal-day.today .cal-num{background:var(--violet);color:var(--bg);font-weight:600;}
+.cal-day.has::after{
+  content:'';position:absolute;bottom:5px;width:4px;height:4px;
+  border-radius:50%;background:var(--green);
+}
+.cal-num{
+  font-size:13px;width:28px;height:28px;display:flex;align-items:center;
+  justify-content:center;border-radius:50%;transition:all .12s;
+}
+
+/* Sync info */
+.sync{font-size:10px;color:var(--muted);text-align:center;padding:12px 0;border-top:1px solid var(--border);margin-top:8px;}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ═══ DAY VIEW ═══ -->
+<div id="day-view" class="view on">
+  <div class="hd">
+    <button class="hd-btn hd-cal" onclick="showCal()" title="日历">📅</button>
+    <button class="hd-btn" onclick="navDay(-1)">←</button>
+    <div class="hd-date">
+      <div id="d-date">—</div>
+      <div class="hd-date-sub" id="d-weekday"></div>
+    </div>
+    <button class="hd-btn" onclick="navDay(1)">→</button>
+    <button class="hd-btn" onclick="navToday()">今</button>
+  </div>
+
+  <div id="day-content"></div>
+</div>
+
+<!-- ═══ CALENDAR VIEW ═══ -->
+<div id="cal-view" class="view">
+  <div class="hd">
+    <button class="hd-btn" onclick="showDay()">←</button>
+    <div class="hd-date">日历</div>
+  </div>
+  <div class="cal-nav">
+    <button class="hd-btn" onclick="navMonth(-1)">←</button>
+    <div class="cal-title" id="cal-title"></div>
+    <button class="hd-btn" onclick="navMonth(1)">→</button>
+  </div>
+  <div class="cal-wk">
+    <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div>
+    <div class="we">六</div><div class="we">日</div>
+  </div>
+  <div class="cal-grid" id="cal-grid"></div>
+</div>
+
+</div><!-- container -->
+
+<script>
+const WEEKDAYS = ['周日','周一','周二','周三','周四','周五','周六'];
+const ZONES = [
+  {name:'舒缓',max:60},{name:'热身',max:90},{name:'燃脂',max:110},
+  {name:'有氧',max:130},{name:'无氧',max:150},{name:'极限',max:999}
+];
+const STAGE_COLORS = {
+  '深度睡眠':'#1e3a8a','核心睡眠':'#3b82f6','快速动眼睡眠':'#93c5fd',
+  '清醒':'#ef4444','卧床时间':'#4b5563'
+};
+const STAGE_ORDER = ['清醒','快速动眼睡眠','核心睡眠','深度睡眠'];
+
+let allData = [];
+let curDate = today();
+let calYear, calMonth;
+
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function fmtDate(ds) {
+  const [y,m,d] = ds.split('-');
+  return `${parseInt(m)}月${parseInt(d)}日`;
+}
+
+function weekday(ds) {
+  return WEEKDAYS[new Date(ds+'T00:00:00').getDay()];
+}
+
+// ── Data ──
+async function loadData() {
+  try {
+    const r = await fetch('/health/data');
+    allData = await r.json();
+  } catch(e) { allData = []; }
+  renderDay();
+}
+
+function getRecord(date) {
+  return allData.find(r => r.date === date);
+}
+
+// ── Navigation ──
+function navDay(delta) {
+  const d = new Date(curDate + 'T00:00:00');
+  d.setDate(d.getDate() + delta);
+  curDate = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  renderDay();
+}
+
+function navToday() { curDate = today(); renderDay(); }
+
+function showCal() {
+  const d = new Date(curDate + 'T00:00:00');
+  calYear = d.getFullYear(); calMonth = d.getMonth();
+  document.getElementById('day-view').classList.remove('on');
+  document.getElementById('cal-view').classList.add('on');
+  renderCal();
+}
+
+function showDay() {
+  document.getElementById('cal-view').classList.remove('on');
+  document.getElementById('day-view').classList.add('on');
+}
+
+function navMonth(d) { calMonth += d; if(calMonth>11){calMonth=0;calYear++;}if(calMonth<0){calMonth=11;calYear--;} renderCal(); }
+
+// ── Render Day ──
+function renderDay() {
+  document.getElementById('d-date').textContent = fmtDate(curDate);
+  document.getElementById('d-weekday').textContent = weekday(curDate);
+  const rec = getRecord(curDate);
+  const el = document.getElementById('day-content');
+
+  if (!rec) {
+    el.innerHTML = '<div class="no-data">暂无数据</div>';
+    return;
+  }
+
+  let html = '';
+
+  // Stats cards
+  const steps = rec.steps || '--';
+  const cal = rec.active_cal ? parseFloat(rec.active_cal).toFixed(0) : '--';
+  const hrAvg = rec.hr_avg || '--';
+  const hrMax = rec.hr_max || '--';
+  const hrMin = rec.hr_min || '--';
+  const sleepInfo = parseSleep(rec);
+
+  html += `<div class="stats">
+    <div class="stat">
+      <div class="stat-lbl">❤️ 心率</div>
+      <div class="stat-val">${hrAvg}<span class="stat-unit"> bpm</span></div>
+      <div class="stat-sub">${hrAvg !== '--' ? '↑'+hrMax+' ↓'+hrMin : '无数据'}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-lbl">😴 睡眠</div>
+      <div class="stat-val">${sleepInfo.totalStr || '--'}</div>
+      <div class="stat-sub">${sleepInfo.bedStr || '无数据'}</div>
+    </div>
+    <div class="stat">
+      <div class="stat-lbl">🏃 步数</div>
+      <div class="stat-val">${steps}<span class="stat-unit"> 步</span></div>
+    </div>
+    <div class="stat">
+      <div class="stat-lbl">🔥 活动能量</div>
+      <div class="stat-val">${cal}<span class="stat-unit"> 千卡</span></div>
+    </div>
+  </div>`;
+
+  // Heart Rate Chart
+  html += renderHRSection(rec);
+
+  // Sleep Chart
+  html += renderSleepSection(rec, sleepInfo);
+
+  // Sync info
+  if (rec.synced_at) {
+    const st = new Date(rec.synced_at);
+    html += `<div class="sync">数据同步于 ${st.getMonth()+1}/${st.getDate()} ${String(st.getHours()).padStart(2,'0')}:${String(st.getMinutes()).padStart(2,'0')}</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Heart Rate ──
+function renderHRSection(rec) {
+  let html = '<div class="sec"><div class="sec-title">心率 · 24小时</div>';
+
+  const vals = rec.hr_values ? rec.hr_values.split('\n').map(Number).filter(n=>!isNaN(n)) : [];
+  const times = rec.hr_times ? rec.hr_times.split('\n').filter(t=>t.trim()) : [];
+
+  if (vals.length === 0) {
+    html += '<div class="chart-wrap"><div class="no-data">心率数据不可用</div></div>';
+  } else {
+    const maxV = Math.max(...vals, 100);
+    const minV = Math.min(...vals.filter(v=>v>0), 40);
+    const range = maxV - minV + 20;
+    const chartH = 140;
+    const chartW = 320;
+    const barW = (chartW - vals.length) / vals.length;
+    const peakI = vals.indexOf(Math.max(...vals));
+
+    let bars = '';
+    vals.forEach((v, i) => {
+      if (v <= 0) return;
+      const h = ((v - minV + 10) / range) * chartH;
+      const x = i * (barW + 1);
+      const y = chartH - h;
+      const color = v >= 130 ? '#ef4444' : v >= 100 ? '#f87171' : '#fca5a5';
+      bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="1.5" fill="${color}" opacity="0.85"/>`;
+      if (i === peakI) {
+        bars += `<text x="${x+barW/2}" y="${y-4}" fill="var(--hr)" font-size="8" text-anchor="middle" font-family="var(--mono)">${v}</text>`;
+      }
+    });
+
+    // Zone lines
+    let zoneLines = '';
+    [60, 90, 120].forEach(z => {
+      if (z >= minV && z <= maxV) {
+        const y = chartH - ((z - minV + 10) / range) * chartH;
+        zoneLines += `<line x1="0" y1="${y}" x2="${chartW}" y2="${y}" stroke="var(--border)" stroke-dasharray="3,3"/>`;
+        zoneLines += `<text x="${chartW+2}" y="${y+3}" fill="var(--muted)" font-size="7" font-family="var(--mono)">${z}</text>`;
+      }
+    });
+
+    html += `<div class="chart-wrap">
+      <svg viewBox="0 0 ${chartW+25} ${chartH+10}">${zoneLines}${bars}</svg>`;
+
+    // Time labels
+    html += '<div class="period-row">';
+    ['深夜 0-6','上午 6-12','下午 12-18','晚上 18-24'].forEach(p => {
+      html += `<div class="period">${p}</div>`;
+    });
+    html += '</div>';
+
+    // Zone badges
+    const avgZone = rec.hr_avg ? ZONES.find(z => parseInt(rec.hr_avg) < z.max)?.name || '' : '';
+    html += '<div class="hr-zones">';
+    ZONES.forEach(z => {
+      html += `<span class="hr-zone${z.name===avgZone?' active':''}">${z.name}</span>`;
+    });
+    html += '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ── Sleep ──
+function parseSleep(rec) {
+  const stages = rec.sleep_stages ? rec.sleep_stages.split('\n') : [];
+  const starts = rec.sleep_starts ? rec.sleep_starts.split('\n') : [];
+  const ends = rec.sleep_ends ? rec.sleep_ends.split('\n') : [];
+  if (!stages.length || stages.length !== starts.length || stages.length !== ends.length)
+    return { segments: [], totalStr: '', bedStr: '' };
+
+  const segments = [];
+  let totalMin = 0;
+  let bedStart = null, bedEnd = null;
+  const durations = { '深度睡眠':0, '核心睡眠':0, '快速动眼睡眠':0 };
+
+  for (let i = 0; i < stages.length; i++) {
+    const s = starts[i].trim(), e = ends[i].trim(), stg = stages[i].trim();
+    const t0 = new Date(s.replace(' ','T'));
+    const t1 = new Date(e.replace(' ','T'));
+    if (isNaN(t0) || isNaN(t1)) continue;
+    const mins = (t1 - t0) / 60000;
+    segments.push({ stage: stg, start: t0, end: t1, mins });
+
+    if (stg === '卧床时间') {
+      bedStart = t0; bedEnd = t1;
+    } else {
+      totalMin += mins;
+      if (durations[stg] !== undefined) durations[stg] += mins;
+    }
+  }
+
+  const fmt = m => m >= 60 ? `${Math.floor(m/60)}h${String(Math.round(m%60)).padStart(2,'0')}m` : `${Math.round(m)}m`;
+  const fmtT = d => `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+  return {
+    segments,
+    totalStr: totalMin > 0 ? fmt(totalMin) : '',
+    bedStr: bedStart && bedEnd ? `${fmtT(bedStart)} → ${fmtT(bedEnd)}` : '',
+    durations,
+    fmt,
+    bedStart, bedEnd
+  };
+}
+
+function renderSleepSection(rec, info) {
+  let html = '<div class="sec"><div class="sec-title">睡眠</div>';
+
+  if (!info.segments.length || !info.bedStart) {
+    html += '<div class="chart-wrap"><div class="no-data">睡眠数据不可用</div></div></div>';
+    return html;
+  }
+
+  // Find time range (exclude 卧床时间 for display, use actual sleep segments)
+  const sleepSegs = info.segments.filter(s => s.stage !== '卧床时间');
+  if (!sleepSegs.length) {
+    html += '<div class="chart-wrap"><div class="no-data">无睡眠分段</div></div></div>';
+    return html;
+  }
+
+  const tMin = Math.min(...sleepSegs.map(s => s.start.getTime()));
+  const tMax = Math.max(...sleepSegs.map(s => s.end.getTime()));
+  const tRange = tMax - tMin;
+
+  const chartW = 320;
+  const rowH = 24;
+  const gap = 2;
+  const labelW = 0; // labels will be above
+  const rows = STAGE_ORDER;
+  const chartH = rows.length * (rowH + gap);
+
+  // Build SVG
+  let svg = '';
+
+  // Row backgrounds + labels
+  rows.forEach((stage, ri) => {
+    const y = ri * (rowH + gap);
+    svg += `<rect x="0" y="${y}" width="${chartW}" height="${rowH}" rx="3" fill="var(--card2)" opacity="0.5"/>`;
+  });
+
+  // Segments
+  sleepSegs.forEach(seg => {
+    const ri = rows.indexOf(seg.stage);
+    if (ri < 0) return;
+    const x = ((seg.start.getTime() - tMin) / tRange) * chartW;
+    const w = Math.max(((seg.end.getTime() - seg.start.getTime()) / tRange) * chartW, 2);
+    const y = ri * (rowH + gap);
+    const color = STAGE_COLORS[seg.stage] || '#666';
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${rowH}" rx="2" fill="${color}"/>`;
+  });
+
+  // Row labels (left side, inside SVG)
+  const labels = ['清醒','REM','核心','深睡'];
+  rows.forEach((_, ri) => {
+    const y = ri * (rowH + gap) + rowH/2 + 3;
+    svg += `<text x="3" y="${y}" fill="var(--dim)" font-size="8" font-family="var(--mono)" opacity="0.7">${labels[ri]}</text>`;
+  });
+
+  html += `<div class="chart-wrap">
+    <svg viewBox="0 0 ${chartW} ${chartH}">${svg}</svg>`;
+
+  // Time labels under chart
+  const startT = new Date(tMin), endT = new Date(tMax);
+  const fmtT = d => `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+  // Generate hour marks
+  const hours = [];
+  let h = new Date(tMin);
+  h.setMinutes(0, 0, 0); h.setHours(h.getHours() + 1);
+  while (h.getTime() < tMax) {
+    hours.push(new Date(h));
+    h.setHours(h.getHours() + 1);
+  }
+
+  html += '<div class="time-row">';
+  html += `<span class="time-lbl">${fmtT(startT)}</span>`;
+  hours.filter((_,i) => i % 2 === 0).forEach(t => {
+    html += `<span class="time-lbl">${fmtT(t)}</span>`;
+  });
+  html += `<span class="time-lbl">${fmtT(endT)}</span>`;
+  html += '</div>';
+
+  // Duration summary
+  html += '<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">';
+  [['深睡','深度睡眠','#1e3a8a'],['核心','核心睡眠','#3b82f6'],['REM','快速动眼睡眠','#93c5fd']].forEach(([label, key, color]) => {
+    const mins = info.durations[key] || 0;
+    html += `<div class="sleep-leg"><span class="sleep-dot" style="background:${color}"></span>${label} ${info.fmt(mins)}</div>`;
+  });
+  html += '</div>';
+
+  html += '</div></div>';
+  return html;
+}
+
+// ── Calendar ──
+function renderCal() {
+  document.getElementById('cal-title').textContent = `${calYear}年${calMonth+1}月`;
+  const grid = document.getElementById('cal-grid');
+  const first = new Date(calYear, calMonth, 1);
+  const lastDay = new Date(calYear, calMonth+1, 0).getDate();
+  let startDow = first.getDay(); // 0=Sun
+  startDow = startDow === 0 ? 6 : startDow - 1; // Convert to Mon=0
+
+  const todayStr = today();
+  const dateset = new Set(allData.map(r => r.date));
+
+  let html = '';
+  // Blanks for days before month start
+  for (let i = 0; i < startDow; i++) html += '<div class="cal-day other"></div>';
+
+  for (let d = 1; d <= lastDay; d++) {
+    const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isToday = ds === todayStr;
+    const hasData = dateset.has(ds);
+    html += `<div class="cal-day${isToday?' today':''}${hasData?' has':''}" onclick="pickDate('${ds}')">
+      <div class="cal-num">${d}</div>
+    </div>`;
+  }
+  grid.innerHTML = html;
+}
+
+function pickDate(ds) {
+  curDate = ds;
+  renderDay();
+  showDay();
+}
+
+// ── Init ──
+window.addEventListener('DOMContentLoaded', loadData);
+// Listen for parent refresh
+window.addEventListener('message', e => {
+  if (e.data?.type === 'health-refresh') loadData();
+});
+</script>
+</body>
+</html>
