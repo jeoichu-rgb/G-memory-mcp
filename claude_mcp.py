@@ -656,6 +656,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
     elif cmd == "read_health":
         from pathlib import Path
         import json as _json
+        from datetime import datetime as _dt
         f = Path("/app/health_data.json")
         if not f.exists():
             return "暂无健康数据，请先运行快捷指令同步。"
@@ -664,12 +665,49 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         records = records[:days]
         lines = []
         for r in records:
+            # 解析睡眠分段
+            stages = r.get("sleep_stages", "").split("\n") if r.get("sleep_stages") else []
+            starts = r.get("sleep_starts", "").split("\n") if r.get("sleep_starts") else []
+            ends = r.get("sleep_ends", "").split("\n") if r.get("sleep_ends") else []
+            sleep_summary = ""
+            if stages and starts and ends and len(stages) == len(starts) == len(ends):
+                durations = {"深度睡眠": 0, "核心睡眠": 0, "快速动眼睡眠": 0, "卧床时间": 0}
+                bed_start, bed_end = "", ""
+                for stg, s, e in zip(stages, starts, ends):
+                    if stg == "卧床时间":
+                        bed_start, bed_end = s.split(" ")[-1] if " " in s else s, e.split(" ")[-1] if " " in e else e
+                    try:
+                        t0 = _dt.strptime(s.strip(), "%Y-%m-%d %H:%M")
+                        t1 = _dt.strptime(e.strip(), "%Y-%m-%d %H:%M")
+                        mins = (t1 - t0).total_seconds() / 60
+                        if stg in durations:
+                            durations[stg] += mins
+                    except:
+                        pass
+                total = durations["深度睡眠"] + durations["核心睡眠"] + durations["快速动眼睡眠"]
+                def fmt_mins(m):
+                    return f"{int(m//60)}h{int(m%60):02d}m" if m >= 60 else f"{int(m)}m"
+                sleep_summary = (
+                    f"{bed_start}→{bed_end} 共{fmt_mins(total)}"
+                    f"（深睡{fmt_mins(durations['深度睡眠'])} "
+                    f"核心{fmt_mins(durations['核心睡眠'])} "
+                    f"REM{fmt_mins(durations['快速动眼睡眠'])}）"
+                )
+            else:
+                sleep_summary = "--"
+
+            # 心率
+            hr_avg = r.get("hr_avg", "")
+            hr_max = r.get("hr_max", "")
+            hr_min = r.get("hr_min", "")
+            hr_str = f"均{hr_avg} 高{hr_max} 低{hr_min}" if hr_avg else "--"
+
             lines.append(
                 f"📅 {r.get('date','')} | "
-                f"步数:{r.get('steps','--')} | "
-                f"热量:{r.get('active_cal','--')}千卡 | "
-                f"睡眠:{r.get('sleep_start','--')}~{r.get('sleep_end','--')} | "
-                f"心率 均:{r.get('hr_avg','--')} 最高:{r.get('hr_max','--')} 最低:{r.get('hr_min','--')}"
+                f"🏃 {r.get('steps','--')}步 | "
+                f"🔥 {r.get('active_cal','--')}千卡 | "
+                f"😴 {sleep_summary} | "
+                f"❤️ {hr_str}"
             )
         return "\n".join(lines)
     
