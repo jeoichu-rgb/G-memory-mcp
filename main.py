@@ -494,13 +494,14 @@ HEALTH_DATA_FILE = Path("/app/health_data.json")
 
 @app.post("/health/update")
 async def health_update(request: Request):
-    import re
     try:
-        body_str = (await request.body()).decode("utf-8")
-        # 快捷指令拼的 JSON 值里可能含裸换行/回车/制表符，清理掉
-        body_str = re.sub(r'[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]', '', body_str)  # 保留 \n(\x0a) \r(\x0d)
-        body_str = body_str.replace('\r\n', ',').replace('\n', ',').replace('\r', ',')
-        data = _json.loads(body_str)
+        body_str = (await request.body()).decode("utf-8").strip()
+        # 截取到最后一个 }，去掉快捷指令可能附加的尾部垃圾
+        last_brace = body_str.rfind('}')
+        if last_brace >= 0:
+            body_str = body_str[:last_brace + 1]
+        # strict=False 允许 JSON 字符串值内含裸换行符
+        data = _json.loads(body_str, strict=False)
     except Exception as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
 
