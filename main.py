@@ -516,6 +516,14 @@ async def health_update(request: Request):
 
     data["synced_at"] = datetime.now(SGT).isoformat()
 
+    # 从 sleep_starts 第一行提取实际睡眠日期，覆盖快捷指令传的 date
+    sleep_starts = data.get("sleep_starts", "")
+    if sleep_starts:
+        first_line = sleep_starts.strip().split("\n")[0].strip()
+        # 格式 "2026-08-16 01:47" → 取日期部分
+        if len(first_line) >= 10:
+            data["date"] = first_line[:10]
+
     try:
         HEALTH_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
 
