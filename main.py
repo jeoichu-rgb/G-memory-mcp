@@ -100,7 +100,7 @@ class CheckSecretMiddleware:
             or path == "/manifest.json"
             or path.startswith("/icon-")
             or path == "/api/push/vapid-key"
-            or path == "/health/update"
+            or path.startswith("/health/")
         ):
             await self.app(scope, receive, send)
             return
@@ -520,7 +520,13 @@ async def health_update(request: Request):
     records.sort(key=lambda r: r.get("date", ""), reverse=True)
 
     HEALTH_DATA_FILE.write_text(_json.dumps(records, ensure_ascii=False, indent=2))
-    return {"status": "ok", "date": data.get("date")}
+    return {"status": "ok", "date": data.get("date"), "saved_keys": list(data.keys()), "data": data}
+
+@app.get("/health/data")
+async def health_data():
+    if not HEALTH_DATA_FILE.exists():
+        return []
+    return _json.loads(HEALTH_DATA_FILE.read_text())
 
 @app.post("/gateway/compress")
 async def manual_compress():
