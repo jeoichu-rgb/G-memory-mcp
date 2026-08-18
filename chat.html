@@ -514,19 +514,28 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 /* Image upload preview bar */
 .upload-preview {
   display:none; padding:6px 10px; background:var(--bg-sidebar);
-  border-top:1px solid var(--border); align-items:center; gap:8px;
+  border-top:1px solid var(--border); align-items:center; gap:6px;
+  flex-wrap:wrap;
 }
 .upload-preview.show { display:flex; }
-.upload-preview img {
+.upload-preview .upload-item {
+  position:relative; width:48px; height:48px; flex-shrink:0;
+}
+.upload-preview .upload-item img {
   width:48px; height:48px; border-radius:6px; object-fit:cover;
 }
-.upload-preview .upload-name {
-  flex:1; font-size:11px; color:var(--text-secondary);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+.upload-preview .upload-item .upload-item-remove {
+  position:absolute; top:-4px; right:-4px; width:18px; height:18px;
+  border-radius:50%; background:var(--text-secondary); color:#fff;
+  border:none; cursor:pointer; font-size:11px; line-height:18px;
+  text-align:center; padding:0;
 }
-.upload-preview .upload-remove {
+.upload-preview .upload-count {
+  font-size:11px; color:var(--text-secondary); margin-left:auto;
+}
+.upload-preview .upload-clear {
   background:none; border:none; color:var(--text-secondary);
-  cursor:pointer; font-size:16px; padding:4px;
+  cursor:pointer; font-size:12px; padding:4px;
 }
 
 /* Settings panel */
@@ -977,16 +986,16 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       </div>
     </div>
 
-    <!-- Upload preview -->
+    <!-- Upload preview (multi-image) -->
     <div class="upload-preview" id="uploadPreview">
-      <img id="uploadThumb" src="" alt="">
-      <span class="upload-name" id="uploadName"></span>
-      <button class="upload-remove" onclick="clearUpload()">✕</button>
+      <div id="uploadItems" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <span class="upload-count" id="uploadCount"></span>
+      <button class="upload-clear" onclick="clearUpload()" title="清除全部">✕ 清除</button>
     </div>
 
     <!-- Input -->
     <div class="input-area">
-      <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+      <input type="file" id="imageInput" accept="image/*" multiple style="display:none" onchange="handleImageSelect(event)">
       <button onclick="document.getElementById('imageInput').click()"
         style="background:none;border:none;color:var(--icon);font-size:20px;cursor:pointer;padding:8px 2px;"
         title="上传图片">📷</button>
@@ -1573,7 +1582,7 @@ function handleWSMessage(data) {
 function sendMessage() {
   const input = document.getElementById('inputBox');
   const text = input.value.trim();
-  if (!text && !pendingImage) return;
+  if (!text && pendingImages.length === 0) return;
   if (isStreaming) return;
 
   hideEmpty();
@@ -1582,8 +1591,10 @@ function sendMessage() {
   row.className = 'msg-row out';
   const time = formatTime(new Date());
   let imgHtml = '';
-  if (pendingImage) {
-    imgHtml = `<img class="bubble-img" src="${pendingImage.dataUrl}" onclick="openLightbox(this.src)">`;
+  if (pendingImages.length > 0) {
+    imgHtml = pendingImages.map(img =>
+      `<img class="bubble-img" src="${img.dataUrl}" onclick="openLightbox(this.src)">`
+    ).join('');
   }
   row.innerHTML = `
     <button class="msg-edit" onclick="editMessage(this)" title="编辑">✎</button>
@@ -1610,10 +1621,10 @@ function sendMessage() {
     memory_enabled: document.getElementById('memoryToggle').checked,
   };
 
-  if (pendingImage) {
-    payload.content = [
-      { type: 'image', source: { type: 'base64', media_type: pendingImage.type, data: pendingImage.base64 } }
-    ];
+  if (pendingImages.length > 0) {
+    payload.content = pendingImages.map(img => ({
+      type: 'image', source: { type: 'base64', media_type: img.type, data: img.base64 }
+    }));
     if (text) {
       payload.content.push({ type: 'text', text: text });
     }
@@ -2410,26 +2421,47 @@ function showError(msg) {
 /* ══════════════════════════════════════
    IMAGE UPLOAD
 ══════════════════════════════════════ */
-let pendingImage = null; // { base64, name, dataUrl }
+let pendingImages = []; // [{ base64, name, dataUrl, type }]
 
 function handleImageSelect(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    const dataUrl = ev.target.result;
-    const base64 = dataUrl.split(',')[1];
-    pendingImage = { base64, name: file.name, dataUrl, type: file.type };
-    document.getElementById('uploadThumb').src = dataUrl;
-    document.getElementById('uploadName').textContent = file.name;
-    document.getElementById('uploadPreview').classList.add('show');
-  };
-  reader.readAsDataURL(file);
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target.result;
+      const base64 = dataUrl.split(',')[1];
+      pendingImages.push({ base64, name: file.name, dataUrl, type: file.type });
+      renderUploadPreview();
+    };
+    reader.readAsDataURL(file);
+  });
   e.target.value = '';
 }
 
+function renderUploadPreview() {
+  const container = document.getElementById('uploadItems');
+  container.innerHTML = '';
+  pendingImages.forEach((img, i) => {
+    const item = document.createElement('div');
+    item.className = 'upload-item';
+    item.innerHTML = `<img src="${img.dataUrl}" alt="${escapeHtml(img.name)}">` +
+      `<button class="upload-item-remove" onclick="removeUploadImage(${i})">✕</button>`;
+    container.appendChild(item);
+  });
+  document.getElementById('uploadCount').textContent =
+    pendingImages.length > 1 ? pendingImages.length + '张' : '';
+  document.getElementById('uploadPreview').classList.toggle('show', pendingImages.length > 0);
+}
+
+function removeUploadImage(index) {
+  pendingImages.splice(index, 1);
+  renderUploadPreview();
+}
+
 function clearUpload() {
-  pendingImage = null;
+  pendingImages = [];
+  document.getElementById('uploadItems').innerHTML = '';
   document.getElementById('uploadPreview').classList.remove('show');
 }
 

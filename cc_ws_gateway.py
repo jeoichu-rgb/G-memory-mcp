@@ -860,7 +860,8 @@ import base64 as b64mod
 
 
 def save_snap(content_blocks: list):
-    """Save base64 image from content blocks to temp file. Returns path or None."""
+    """Save base64 images from content blocks to temp files. Returns list of paths (may be empty)."""
+    paths = []
     for block in content_blocks:
         if block.get("type") == "image":
             src = block.get("source", {})
@@ -869,16 +870,19 @@ def save_snap(content_blocks: list):
                 fname = f"snap_{uuid.uuid4().hex[:8]}.{ext}"
                 fpath = SNAP_DIR / fname
                 fpath.write_bytes(b64mod.b64decode(src["data"]))
-                return str(fpath)
-    return None
+                paths.append(str(fpath))
+    return paths
 
 
-def cleanup_snap(path: str):
-    """Delete temp snap file."""
-    try:
-        Path(path).unlink(missing_ok=True)
-    except Exception:
-        pass
+def cleanup_snap(paths):
+    """Delete temp snap files. Accepts a single path string or list of paths."""
+    if isinstance(paths, str):
+        paths = [paths]
+    for p in paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════
@@ -3835,11 +3839,11 @@ async def websocket_endpoint(ws: WebSocket):
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
 
-                # Snap: save image to temp file for CC to Read
-                snap_path = None
+                # Snap: save images to temp files for CC to Read
+                snap_paths = []
                 content_blocks = data.get("content")
                 if content_blocks:
-                    snap_path = save_snap(content_blocks)
+                    snap_paths = save_snap(content_blocks)
 
                 # Auto-inject current time (UTC+8) + per-session house number
                 # (#N = position in THIS gateway session's history; forged CC
@@ -3933,14 +3937,22 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session.pending_jeoi_reactions = []
 
                 # Snap: prepend image instruction
-                if snap_path:
-                    snap_instruction = (
-                        f"[snap] Jeoi发了一张图片，保存在 {snap_path}，"
-                        f"请用Read工具查看后自然地回复。"
-                        f"这是阅后即焚的——看完就删，你的回复就是对这张图的全部记忆。"
-                    )
+                if snap_paths:
+                    if len(snap_paths) == 1:
+                        snap_instruction = (
+                            f"[snap] Jeoi发了一张图片，保存在 {snap_paths[0]}，"
+                            f"请用Read工具查看后自然地回复。"
+                            f"这是阅后即焚的——看完就删，你的回复就是对这张图的全部记忆。"
+                        )
+                    else:
+                        paths_str = "、".join(snap_paths)
+                        snap_instruction = (
+                            f"[snap] Jeoi发了{len(snap_paths)}张图片，保存在 {paths_str}，"
+                            f"请用Read工具并行查看所有图片后自然地回复。"
+                            f"这是阅后即焚的——看完就删，你的回复就是对这些图的全部记忆。"
+                        )
                     cli_message = snap_instruction + "\n\n" + cli_message
-                    log.info(f"Snap: saved image to {snap_path}")
+                    log.info(f"Snap: saved {len(snap_paths)} image(s) to {snap_paths}")
 
                 # Update global pebbling state (follow active chat, keep history count)
                 peb_state["t_cache"] = time_mod.time()
@@ -3978,10 +3990,10 @@ async def websocket_endpoint(ws: WebSocket):
 
                 await run_claude(cli_message, current_session, ws)
 
-                # Snap cleanup: delete temp file after CC has read it
-                if snap_path:
-                    cleanup_snap(snap_path)
-                    log.info(f"Snap: cleaned up {snap_path}")
+                # Snap cleanup: delete temp files after CC has read them
+                if snap_paths:
+                    cleanup_snap(snap_paths)
+                    log.info(f"Snap: cleaned up {len(snap_paths)} file(s)")
 
             elif event == "config:model":
                 model = data.get("model", "")
