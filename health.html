@@ -259,7 +259,7 @@ function renderDay() {
 
   // Activity ring
   const calNum = parseFloat(cal) || 0;
-  const calGoal = 300;
+  const calGoal = 240;
   const calPct = Math.min(calNum / calGoal, 1);
   const ringR = 16, ringCirc = 2 * Math.PI * ringR;
   const ringDash = calPct * ringCirc;
