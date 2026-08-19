@@ -657,7 +657,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         from pathlib import Path
         import json as _json
         from datetime import datetime as _dt
-        f = Path("/app/health_data.json")
+        f = Path("/app/palace-data/health_data.json")
         if not f.exists():
             return "暂无健康数据，请先运行快捷指令同步。"
         records = _json.loads(f.read_text())
