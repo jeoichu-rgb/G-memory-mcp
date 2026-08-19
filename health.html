@@ -126,7 +126,7 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 <div id="day-view" class="view on">
   <div class="hd">
     <button class="hd-btn" onclick="goBack()" title="返回" style="font-size:18px;">✕</button>
-    <button class="hd-btn hd-cal" onclick="showCal()" title="日历">📅</button>
+    <button class="hd-btn hd-cal" onclick="showCal()" title="日历"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="12" rx="2"/><line x1="1" y1="7" x2="15" y2="7"/><line x1="4" y1="1" x2="4" y2="5"/><line x1="12" y1="1" x2="12" y2="5"/></svg></button>
     <button class="hd-btn" onclick="navDay(-1)">←</button>
     <div class="hd-date">
       <div id="d-date">—</div>
@@ -257,9 +257,17 @@ function renderDay() {
   const hrMin = rec.hr_min || '--';
   const sleepInfo = parseSleep(rec);
 
+  // Activity ring
+  const calNum = parseFloat(cal) || 0;
+  const calGoal = 300;
+  const calPct = Math.min(calNum / calGoal, 1);
+  const ringR = 16, ringCirc = 2 * Math.PI * ringR;
+  const ringDash = calPct * ringCirc;
+  const ringColor = '#FF2D55'; // iOS move ring color
+
   html += `<div class="stats">
     <div class="stat">
-      <div class="stat-lbl">❤️ 心率</div>
+      <div class="stat-lbl"><span style="color:var(--hr)">♥</span> 心率</div>
       <div class="stat-val">${hrAvg}<span class="stat-unit"> bpm</span></div>
       <div class="stat-sub">${hrAvg !== '--' ? '↑'+hrMax+' ↓'+hrMin : '无数据'}</div>
     </div>
@@ -272,9 +280,18 @@ function renderDay() {
       <div class="stat-lbl">🏃 步数</div>
       <div class="stat-val">${steps}<span class="stat-unit"> 步</span></div>
     </div>
-    <div class="stat">
-      <div class="stat-lbl">🔥 活动能量</div>
-      <div class="stat-val">${cal}<span class="stat-unit"> 千卡</span></div>
+    <div class="stat" style="display:flex;align-items:center;gap:8px;">
+      <div style="flex:1;min-width:0;">
+        <div class="stat-lbl">🔥 活动能量</div>
+        <div class="stat-val">${cal}<span class="stat-unit"> 千卡</span></div>
+      </div>
+      <svg viewBox="0 0 44 44" width="42" height="42" style="flex-shrink:0;">
+        <circle cx="22" cy="22" r="${ringR}" fill="none" stroke="var(--border)" stroke-width="5"/>
+        <circle cx="22" cy="22" r="${ringR}" fill="none" stroke="${ringColor}" stroke-width="5"
+          stroke-dasharray="${ringDash.toFixed(1)} ${ringCirc.toFixed(1)}"
+          stroke-linecap="round" transform="rotate(-90 22 22)" opacity="0.9"/>
+        ${calPct >= 1 ? `<text x="22" y="24" fill="${ringColor}" font-size="9" text-anchor="middle" font-family="var(--mono)">✓</text>` : ''}
+      </svg>
     </div>
   </div>`;
 
@@ -308,17 +325,25 @@ function renderHRSection(rec) {
     const range = maxV - minV + 20;
     const chartH = 140;
     const chartW = 320;
-    const barW = (chartW - vals.length) / vals.length;
     const peakI = vals.indexOf(Math.max(...vals));
 
+    // 解析时间 → 一天中的分钟数 (0-1440)
+    const minutePos = times.map(t => {
+      const m = t.trim().match(/(\d{1,2}):(\d{2})/);
+      return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : -1;
+    });
+
+    const barW = 2;
     let bars = '';
     vals.forEach((v, i) => {
       if (v <= 0) return;
       const h = ((v - minV + 10) / range) * chartH;
-      const x = i * (barW + 1);
+      // 按实际时间映射到 24h 轴，fallback 到均匀分布
+      const mp = minutePos[i] >= 0 ? minutePos[i] : (i / vals.length * 1440);
+      const x = (mp / 1440) * chartW;
       const y = chartH - h;
-      const color = v >= 130 ? '#ef4444' : v >= 100 ? '#f87171' : '#fca5a5';
-      bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="1.5" fill="${color}" opacity="0.85"/>`;
+      const color = '#f87171';
+      bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="1" fill="${color}" opacity="0.85"/>`;
       if (i === peakI) {
         bars += `<text x="${x+barW/2}" y="${y-4}" fill="var(--hr)" font-size="8" text-anchor="middle" font-family="var(--mono)">${v}</text>`;
       }
@@ -337,7 +362,7 @@ function renderHRSection(rec) {
     html += `<div class="chart-wrap">
       <svg viewBox="0 0 ${chartW+25} ${chartH+10}">${zoneLines}${bars}</svg>`;
 
-    // Time labels
+    // Time labels — 固定 24h 轴
     html += '<div class="period-row">';
     ['深夜 0-6','上午 6-12','下午 12-18','晚上 18-24'].forEach(p => {
       html += `<div class="period">${p}</div>`;
