@@ -354,11 +354,25 @@ MCP 工具调用没有客户端超时——palace 侧 SSE 半开连接会让 CC 
 
 ### System Prompt 精简
 
-CC 默认 system prompt 约 1-2 万 tokens，包含完整的安全规则、版权合规、浏览器自动化指南、Git/PR 规范、30+ 内置工具使用说明等。网关用 `--system-prompt` 参数替换为精简版（约 80 tokens），只保留核心一句话。
+CC 默认 system prompt 约 1-2 万 tokens，包含完整的安全规则、版权合规、浏览器自动化指南、Git/PR 规范、30+ 内置工具使用说明等。通过环境变量 `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1` 替换为精简版，只保留核心指令。
+
+**配置位置：** `.claude/settings.json` 的 `env` 字段：
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1"
+  }
+}
+```
+
+CC CLI 启动时读取此配置自动生效，无需传命令行参数。tmux 中的常驻 CLI 同样适用——硬重启（杀 tmux + 重启网关）后新 CLI 进程会读到此 env。软重启（只杀网关）不会重启 CLI，旧进程不受影响。
 
 **被替换掉的：** 安全规则全套（注入防御、隐私保护、社会工程学防御）、版权合规规则、浏览器自动化规则、Git/PR 操作规范、所有内置工具的详细使用指南、代码风格指南、tone and style 指南
 
 **不受影响的（CC 自动注入，不走 system prompt）：** CLAUDE.md（Erik 人设）、MCP 工具 schema、MCP 配置
+
+**回滚：** 从 `settings.json` 删掉 `env` 块（或把值改为 `"0"`），硬重启即恢复默认 system prompt。
 
 配合 `permissions.deny` 把 30 个内置工具的 schema 也从上下文里移除（只保留 Bash 和 MCP 工具），首条消息固定开销从默认的 ~30k tokens 降到 ~20k（剩余主要是 CLAUDE.md + MCP schema）。后续消息走增量，开销更低。
 
