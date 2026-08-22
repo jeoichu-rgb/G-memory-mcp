@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1"
+  },
   "showThinkingSummaries": true,
   "mcpServers": {
     "claude_ai_Erik_tools": {
