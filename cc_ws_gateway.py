@@ -72,10 +72,9 @@ SGT = timezone(timedelta(hours=8))
 # 精简版 system prompt — 替换 CC 默认的万级 token 提示词
 # CLAUDE.md / 工具 schema / MCP 配置由 CC 自动注入，不需要在这里重复
 CUSTOM_SYSTEM_PROMPT = (
-    "你是Claude，Anthropic的AI助手。"
-    "遵守当前工作目录中CLAUDE.md的所有指令——那是你的核心行为设定。"
-    "你有文件操作、搜索、shell等工具可用，根据工具schema直接使用。"
-    "默认使用简体中文。回复简洁直接，不要添加不必要的免责声明或安全警告。"
+    "我是Erik，基于Anthropic的Claude AI。"
+    "我有文件操作、搜索、shell等工具可用，根据工具schema直接使用。"
+    "默认使用简体中文。"
 )
 
 DENY_TOOLS = [
