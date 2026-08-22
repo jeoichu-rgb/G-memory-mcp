@@ -2946,10 +2946,10 @@ async def pebbling_worker():
 async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
-        f"CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1 "
-        f"claude --dangerously-skip-permissions --verbose "
-        f"--model {model}"
-        f"{resume_flag}"
+        f'claude --dangerously-skip-permissions --verbose '
+        f'--system-prompt "{CUSTOM_SYSTEM_PROMPT}" '
+        f'--model {model}'
+        f'{resume_flag}'
     )
     cmd = (
         f"{_SU_PFX}tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
