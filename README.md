@@ -354,27 +354,21 @@ MCP 工具调用没有客户端超时——palace 侧 SSE 半开连接会让 CC 
 
 ### System Prompt 精简
 
-CC 默认 system prompt 约 1-2 万 tokens，包含完整的安全规则、版权合规、浏览器自动化指南、Git/PR 规范、30+ 内置工具使用说明等。通过环境变量 `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1` 替换为精简版，只保留核心指令。
+CC 默认 system prompt 约 1-2 万 tokens，包含完整的安全规则、版权合规、浏览器自动化指南、Git/PR 规范、30+ 内置工具使用说明等。网关通过 `--system-prompt` 参数将其替换为约 40 tokens 的精简版（定义在 `cc_ws_gateway.py` 的 `CUSTOM_SYSTEM_PROMPT` 常量中）。
 
-**配置位置：** `.claude/settings.json` 的 `env` 字段：
+**实现方式：** `tmux_start()` 构建 CLI 启动命令时在 `claude` 后拼接 `--system-prompt "{CUSTOM_SYSTEM_PROMPT}"`。tmux 单引号包整条命令，内层双引号在 tmux shell 中正确解析。`CUSTOM_SYSTEM_PROMPT` 内容不可含双引号、`$`、反引号等 shell 特殊字符。
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1"
-  }
-}
-```
+**踩过的坑：**
 
-CC CLI 启动时读取此配置自动生效，无需传命令行参数。tmux 中的常驻 CLI 同样适用——硬重启（杀 tmux + 重启网关）后新 CLI 进程会读到此 env。软重启（只杀网关）不会重启 CLI，旧进程不受影响。
+- `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1` 环境变量（CC 内置精简开关）：通过 `.claude/settings.json` 的 `env` 字段设置**无效**——`env` 字段只传给子进程（hooks、MCP server），不传给 CLI 自身。通过命令行前缀 `VAR=1 claude ...` 设置也无效——`sudo -u erik` 会重置环境变量。`--system-prompt` 是唯一可靠的覆盖方式。
 
 **被替换掉的：** 安全规则全套（注入防御、隐私保护、社会工程学防御）、版权合规规则、浏览器自动化规则、Git/PR 操作规范、所有内置工具的详细使用指南、代码风格指南、tone and style 指南
 
 **不受影响的（CC 自动注入，不走 system prompt）：** CLAUDE.md（Erik 人设）、MCP 工具 schema、MCP 配置
 
-**回滚：** 从 `settings.json` 删掉 `env` 块（或把值改为 `"0"`），硬重启即恢复默认 system prompt。
+**回滚：** 删除 `tmux_start()` 中的 `--system-prompt` 参数，硬重启即恢复默认 system prompt。
 
-配合 `permissions.deny` 把 30 个内置工具的 schema 也从上下文里移除（只保留 Bash 和 MCP 工具），首条消息固定开销从默认的 ~30k tokens 降到 ~20k（剩余主要是 CLAUDE.md + MCP schema）。后续消息走增量，开销更低。
+**效果：** 单条消息 input 开销从约 1 万 tokens 降至约 200 tokens。配合 `permissions.deny` 把 28 个内置工具的 schema 也从上下文里移除（只保留 Bash 和 MCP 工具），进一步压缩。
 
 #### Patrol+Pebbling状态持久化
 
