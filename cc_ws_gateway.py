@@ -2946,6 +2946,7 @@ async def pebbling_worker():
 async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
     resume_flag = f" --resume {resume_id}" if resume_id else ""
     cli_cmd = (
+        f"CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1 "
         f"claude --dangerously-skip-permissions --verbose "
         f"--model {model}"
         f"{resume_flag}"
