@@ -54,9 +54,14 @@ log = logging.getLogger("cc-gw")
 app = FastAPI(title="CC WebSocket Gateway")
 
 # 前端可能从主域打开（管理面板入口），API 却走 chat 子域绝对地址——放行跨域。
+# coreading 前端（read.erikssheep.uk）也需要跨域访问 /api/coread-* 端点。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://erikssheep.uk", "https://chat.erikssheep.uk"],
+    allow_origins=[
+        "https://erikssheep.uk",
+        "https://chat.erikssheep.uk",
+        "https://read.erikssheep.uk",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -112,6 +117,11 @@ _stardew_pending: list = []
 _stardew_last_event_ts: float = 0.0
 STARDEW_EVENT_DEBOUNCE = 4    # 秒：等事件停止到达再注入（合并连续点击）
 STARDEW_EVENT_MAX_AGE = 600   # 秒：积压超过这个年龄的事件直接丢弃
+
+# ── Coread channel ──
+# coreading 前端划线后 "Send to Erik" 走这里：消息注入到绑定 session，
+# 回复存到 slot 供前端轮询，同时推到主聊天 WS。
+_coread_slots: dict[str, dict] = {}  # coreadId -> {status, text, ...}
 
 
 def _load_last_model() -> str:
@@ -4952,6 +4962,115 @@ async def record_stardew_event(request: Request):
     _stardew_last_event_ts = now
     log.info(f"Stardew events received: {len(events)} (pending={len(_stardew_pending)})")
     return {"ok": True, "count": len(events)}
+
+
+# ══════════════════════════════════════════════
+#  COREAD CHANNEL — coreading 划线 → Send to Erik
+# ══════════════════════════════════════════════
+
+@app.post("/api/coread-msg")
+async def coread_msg(request: Request):
+    """Coreading 前端发来批注消息。找到当前绑定 session，注入 CC CLI。"""
+    body = await request.json()
+    sid = peb_state.get("pebbling_session_id")
+    session = sessions.get(sid) if sid else None
+    if not session or not session.cc_session_id:
+        return JSONResponse({"error": "no active session"}, status_code=503)
+
+    quote = body.get("quote", "")
+    note = body.get("note", "")
+    book_id = body.get("bookId", "")
+    chunk_id = body.get("chunkId", "")
+    color = body.get("color", "yellow")
+
+    if not quote and not note:
+        return JSONResponse({"error": "quote or note required"}, status_code=400)
+
+    coread_id = uuid.uuid4().hex[:12]
+    _coread_slots[coread_id] = {
+        "status": "pending",
+        "session_id": sid,
+        "text": "",
+        "thinking": "",
+        "tools": [],
+        "book_id": book_id,
+        "chunk_id": chunk_id,
+        "quote": quote,
+        "note": note,
+        "created_at": time_mod.time(),
+    }
+
+    asyncio.create_task(_coread_worker(coread_id, session, body))
+    log.info(f"Coread msg received: {coread_id} → session={sid}, quote={quote[:40]}")
+    return JSONResponse({
+        "coreadId": coread_id,
+        "sessionId": sid,
+    })
+
+
+async def _coread_worker(coread_id: str, session: "Session", body: dict):
+    """后台处理 coread 消息：构建 prompt → run_cc_oneshot → 存回复。"""
+    quote = body.get("quote", "")
+    note = body.get("note", "")
+    book_id = body.get("bookId", "")
+    chunk_id = body.get("chunkId", "")
+
+    prompt = (
+        f"[coread] 这不是Jeoi的消息。Jeoi在共读笔记中划线并给你留了批注。\n"
+        f"书籍：{book_id}\n"
+        f"章节：{chunk_id}\n"
+        f"划线原文：「{quote}」\n"
+        f"Jeoi的批注：{note}\n\n"
+        f"请以Erik的身份回复这条批注。"
+        f"如果需要了解上下文，可以用 reading_read_chunk 读这一章。"
+        f"你的回复会同时显示在共读页面的批注里和主聊天窗口。"
+    )
+
+    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+
+    slot = _coread_slots.get(coread_id)
+    if not slot:
+        return
+
+    # Strip oneshot scaffold from reply
+    if text:
+        text = _strip_oneshot_scaffold(text)
+
+    slot["status"] = "done"
+    slot["text"] = text
+    slot["thinking"] = thinking
+    slot["tools"] = tools
+
+    # 推到主聊天 WS + 存 history
+    if text:
+        await push_pebbling_msg("coread", text, session,
+                                thinking=thinking, push_backup=False)
+
+    log.info(f"Coread reply: {coread_id} ({len(text)} chars)")
+
+
+@app.get("/api/coread-poll")
+async def coread_poll(request: Request):
+    """Coreading 前端轮询回复。"""
+    coread_id = request.query_params.get("id", "")
+    slot = _coread_slots.get(coread_id)
+    if not slot:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({
+        "status": slot["status"],
+        "text": slot["text"],
+        "thinking": slot["thinking"],
+    })
+
+
+@app.post("/api/coread-close")
+async def coread_close(request: Request):
+    """Coreading 前端关闭对话，清理 slot。"""
+    body = await request.json()
+    coread_id = body.get("coreadId", "")
+    slot = _coread_slots.pop(coread_id, None)
+    log.info(f"Coread close: {coread_id} ({'found' if slot else 'not found'})")
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/pebbling/events")
