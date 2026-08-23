@@ -5023,26 +5023,25 @@ async def _coread_worker(coread_id: str, session: "Session", body: dict):
             for h in history
         )
         prompt = (
-            f"[coread] 这不是Jeoi的消息。Jeoi在共读批注的对话中继续回复了你。\n"
+            f"[coread] Jeoi在共读批注的对话中继续回复了你。\n"
             f"这是同一条批注下的后续讨论，不是新的批注。\n"
             f"书籍：{book_id}　章节：{chunk_id}\n"
             f"划线原文：「{quote}」\n\n"
             f"之前的对话：\n{history_lines}\n\n"
             f"Jeoi的新回复：{note}\n\n"
-            f"请以Erik的身份继续这个对话。直接回复文字即可，不要调用任何 reading_* 工具，"
+            f"直接回复文字即可，不要调用任何 reading_* 工具，"
             f"你的回复会被前端自动保存为批注。"
         )
     else:
         prompt = (
-            f"[coread] 这不是Jeoi的消息。Jeoi在共读笔记中划线并给你留了批注。\n"
+            f"[coread] Jeoi在共读笔记中划线并给你留了批注。\n"
             f"书籍：{book_id}\n"
             f"章节：{chunk_id}\n"
             f"划线原文：「{quote}」\n"
             f"Jeoi的批注：{note}\n\n"
-            f"请以Erik的身份回复这条批注。"
+            f"直接回复文字即可，不要调用任何 reading_* 工具，"
+            f"你的回复会被前端自动保存为批注。"
             f"如果需要了解上下文，可以用 reading_read_chunk 读这一章。"
-            f"不要调用 reading_reply_to_annotation 或 reading_annotate_passage，"
-            f"你的文字回复会被前端自动保存为批注。"
         )
 
     text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
