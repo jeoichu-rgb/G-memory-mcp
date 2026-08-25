@@ -1651,7 +1651,7 @@ def _model_match(actual: str, target: str) -> bool:
     return a == t or a.startswith(t) or t.startswith(a)
 
 
-def forge_session(old_cc_session_id: str, retain_tokens: int = 15000,
+def forge_session(old_cc_session_id: str, retain_tokens: int = 20000,
                   target_model: str = None) -> dict:
     """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 

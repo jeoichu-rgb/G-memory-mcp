@@ -249,7 +249,7 @@ CC 内置 autocompact，网关加渐进式阈值（0次→30%，1次→40%，2�
 点击"✂ 带上下文新窗"
   → 网关读当前 session 的 transcript JSONL
     /home/erik/.claude/projects/-opt-G-memory-mcp/<session-id>.jsonl
-  → 从尾部往前保留 ~15k token 的 user/assistant 事件原文
+  → 从尾部往前保留 ~20k token 的 user/assistant 事件原文
   → 超过 600 字符的工具返回压缩成首尾摘要
   → 头部插入 forge marker（含时间范围 + 保留轮数）
   → 写成新 JSONL（chown 给 erik）
@@ -259,7 +259,7 @@ CC 内置 autocompact，网关加渐进式阈值（0次→30%，1次→40%，2�
   → 📎 照常注入日记和记忆
 ```
 
-**调整保留量：** `cc_ws_gateway.py` 中 `forge_session()` 函数的 `retain_tokens` 参数（默认 15000）。token 估算是 JSON 字符数 ÷ 3，15k token ≈ 最近 5-8 轮完整对话。如果觉得不够可以调大，但注意加上 CC 固定开销（~20k）后不要超过模型上下文窗口的一半。
+**调整保留量：** `cc_ws_gateway.py` 中 `forge_session()` 函数的 `retain_tokens` 参数（默认 20000）。token 估算是 JSON 字符数 ÷ 3，20k token ≈ 最近 8-12 轮完整对话。注意加上 CC 固定开销（~20k）后不要超过模型上下文窗口的一半。
 
 **与其他功能的关系：**
 
@@ -343,7 +343,7 @@ MCP 工具调用没有客户端超时——palace 侧 SSE 半开连接会让 CC 
 - **固定注入词条表**：触发词命中按词条整块注入（记忆 id 或仓库文件），跳过模糊检索，每 session 每词条一次
 - **转录停滞看门狗**：mid-turn 停滞超 240s 自动发 Esc，营救被 MCP 半开连接卡死的 CC
 - **上下文摘要**：DeepSeek 总结对话，新 session 自动注入
-- **Session Forge**：裁剪旧 transcript 尾部 ~15k token 对话原文到新 session，--resume 续航无温度断裂
+- **Session Forge**：裁剪旧 transcript 尾部 ~20k token 对话原文到新 session，--resume 续航无温度断裂
 - **图片上传**：base64 → 临时文件 → CC Read → 阅后即焚
 - **渐进式压缩**：检测 compaction、动态阈值、前端提示
 - **两层后台系统（Pebbling） + 番茄钟 + 欲望系统**
