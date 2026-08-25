@@ -1464,18 +1464,24 @@ _TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8( #\d+)?\]")
 _AUTO_INJECT_RE = re.compile(r"^═+ 自动注入[^\n]*\n.*?\n═+\n?", re.S | re.M)
 
 
+_GATEWAY_INJECT_PREFIXES = ("[desire]", "[today]", "[nature]")
+
+
 def _strip_gateway_noise(text: str) -> str:
     """Strip gateway-injected prefixes from a user message, keeping the
-    real text: auto-injection blocks, [desire] blocks, time tags,
-    sticker/snap/call lines. Token budget should buy conversation, not noise."""
+    real text: auto-injection blocks, [desire]/[today]/[nature] blocks,
+    time tags, sticker/snap/call lines.
+    Token budget should buy conversation, not noise."""
     text = _AUTO_INJECT_RE.sub("", text)
     lines = text.split("\n")
     out = []
     i = 0
     while i < len(lines):
         s = lines[i].strip()
-        # [desire] header + its indented/blank continuation lines
-        if s.startswith("[desire]"):
+        # Gateway-injected blocks: header + indented/blank continuation lines.
+        # [desire] = drive context, [today] = day emotion trace,
+        # [nature] = libido nature candidates.
+        if any(s.startswith(p) for p in _GATEWAY_INJECT_PREFIXES):
             i += 1
             while i < len(lines) and (not lines[i].strip() or lines[i].startswith("  ")):
                 i += 1
