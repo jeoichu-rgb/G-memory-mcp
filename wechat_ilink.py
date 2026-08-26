@@ -201,6 +201,9 @@ class ILinkClient:
                 self._on_cursor_update()  # 通知上层持久化
 
             msgs = data.get("msgs", [])
+            if msgs:
+                log.info(f"getupdates: {len(msgs)} msg(s), "
+                         f"keys={list(msgs[0].keys())}")
             for m in msgs:
                 uid = m.get("ilink_user_id") or m.get("from_user_id", "")
                 ct = m.get("context_token", "")
@@ -393,7 +396,9 @@ class WeChatGateway:
     async def start(self):
         """启动网关。先尝试恢复 token，失败则等待手动触发扫码。"""
         if self._load_token():
-            log.info(f"WeChat gateway: restored token, owner={self._owner_id}")
+            log.info(f"WeChat gateway: restored token, owner={self._owner_id}, "
+                     f"cursor={self.client.cursor[:40]}..., "
+                     f"dedup={len(self._seen_msgs)} fingerprints")
             self.enabled = True
             self._login_status = "ok"
             self._poll_task = asyncio.create_task(self._poll_loop())
@@ -465,7 +470,8 @@ class WeChatGateway:
 
     async def _poll_loop(self):
         """消息长轮询主循环。"""
-        log.info("WeChat poll loop started")
+        log.info(f"WeChat poll loop started, cursor={self.client.cursor[:40]}..., "
+                 f"dedup={len(self._seen_msgs)} fingerprints")
         backoff = 0
         while self.enabled:
             try:
