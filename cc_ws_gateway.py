@@ -2526,6 +2526,12 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
         await send_telegram(content)
         await send_web_push("Erik", content)
 
+    # 微信：最后一条消息来自微信时，后台消息也推过去
+    if (wechat_gw and wechat_gw.enabled
+            and _last_msg_source == "wechat"
+            and source != "wechat"):  # 避免 wechat 回调里重复推
+        asyncio.create_task(wechat_gw.push_reply(content))
+
 
 async def push_pebbling_activity(source: str, action: str, tools: list,
                                   thinking: str, session: "Session",
