@@ -131,6 +131,7 @@ _coread_slots: dict[str, dict] = {}  # coreadId -> {status, text, ...}
 
 # ── WeChat ClawBot gateway ──
 wechat_gw: "WeChatGateway | None" = None
+_last_msg_source: str = "frontend"  # "frontend" | "wechat" — 最后一条消息来源
 
 
 def _load_last_model() -> str:
@@ -3648,6 +3649,10 @@ async def startup_load_sessions():
             peb_state["pebbling_session_id"] = session.id
             save_peb_state()
 
+            # 标记来源
+            global _last_msg_source
+            _last_msg_source = "wechat"
+
             # 注入到 CC CLI（走 oneshot，跟 coread/stardew 同路径）
             prompt = f"[wechat] {text}"
             reply, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
@@ -4056,6 +4061,7 @@ async def websocket_endpoint(ws: WebSocket):
                     log.info(f"Snap: saved {len(snap_paths)} image(s) to {snap_paths}")
 
                 # Update global pebbling state (follow active chat, keep history count)
+                _last_msg_source = "frontend"
                 peb_state["t_cache"] = time_mod.time()
                 peb_state["t_jeoi"] = time_mod.time()
                 peb_state["patrol_checks_done"] = []
@@ -4785,8 +4791,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             if not ws_ok:
                 await send_telegram(preview)
 
-        # 推到微信（分段，异步）—— chat.html 发消息的回复也同步到微信
-        if wechat_gw and wechat_gw.enabled and session._current_text:
+        # 推到微信（分段，异步）—— 只有最后一条消息来自微信时才推
+        if (wechat_gw and wechat_gw.enabled
+                and session._current_text
+                and _last_msg_source == "wechat"):
             asyncio.create_task(wechat_gw.push_reply(session._current_text))
 
         _user_msg_active = False
