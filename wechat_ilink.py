@@ -113,6 +113,8 @@ class ILinkClient:
         self._context_tokens: dict[str, str] = {}
         # (user_id → typing_ticket) 缓存
         self._typing_tickets: dict[str, str] = {}
+        # cursor 更新回调（上层持久化用）
+        self._on_cursor_update = lambda: None
 
     # ── 请求基础设施 ──
 
@@ -195,6 +197,7 @@ class ILinkClient:
 
             if data.get("get_updates_buf"):
                 self._cursor = data["get_updates_buf"]
+                self._on_cursor_update()  # 通知上层持久化
 
             msgs = data.get("msgs", [])
             for m in msgs:
@@ -365,6 +368,8 @@ class WeChatGateway:
         self._token_path = token_path
         self._login_qr_url: str | None = None
         self._login_status: str = "idle"   # idle / waiting / ok / expired
+        # cursor 变化时自动存盘，防止重启后重放历史消息
+        self.client._on_cursor_update = self._save_token
 
     def set_message_handler(self, handler):
         """
