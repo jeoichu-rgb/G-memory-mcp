@@ -2,10 +2,71 @@
 WeChat ClawBot iLink Gateway
 微信 ClawBot 接入层 —— 通过 iLink 协议让微信成为 cc_ws_gateway 的另一个前端。
 
-消息进来走 cc_ws_gateway 的完整 chat:send 路径（tmux_send_message → TranscriptTailer），
-回复按换行分段、去句末句号、逐段推回微信（模拟一条一条打字的感觉）。
 
-集成方式：cc_ws_gateway.py import 本模块，初始化 WeChatGateway 并挂载 API 路由。
+## 为什么接自己的网关
+
+大多数开源方案（WeClaude、cc-wechat-channel 等）走的是 Claude Code Channels（MCP 插件），
+直接在本地启一个 Claude Code 实例桥接微信。我们没这么做，因为我们的架构本身就不一样：
+
+我们有一个自搓的聊天网关（cc_ws_gateway.py），Claude Code CLI 在 VPS 上的 tmux 中常驻
+（真 PTY → 订阅计费），用户消息通过 tmux send-keys 注入，回复通过 transcript JSONL
+tailing 实时捕获。网关还承载了记忆宫殿、渴望系统、情绪引擎、共读批注等一整套子系统。
+
+微信只是在这个架构上多开一个入口——消息进同一个 tmux CLI，回复从同一条 transcript 出来，
+session 互通、历史互通、所有后台系统共享。不需要额外的 Claude Code 实例，不走 API，
+不额外花钱。
+
+
+## 架构
+
+                ┌── chat.html ──── WS ──────────┐
+                │                                ↓
+微信 ── iLink ──┤           cc_ws_gateway.py     │
+                │             │        ↑         │
+                └─────────────┘        │         │
+                              ↓        │         │
+                     tmux send-keys    │         │
+                              ↓        │         │
+                    CC CLI (tmux PTY)   │         │
+                              │        │         │
+                              ↓        │         │
+                    transcript JSONL ──┘         │
+                              │                  │
+                    TranscriptTailer (400ms poll) │
+                              │                  │
+                              └──────────────────┘
+
+    消息入口：chat.html 走 WS → run_claude（实时 streaming）
+              微信 走 iLink → run_cc_oneshot（等完整回复）
+    回复出口：chat.html 通过 WS 实时推送（带 CoT / 工具调用 / streaming）
+              微信 通过 iLink sendMessage 分段推送（纯正文，去 CoT/工具/markdown）
+    Session：共享 pebbling_session_id，任一前端发消息都更新绑定，自动互通
+
+
+## 微信端的回复处理
+
+CC CLI 的原始回复包含 thinking（CoT）、tool_use 块、markdown 格式、内部标记
+（<!--voice:-->、<!--react:-->）等。微信端做了清理和分段：
+
+    1. 剥离 CoT、工具调用 —— 微信只收纯正文
+    2. 清理 markdown（**粗体** → 粗体，[链接](url) → 链接）
+    3. 按换行分段 —— 我回复里怎么换行就怎么拆，颜文字跟随所在段落
+    4. 去段末句号（。）—— 一条一条发不需要句号，！？保留
+    5. 逐段 sendMessage，段间按长度延迟（0.3s–1.0s）—— 模拟打字节奏
+    6. 发之前发 sendTyping（微信显示"对方正在输入"）
+
+
+## 来源路由
+
+网关用 _last_msg_source 标记最后一条消息来自哪个前端：
+    - 从微信发 → 回复推微信 + 推 chat.html
+    - 从 chat.html 发 → 回复只推 chat.html，不推微信
+避免在 chat.html 正常聊天时微信被刷屏。
+
+
+## 集成方式
+
+cc_ws_gateway.py import 本模块，初始化 WeChatGateway 并挂载 API 路由。
 详见文件末尾的集成说明。
 
 iLink API 参考：https://github.com/x1ah/wechat-ilink-demo
