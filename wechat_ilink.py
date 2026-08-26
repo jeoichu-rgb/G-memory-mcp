@@ -79,6 +79,7 @@ curl -X POST https://chat.erikssheep.uk/api/wechat/login  会返回一个 qr_url
 """
 
 import asyncio
+import hashlib
 import json
 import uuid
 import base64
@@ -359,6 +360,8 @@ class WeChatGateway:
       await gateway.stop()
     """
 
+    DEDUP_WINDOW = 600  # 10 分钟去重窗口
+
     def __init__(self, token_path: Path = TOKEN_PATH):
         self.client = ILinkClient()
         self.enabled: bool = False
@@ -368,6 +371,9 @@ class WeChatGateway:
         self._token_path = token_path
         self._login_qr_url: str | None = None
         self._login_status: str = "idle"   # idle / waiting / ok / expired
+        # 消息去重：(fingerprint → timestamp)，持久化到 token 文件
+        # iLink cursor 不完全可靠，软重启后仍可能重推旧消息
+        self._seen_msgs: dict[str, float] = {}
         # cursor 变化时自动存盘，防止重启后重放历史消息
         self.client._on_cursor_update = self._save_token
 
@@ -500,6 +506,20 @@ class WeChatGateway:
         if not text:
             return
 
+        # ── 去重：iLink cursor 不可靠，重启后可能重推旧消息 ──
+        fp = hashlib.md5(f"{user_id}:{text}".encode()).hexdigest()[:16]
+        now = time_mod.time()
+        if fp in self._seen_msgs:
+            age = now - self._seen_msgs[fp]
+            log.info(f"WeChat dedup: skip (seen {age:.0f}s ago) {text[:40]}")
+            return
+        self._seen_msgs[fp] = now
+        # 清理过期指纹
+        cutoff = now - self.DEDUP_WINDOW
+        self._seen_msgs = {k: v for k, v in self._seen_msgs.items()
+                           if v > cutoff}
+        self._save_token()
+
         # 记住 owner（第一个发消息的人）
         if not self._owner_id:
             self._owner_id = user_id
@@ -567,12 +587,16 @@ class WeChatGateway:
     # ── Token 持久化 ──
 
     def _save_token(self):
+        # 只保留去重窗口内的指纹
+        cutoff = time_mod.time() - self.DEDUP_WINDOW
+        recent = {k: v for k, v in self._seen_msgs.items() if v > cutoff}
         data = {
             "bot_token": self.client.bot_token,
             "base_url": self.client.base_url,
             "cursor": self.client.cursor,
             "owner_id": self._owner_id,
             "saved_at": time_mod.time(),
+            "seen_msgs": recent,
         }
         try:
             self._token_path.parent.mkdir(parents=True, exist_ok=True)
@@ -591,6 +615,12 @@ class WeChatGateway:
             self.client.base_url = data.get("base_url", ILINK_BASE)
             self.client.cursor = data.get("cursor", "")
             self._owner_id = data.get("owner_id")
+            # 恢复去重指纹
+            saved_seen = data.get("seen_msgs", {})
+            if isinstance(saved_seen, dict):
+                cutoff = time_mod.time() - self.DEDUP_WINDOW
+                self._seen_msgs = {k: v for k, v in saved_seen.items()
+                                   if v > cutoff}
             return bool(self.client.bot_token)
         except Exception as e:
             log.error(f"WeChat token load error: {e}")
