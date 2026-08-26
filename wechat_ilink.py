@@ -70,6 +70,12 @@ cc_ws_gateway.py import 本模块，初始化 WeChatGateway 并挂载 API 路由
 详见文件末尾的集成说明。
 
 iLink API 参考：https://github.com/x1ah/wechat-ilink-demo
+iLink token 会过期（不确定多久，可能几天到几周）。过期后日志会打 WeChat session expired，重新 POST /api/wechat/login 扫码就行。token 持久化在 /opt/G-memory-mcp/wechat_bot_token.json，重启网关自动恢复。
+curl -X POST https://chat.erikssheep.uk/api/wechat/login  会返回一个 qr_url（weixin:// 开头的链接）。你需要把这个链接生成二维码，然后用微信扫。
+几种方式生成二维码：
+终端里：echo "那个weixin://链接" | qrencode -t UTF8（装了 qrencode 的话）
+或者随便找个在线二维码生成器贴进去
+扫码后微信会弹确认，点确认就行
 """
 
 import asyncio
