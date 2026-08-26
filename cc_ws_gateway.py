@@ -1445,6 +1445,8 @@ def _has_tool_round(seq: list) -> bool:
 # "[tag] Not Jeoi. …" / "[tag] 这不是Jeoi的消息…"
 # (patrol/pebbling/desire/curiosity-seeds/libido-memory in desire_gateway.py).
 _ONESHOT_RE = re.compile(r"^\[[^\]]+\]\s*(Not Jeoi|这不是Jeoi的消息)")
+# Compressed stubs from a previous forge — 【tag】（你自己的后台…）
+_COMPRESSED_STUB_RE = re.compile(r"^【[^】]+】（你自己的后台")
 _DESIRE_WANT_RE = re.compile(r"你的欲望：(.+)")
 _ACTION_ONLY_RE = re.compile(r"^\s*ACTION\s*:[^\n]*$", re.M | re.I)
 
@@ -1829,6 +1831,28 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 20000,
     # Semantic triage: transient tool rounds (browsing/devices/memory reads)
     # and failed rounds drop whole — my own words in between survive.
     cleaned = _triage_tool_rounds(cleaned)
+
+    # Drop compressed oneshot stubs from previous forges.
+    # _flush_oneshot compresses patrol/desire/pebbling rounds into
+    # 【tag】（你自己的后台…） stubs, but _ONESHOT_RE only matches the
+    # raw [tag] 这不是Jeoi… format — so on a second forge the stubs
+    # survive as "normal" messages and eat the retain budget.  The real
+    # content (diary, memory) is already persisted via palace; these
+    # stubs contribute nothing that the retain budget should buy.
+    stub_drop = set()
+    for i, ev in enumerate(cleaned):
+        if not _is_plain_user(ev):
+            continue
+        text = (ev.get("message") or {}).get("content", "")
+        if isinstance(text, str) and _COMPRESSED_STUB_RE.match(text.strip()):
+            stub_drop.add(i)
+            # Drop the matching assistant reply too
+            if i + 1 < len(cleaned) and cleaned[i + 1].get("type") == "assistant":
+                stub_drop.add(i + 1)
+    if stub_drop:
+        cleaned = [ev for i, ev in enumerate(cleaned) if i not in stub_drop]
+        log.info(f"Forge: dropped {len(stub_drop)} compressed stub events "
+                 f"({len(stub_drop) // 2} rounds from previous forges)")
 
     # Route Guard cut (§7.2): everything at/after the first drifted assistant
     # event is contamination — a different model wrote it. Cut before it; the
