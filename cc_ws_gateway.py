@@ -41,6 +41,12 @@ try:
 except ImportError:
     DESIRE_ENABLED = False
 
+try:
+    from wechat_ilink import WeChatGateway
+    WECHAT_ENABLED = True
+except ImportError:
+    WECHAT_ENABLED = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -122,6 +128,9 @@ STARDEW_EVENT_MAX_AGE = 600   # 秒：积压超过这个年龄的事件直接丢
 # coreading 前端划线后 "Send to Erik" 走这里：消息注入到绑定 session，
 # 回复存到 slot 供前端轮询，同时推到主聊天 WS。
 _coread_slots: dict[str, dict] = {}  # coreadId -> {status, text, ...}
+
+# ── WeChat ClawBot gateway ──
+wechat_gw: "WeChatGateway | None" = None
 
 
 def _load_last_model() -> str:
@@ -3603,6 +3612,58 @@ async def startup_load_sessions():
     asyncio.create_task(ws_keepalive())
     asyncio.create_task(stardew_event_worker())
 
+    # WeChat ClawBot gateway
+    if WECHAT_ENABLED:
+        global wechat_gw
+        wechat_gw = WeChatGateway()
+
+        async def _wechat_on_message(user_id: str, text: str):
+            """微信消息 → 注入到 pebbling_session_id 绑定的 session。"""
+            sid = peb_state.get("pebbling_session_id")
+            session = sessions.get(sid) if sid else None
+            if not session or not session.cc_session_id:
+                log.warning("WeChat msg: no active session, ignoring")
+                return
+
+            # 存用户消息到历史
+            append_message(session.id, "user", text, source="wechat")
+
+            # 推到 chat.html（如果 WS 在线）
+            if active_ws:
+                try:
+                    await active_ws.send_json({
+                        "event": "pebbling:message",
+                        "source": "wechat", "role": "user",
+                        "content": text,
+                        "time": datetime.now(SGT).strftime("%H:%M"),
+                    })
+                except Exception:
+                    pass
+
+            # 更新 pebbling 状态（跟 chat:send 对齐）
+            peb_state["t_cache"] = time_mod.time()
+            peb_state["t_jeoi"] = time_mod.time()
+            peb_state["patrol_checks_done"] = []
+            peb_state["pebbling_history"] = []
+            peb_state["pebbling_session_id"] = session.id
+            save_peb_state()
+
+            # 注入到 CC CLI（走 oneshot，跟 coread/stardew 同路径）
+            prompt = f"[wechat] {text}"
+            reply, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+
+            if reply:
+                reply = _strip_oneshot_scaffold(reply)
+                # 推到 chat.html + 存历史
+                await push_pebbling_msg("wechat", reply, session,
+                                        thinking=thinking, push_backup=False)
+                # 推到微信（分段，异步）
+                asyncio.create_task(wechat_gw.push_reply(reply))
+
+        wechat_gw.set_message_handler(_wechat_on_message)
+        await wechat_gw.start()
+        log.info(f"WeChat gateway: {wechat_gw.status}")
+
     # Push config check
     log.info(f"TG_BOT_TOKEN={'set ('+TG_BOT_TOKEN[:8]+'...)' if TG_BOT_TOKEN else 'EMPTY'}, "
              f"TG_CHAT_ID={TG_CHAT_ID or 'EMPTY'}, "
@@ -4724,6 +4785,10 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             if not ws_ok:
                 await send_telegram(preview)
 
+        # 推到微信（分段，异步）—— chat.html 发消息的回复也同步到微信
+        if wechat_gw and wechat_gw.enabled and session._current_text:
+            asyncio.create_task(wechat_gw.push_reply(session._current_text))
+
         _user_msg_active = False
 
     except Exception as e:
@@ -5119,6 +5184,27 @@ async def coread_close(request: Request):
     slot = _coread_slots.pop(coread_id, None)
     log.info(f"Coread close: {coread_id} ({'found' if slot else 'not found'})")
     return JSONResponse({"ok": True})
+
+
+# ══════════════════════════════════════════════
+#  WECHAT CLAWBOT — 状态 & 登录
+# ══════════════════════════════════════════════
+
+@app.get("/api/wechat/status")
+async def wechat_status():
+    """WeChat ClawBot 网关状态。"""
+    if not wechat_gw:
+        return JSONResponse({"enabled": False, "reason": "module not loaded"})
+    return JSONResponse(wechat_gw.status)
+
+
+@app.post("/api/wechat/login")
+async def wechat_login():
+    """发起 WeChat ClawBot 扫码登录。返回二维码 URL。"""
+    if not wechat_gw:
+        return JSONResponse({"error": "WeChat module not loaded"}, status_code=503)
+    result = await wechat_gw.login_qrcode()
+    return JSONResponse(result)
 
 
 @app.get("/api/pebbling/events")
