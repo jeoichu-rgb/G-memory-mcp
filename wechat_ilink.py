@@ -236,7 +236,11 @@ class ILinkClient:
             },
             "base_info": self._base_info(),
         }
-        return await self._post("ilink/bot/sendmessage", body)
+        result = await self._post("ilink/bot/sendmessage", body)
+        # 打印完整返回，debug iLink 静默吞消息的问题
+        ret = result.get("ret", result.get("errcode", "?"))
+        log.info(f"sendmessage response: ret={ret} body={json.dumps(result, ensure_ascii=False)[:300]}")
+        return result
 
     # ── Typing 状态 ──
 
