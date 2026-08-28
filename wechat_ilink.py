@@ -126,6 +126,8 @@ class ILinkClient:
             "Content-Type": "application/json",
             "AuthorizationType": "ilink_bot_token",
             "X-WECHAT-UIN": uin_b64,
+            "iLink-App-Id": "bot",
+            "iLink-App-ClientVersion": "67109894",
         }
         if self.bot_token:
             h["Authorization"] = f"Bearer {self.bot_token}"
@@ -133,7 +135,10 @@ class ILinkClient:
 
     @staticmethod
     def _base_info() -> dict:
-        return {"channel_version": CHANNEL_VERSION}
+        return {
+            "channel_version": CHANNEL_VERSION,
+            "bot_agent": "G-memory-mcp/1.0.0 (python)",
+        }
 
     async def _post(self, endpoint: str, payload: dict,
                     timeout: float = 15) -> dict:
