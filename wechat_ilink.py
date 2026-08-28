@@ -213,7 +213,6 @@ class ILinkClient:
                 ct = m.get("context_token", "")
                 if uid and ct:
                     self._context_tokens[uid] = ct
-                    log.info(f"getupdates ct cached: uid={uid[:20]}... ct={ct[:40]}...")
             return msgs
         except SessionExpiredError:
             raise
@@ -242,10 +241,10 @@ class ILinkClient:
             },
             "base_info": self._base_info(),
         }
-        log.info(f"sendmessage req: to={user_id} ct={ct[:40]}... text={text[:30]}")
         result = await self._post("ilink/bot/sendmessage", body)
         ret = result.get("ret", result.get("errcode", "?"))
-        log.info(f"sendmessage resp: ret={ret} full={json.dumps(result, ensure_ascii=False)[:300]}")
+        if ret != 0:
+            log.warning(f"sendmessage failed: ret={ret} body={json.dumps(result, ensure_ascii=False)[:300]}")
         return result
 
     # ── Typing 状态 ──
