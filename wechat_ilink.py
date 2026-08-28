@@ -93,7 +93,7 @@ import httpx
 log = logging.getLogger("wechat-gw")
 
 ILINK_BASE = "https://ilinkai.weixin.qq.com"
-CHANNEL_VERSION = "1.0.2"
+CHANNEL_VERSION = "2.4.6"
 TOKEN_PATH = Path("/opt/G-memory-mcp/wechat_bot_token.json")
 
 
