@@ -3659,10 +3659,6 @@ async def startup_load_sessions():
             global _last_msg_source
             _last_msg_source = "wechat"
 
-            # ── DEBUG: 立即 echo 测试 context_token 是否有效 ──
-            echo_result = await wechat_gw.client.send_message(user_id, f"echo: {text[:20]}")
-            log.info(f"WeChat echo test: {echo_result}")
-
             # 注入到 CC CLI（走 oneshot，跟 coread/stardew 同路径）
             prompt = f"[wechat] {text}"
             reply, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)

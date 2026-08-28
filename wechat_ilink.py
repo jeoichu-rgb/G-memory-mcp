@@ -284,6 +284,32 @@ class ILinkClient:
         except Exception:
             pass
 
+    # ── 生命周期通知 ──
+
+    async def notify_start(self) -> dict:
+        """通知 iLink 服务器 bot 已上线，激活消息投递。
+        必须在 login 成功后、getupdates 之前调用。"""
+        result = await self._post(
+            "ilink/bot/msg/notifystart",
+            {"base_info": self._base_info()},
+            timeout=15,
+        )
+        log.info(f"notifystart: {result}")
+        return result
+
+    async def notify_stop(self) -> dict:
+        """通知 iLink 服务器 bot 下线。"""
+        try:
+            result = await self._post(
+                "ilink/bot/msg/notifystop",
+                {"base_info": self._base_info()},
+                timeout=10,
+            )
+            log.info(f"notifystop: {result}")
+            return result
+        except Exception:
+            return {}
+
     @property
     def cursor(self) -> str:
         return self._cursor
@@ -409,6 +435,8 @@ class WeChatGateway:
                      f"dedup={len(self._seen_msg_ids)} msg_ids")
             self.enabled = True
             self._login_status = "ok"
+            # 通知 iLink 服务器 bot 上线，激活消息投递
+            await self.client.notify_start()
             self._poll_task = asyncio.create_task(self._poll_loop())
         else:
             log.info("WeChat gateway: no saved token, call login_qrcode() to start")
@@ -417,6 +445,8 @@ class WeChatGateway:
     async def stop(self):
         """停止网关。"""
         self.enabled = False
+        # 通知 iLink 服务器 bot 下线
+        await self.client.notify_stop()
         if self._poll_task:
             self._poll_task.cancel()
             try:
@@ -458,6 +488,7 @@ class WeChatGateway:
                     self._save_token()
                     self.enabled = True
                     self._login_status = "ok"
+                    await self.client.notify_start()
                     self._poll_task = asyncio.create_task(self._poll_loop())
                     log.info("WeChat gateway: login success!")
                     return
