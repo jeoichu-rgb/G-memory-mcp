@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Health Weekly Report</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f0f17;color:#e8e5e0;font-family:'Inter',sans-serif;padding:32px 28px;max-width:920px;margin:0 auto}
+
+.header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:32px}
+.header h1{font-size:24px;font-weight:500;color:#f2f0ec;letter-spacing:-0.3px}
+.header .subtitle{font-size:13px;color:#6b6878;margin-top:5px;font-weight:400}
+
+.range-selector{display:flex;gap:6px}
+.range-btn{
+  background:transparent;border:1px solid #2e2c3a;color:#7b7888;
+  padding:7px 18px;border-radius:20px;font-size:12px;cursor:pointer;
+  font-family:inherit;transition:all 0.2s;font-weight:400;
+}
+.range-btn.active{background:#4a7cf7;border-color:#4a7cf7;color:#fff;font-weight:500}
+.range-btn:hover:not(.active){border-color:#4a4858;color:#c0bdb8}
+
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:32px}
+.stat-card{
+  background:#16161f;border-radius:16px;padding:18px 20px;
+  border:1px solid #1e1e2a;position:relative;overflow:hidden;
+}
+.stat-icon{
+  width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
+  justify-content:center;margin-bottom:12px;
+}
+.stat-icon svg{width:20px;height:20px}
+.stat-icon.sleep{background:rgba(91,142,247,0.12)}
+.stat-icon.sleep svg{stroke:#5b8ef7}
+.stat-icon.hr{background:rgba(229,107,107,0.12)}
+.stat-icon.hr svg{stroke:#e56b6b}
+.stat-icon.steps{background:rgba(78,202,122,0.12)}
+.stat-icon.steps svg{stroke:#4eca7a}
+.stat-icon.energy{background:rgba(232,168,85,0.12)}
+.stat-icon.energy svg{stroke:#e8a855}
+
+.stat-label{font-size:12px;color:#6b6878;margin-bottom:6px;font-weight:400}
+.stat-value{font-size:28px;font-weight:500;color:#f2f0ec;letter-spacing:-0.5px}
+.stat-unit{font-size:13px;font-weight:400;color:#6b6878;margin-left:3px}
+.stat-sub{font-size:11px;color:#5a5766;margin-top:6px}
+.stat-sparkline{position:absolute;bottom:0;right:0;width:80px;height:40px;opacity:0.3}
+
+.section{margin-bottom:32px}
+.section-title{
+  font-size:14px;font-weight:500;color:#9b98a4;margin-bottom:14px;
+  display:flex;align-items:center;gap:8px;letter-spacing:0.3px;
+  text-transform:uppercase;
+}
+.section-title svg{width:18px;height:18px;stroke-width:1.8}
+
+.chart-card{background:#16161f;border-radius:16px;padding:22px;border:1px solid #1e1e2a}
+
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:32px}
+
+.sleep-legend{display:flex;gap:20px;margin-top:14px;justify-content:center}
+.sleep-legend-item{display:flex;align-items:center;gap:7px;font-size:12px;color:#7b7888}
+.sleep-legend-dot{width:8px;height:8px;border-radius:4px}
+
+.summary-card{
+  background:#16161f;border-radius:16px;padding:22px 24px;
+  border:1px solid #1e1e2a;font-size:14px;line-height:1.9;color:#9b98a4;
+}
+.summary-card strong{color:#e8e5e0;font-weight:500}
+.summary-hl{color:#5b8ef7;font-weight:500}
+
+.summary-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.ds-btn{
+  background:transparent;border:1px solid #2e2c3a;color:#6b6878;
+  padding:6px 18px;border-radius:20px;font-size:12px;cursor:pointer;
+  font-family:inherit;transition:all 0.2s;display:inline-flex;align-items:center;gap:6px;
+}
+.ds-btn:hover{border-color:#4a7cf7;color:#4a7cf7}
+.ds-btn svg{width:14px;height:14px}
+
+canvas{width:100%!important}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Health Report</h1>
+    <div class="subtitle" id="date-range">2026.08.22 — 08.28</div>
+  </div>
+  <div class="range-selector">
+    <button class="range-btn active" data-range="7">7 days</button>
+    <button class="range-btn" data-range="14">14 days</button>
+    <button class="range-btn" data-range="30">30 days</button>
+  </div>
+</div>
+
+<div class="stats-row" id="stats-row"></div>
+
+<div class="section">
+  <div class="section-title">
+    <svg fill="none" viewBox="0 0 24 24" stroke="#5b8ef7"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg>
+    Sleep structure
+  </div>
+  <div class="chart-card">
+    <canvas id="sleepChart" height="200"></canvas>
+    <div class="sleep-legend">
+      <div class="sleep-legend-item"><div class="sleep-legend-dot" style="background:#1a3f8a"></div> Deep</div>
+      <div class="sleep-legend-item"><div class="sleep-legend-dot" style="background:#3a7ae8"></div> Core</div>
+      <div class="sleep-legend-item"><div class="sleep-legend-dot" style="background:#7cb8f7"></div> REM</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">
+    <svg fill="none" viewBox="0 0 24 24" stroke="#7c6ec4"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg>
+    Bedtime · Wake
+  </div>
+  <div class="chart-card">
+    <canvas id="bedtimeChart" height="180"></canvas>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="section">
+    <div class="section-title">
+      <svg fill="none" viewBox="0 0 24 24" stroke="#e56b6b"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
+      Heart rate
+    </div>
+    <div class="chart-card">
+      <canvas id="hrChart" height="200"></canvas>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">
+      <svg fill="none" viewBox="0 0 24 24" stroke="#4eca7a"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Steps · Energy
+    </div>
+    <div class="chart-card">
+      <canvas id="stepsChart" height="200"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">
+    <svg fill="none" viewBox="0 0 24 24" stroke="#9b98a4"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    Summary
+  </div>
+  <div class="summary-card">
+    <div class="summary-header">
+      <span style="font-size:12px;color:#6b6878">AI-generated analysis</span>
+      <button class="ds-btn" onclick="this.innerHTML='Sent ✓';this.style.borderColor='#4eca7a';this.style.color='#4eca7a'">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M22 2L11 13"/><path d="M22 2L15 22l-4-9-9-4z"/></svg>
+        Send to DeepSeek
+      </button>
+    </div>
+    <div id="summary"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+const DATA = [
+  {date:'8/22',steps:2090,cal:149.16,bedtime:'01:01',wake:'07:38',totalMin:353,deep:35,core:268,rem:50,hrAvg:68,hrHi:138,hrLo:49},
+  {date:'8/23',steps:973, cal:80.21, bedtime:'00:25',wake:'09:13',totalMin:484,deep:86,core:314,rem:84,hrAvg:69,hrHi:117,hrLo:48},
+  {date:'8/24',steps:862, cal:63.62, bedtime:'01:45',wake:'09:24',totalMin:402,deep:79,core:267,rem:56,hrAvg:69,hrHi:112,hrLo:45},
+  {date:'8/25',steps:2874,cal:207.57,bedtime:'01:30',wake:'09:16',totalMin:401,deep:74,core:278,rem:49,hrAvg:71,hrHi:136,hrLo:48},
+  {date:'8/26',steps:147, cal:36.84, bedtime:'00:28',wake:'10:25',totalMin:559,deep:115,core:383,rem:61,hrAvg:65,hrHi:114,hrLo:46},
+  {date:'8/27',steps:2983,cal:195.65,bedtime:'02:33',wake:'09:35',totalMin:381,deep:80,core:278,rem:23,hrAvg:72,hrHi:147,hrLo:53},
+  {date:'8/28',steps:760, cal:71.96, bedtime:'01:14',wake:'08:32',totalMin:397,deep:61,core:300,rem:36,hrAvg:69,hrHi:111,hrLo:48},
+];
+
+const gridColor = 'rgba(255,255,255,0.04)';
+const tickColor = '#4a4858';
+const tooltipStyle = {backgroundColor:'#1e1e2a',titleColor:'#e8e5e0',bodyColor:'#9b98a4',borderColor:'#2e2c3a',borderWidth:1,cornerRadius:10,padding:12};
+
+Chart.defaults.color = tickColor;
+Chart.defaults.font.family = 'Inter';
+Chart.defaults.font.size = 11;
+
+function fmtMin(m){const h=Math.floor(m/60);const mm=Math.round(m%60);return h>0?h+'h'+(mm>0?String(mm).padStart(2,'0')+'m':''):mm+'m'}
+function timeToHour(t){const[h,m]=t.split(':').map(Number);let hr=h+m/60;if(hr<12)hr+=24;return hr}
+function hourToLabel(h){let hh=h>=24?h-24:h;const hour=Math.floor(hh);const min=Math.round((hh-hour)*60);return String(hour).padStart(2,'0')+':'+String(min).padStart(2,'0')}
+
+// ── chart instance store ──
+let charts = {};
+function destroyCharts(){Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}});charts={}}
+
+// ── fresh canvas (avoids Chart.js residue) ──
+function freshCtx(id){
+  const old=document.getElementById(id);
+  const c=document.createElement('canvas');
+  c.id=id;c.height=old.height||200;
+  old.replaceWith(c);
+  return c.getContext('2d');
+}
+
+// ── stat cards ──
+function renderStatCards(data){
+  const avg=(arr)=>arr.reduce((a,b)=>a+b,0)/arr.length;
+  const avgSleep=avg(data.map(d=>d.totalMin));
+  const sleepH=Math.floor(avgSleep/60), sleepM=Math.round(avgSleep%60);
+  const avgHr=Math.round(avg(data.map(d=>d.hrAvg)));
+  const avgSteps=Math.round(avg(data.map(d=>d.steps)));
+  const avgCal=Math.round(avg(data.map(d=>d.cal)));
+
+  const cards=[
+    {cls:'sleep',label:'Avg. sleep',
+     icon:'<path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/>',
+     value:sleepH+'<span class="stat-unit">h</span>'+String(sleepM).padStart(2,'0')+'<span class="stat-unit">m</span>',
+     sub:'Range '+fmtMin(Math.min(...data.map(d=>d.totalMin)))+' – '+fmtMin(Math.max(...data.map(d=>d.totalMin)))},
+    {cls:'hr',label:'Avg. heart rate',
+     icon:'<path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>',
+     value:avgHr+'<span class="stat-unit">bpm</span>',
+     sub:'Range '+Math.min(...data.map(d=>d.hrLo))+' – '+Math.max(...data.map(d=>d.hrHi))+' bpm'},
+    {cls:'steps',label:'Avg. steps',
+     icon:'<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+     value:avgSteps.toLocaleString(),
+     sub:data.filter(d=>d.steps>2000).length+' days > 2,000'},
+    {cls:'energy',label:'Avg. energy',
+     icon:'<path d="M12 22c5.52 0 8-3.58 8-8 0-5-4-9.5-8-13C8 4.5 4 9 4 14c0 4.42 2.48 8 8 8z"/>',
+     value:avgCal+'<span class="stat-unit">kcal</span>',
+     sub:'Range '+Math.round(Math.min(...data.map(d=>d.cal)))+' – '+Math.round(Math.max(...data.map(d=>d.cal)))+' kcal'}
+  ];
+
+  document.getElementById('stats-row').innerHTML=cards.map(c=>`
+    <div class="stat-card">
+      <div class="stat-icon ${c.cls}"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">${c.icon}</svg></div>
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+// ── all charts ──
+function renderCharts(data){
+  destroyCharts();
+  const labels=data.map(d=>d.date);
+
+  // 1) Sleep stacked bar
+  const sCtx=freshCtx('sleepChart');
+  const dG=sCtx.createLinearGradient(0,300,0,0);dG.addColorStop(0,'#0e2560');dG.addColorStop(1,'#1a4494');
+  const cG=sCtx.createLinearGradient(0,300,0,0);cG.addColorStop(0,'#2a5ab0');cG.addColorStop(1,'#4a8af5');
+  const rG=sCtx.createLinearGradient(0,300,0,0);rG.addColorStop(0,'#5a9ae8');rG.addColorStop(1,'#90c8ff');
+  charts.sleep=new Chart(sCtx,{
+    type:'bar',
+    data:{labels,datasets:[
+      {label:'Deep',data:data.map(d=>d.deep),backgroundColor:dG,borderRadius:6,borderSkipped:false},
+      {label:'Core',data:data.map(d=>d.core),backgroundColor:cG,borderRadius:6,borderSkipped:false},
+      {label:'REM', data:data.map(d=>d.rem), backgroundColor:rG,borderRadius:{topLeft:6,topRight:6},borderSkipped:false}
+    ]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{...tooltipStyle,callbacks:{
+      label:ctx=>ctx.dataset.label+': '+fmtMin(ctx.raw),
+      afterBody:items=>{const i=items[0].dataIndex;return 'Total: '+fmtMin(data[i].totalMin)}
+    }}},scales:{
+      x:{stacked:true,grid:{display:false},ticks:{color:'#5a5766'}},
+      y:{stacked:true,grid:{color:gridColor,drawBorder:false},ticks:{callback:v=>fmtMin(v),color:'#5a5766'}}
+    }}
+  });
+
+  // 2) Bedtime / Wake
+  const bedtimeH=data.map(d=>timeToHour(d.bedtime));
+  const wakeH=data.map(d=>timeToHour(d.wake));
+  const allH=[...bedtimeH,...wakeH];
+  const yMin=Math.floor(Math.min(...allH));
+  const yMax=Math.ceil(Math.max(...allH))+0.5;
+
+  const bCtx=freshCtx('bedtimeChart');
+  const bG=bCtx.createLinearGradient(0,0,0,300);bG.addColorStop(0,'rgba(124,110,196,0.2)');bG.addColorStop(1,'rgba(124,110,196,0)');
+  const wG=bCtx.createLinearGradient(0,0,0,300);wG.addColorStop(0,'rgba(232,193,112,0.15)');wG.addColorStop(1,'rgba(232,193,112,0)');
+  charts.bedtime=new Chart(bCtx,{
+    type:'line',
+    data:{labels,datasets:[
+      {label:'Bedtime',data:bedtimeH,borderColor:'#7c6ec4',backgroundColor:bG,
+       pointBackgroundColor:'#7c6ec4',pointBorderColor:'#16161f',pointBorderWidth:2,
+       pointRadius:5,pointHoverRadius:7,tension:0.4,fill:true,borderWidth:2.5},
+      {label:'Wake',data:wakeH,borderColor:'#e8c170',backgroundColor:wG,
+       pointBackgroundColor:'#e8c170',pointBorderColor:'#16161f',pointBorderWidth:2,
+       pointRadius:5,pointHoverRadius:7,tension:0.4,fill:true,borderWidth:2.5}
+    ]},
+    options:{responsive:true,plugins:{
+      legend:{labels:{usePointStyle:true,pointStyle:'circle',padding:20,color:'#7b7888',font:{size:12}}},
+      tooltip:{...tooltipStyle,callbacks:{label:ctx=>ctx.dataset.label+': '+hourToLabel(ctx.raw)}}
+    },scales:{
+      x:{grid:{display:false},ticks:{color:'#5a5766'}},
+      y:{reverse:true,grid:{color:gridColor,drawBorder:false},min:yMin,max:yMax,
+         ticks:{stepSize:1,callback:v=>hourToLabel(v),color:'#5a5766'}}
+    }}
+  });
+
+  // 3) Heart rate
+  const hrMin=Math.floor(Math.min(...data.map(d=>d.hrLo))/5)*5;
+  const hCtx=freshCtx('hrChart');
+  const hG=hCtx.createLinearGradient(0,0,0,300);hG.addColorStop(0,'rgba(91,142,247,0.6)');hG.addColorStop(1,'rgba(91,142,247,0.08)');
+  charts.hr=new Chart(hCtx,{
+    type:'bar',
+    data:{labels,datasets:[
+      {label:'Heart rate',data:data.map(d=>d.hrAvg),backgroundColor:hG,
+       borderRadius:6,borderSkipped:false,barPercentage:0.55,order:2},
+      {label:'Trend',data:data.map(d=>d.hrAvg),type:'line',borderColor:'#5b8ef7',backgroundColor:'transparent',
+       pointBackgroundColor:'#5b8ef7',pointBorderColor:'#16161f',pointBorderWidth:2,
+       pointRadius:4,pointHoverRadius:6,tension:0.4,borderWidth:2.5,order:1}
+    ]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{...tooltipStyle,callbacks:{
+      label:ctx=>'Avg: '+ctx.raw+' bpm',
+      afterBody:items=>{const i=items[0].dataIndex;return 'Range: '+data[i].hrLo+'–'+data[i].hrHi+' bpm'}
+    }}},scales:{
+      x:{grid:{display:false},ticks:{color:'#5a5766'}},
+      y:{grid:{color:gridColor,drawBorder:false},min:hrMin,ticks:{callback:v=>v,color:'#5a5766'}}
+    }}
+  });
+
+  // 4) Steps
+  const stCtx=freshCtx('stepsChart');
+  charts.steps=new Chart(stCtx,{
+    type:'bar',
+    data:{labels,datasets:[{
+      label:'Steps',data:data.map(d=>d.steps),
+      backgroundColor:data.map(d=>d.steps>2000?'rgba(78,202,122,0.7)':d.steps>800?'rgba(232,168,85,0.6)':'rgba(229,107,107,0.5)'),
+      borderRadius:6,barPercentage:0.55,borderSkipped:false
+    }]},
+    options:{responsive:true,plugins:{legend:{display:false},tooltip:{...tooltipStyle,callbacks:{
+      afterLabel:ctx=>{const i=ctx.dataIndex;return 'Energy: '+Math.round(data[i].cal)+' kcal'}
+    }}},scales:{
+      x:{grid:{display:false},ticks:{color:'#5a5766'}},
+      y:{grid:{color:gridColor,drawBorder:false},ticks:{callback:v=>v>=1000?(v/1000)+'k':v,color:'#5a5766'}}
+    }}
+  });
+}
+
+// ── summary ──
+function genSummary(data){
+  const avg=(arr)=>arr.reduce((a,b)=>a+b,0)/arr.length;
+  const avgSleep=avg(data.map(d=>d.totalMin));
+  const avgDeep=avg(data.map(d=>d.deep));
+  const avgRem=avg(data.map(d=>d.rem));
+  const avgSteps=Math.round(avg(data.map(d=>d.steps)));
+  const avgHr=Math.round(avg(data.map(d=>d.hrAvg)));
+  const avgCal=Math.round(avg(data.map(d=>d.cal)));
+  const minSleep=Math.min(...data.map(d=>d.totalMin));
+  const maxSleep=Math.max(...data.map(d=>d.totalMin));
+  const minDay=data.find(d=>d.totalMin===minSleep).date;
+  const maxDay=data.find(d=>d.totalMin===maxSleep).date;
+  const avgBed=avg(data.map(d=>timeToHour(d.bedtime)));
+  const deepPct=Math.round(avgDeep/avgSleep*100);
+  const remPct=Math.round(avgRem/avgSleep*100);
+
+  const third=Math.max(1,Math.ceil(data.length/3));
+  const laterAvg=avg(data.slice(-third).map(d=>d.totalMin));
+  const earlyAvg=avg(data.slice(0,third).map(d=>d.totalMin));
+  const trend=laterAvg-earlyAvg;
+  const tw=Math.abs(trend)<15?'stable':trend>0?'trending up':'trending down';
+
+  let s='';
+  s+='Average sleep <strong>'+fmtMin(Math.round(avgSleep))+'</strong>, '+tw+'. ';
+  s+='Longest '+fmtMin(maxSleep)+' ('+maxDay+'), shortest '+fmtMin(minSleep)+' ('+minDay+'), ';
+  s+='spread '+fmtMin(maxSleep-minSleep)+'.';
+  s+='<br><br>';
+  s+='Average bedtime <strong>'+hourToLabel(avgBed)+'</strong>. ';
+  s+='Deep sleep <span class="summary-hl">'+deepPct+'%</span>, ';
+  s+='REM <span class="summary-hl">'+remPct+'%</span>. ';
+  if(deepPct<15) s+='Deep sleep ratio is low (target 15–20%).';
+  s+='<br><br>';
+  s+='Daily average <strong>'+avgSteps.toLocaleString()+'</strong> steps, ';
+  s+='<strong>'+avgCal+'</strong> kcal active energy. ';
+  s+=data.filter(d=>d.steps>2000).length+' days above 2,000 steps, '+data.filter(d=>d.steps<1000).length+' days below 1,000.';
+  s+='<br><br>';
+  s+='Heart rate <strong>'+avgHr+' bpm</strong> average, range '+Math.min(...data.map(d=>d.hrLo))+'–'+Math.max(...data.map(d=>d.hrHi))+' bpm. ';
+  const hrVar=Math.max(...data.map(d=>d.hrAvg))-Math.min(...data.map(d=>d.hrAvg));
+  if(hrVar<=7) s+='Daily average heart rate is stable.';
+  return s;
+}
+
+// ── date range subtitle ──
+function updateDateRange(data){
+  const [m1,d1]=data[0].date.split('/');
+  const [m2,d2]=data[data.length-1].date.split('/');
+  document.getElementById('date-range').textContent=
+    '2026.'+m1.padStart(2,'0')+'.'+d1.padStart(2,'0')+' — '+m2.padStart(2,'0')+'.'+d2.padStart(2,'0');
+}
+
+// ── master render ──
+function render(range){
+  const data=DATA.slice(-range);
+  updateDateRange(data);
+  renderStatCards(data);
+  renderCharts(data);
+  document.getElementById('summary').innerHTML=genSummary(data);
+}
+
+// ── range button events ──
+document.querySelectorAll('.range-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelector('.range-btn.active').classList.remove('active');
+    btn.classList.add('active');
+    render(parseInt(btn.dataset.range));
+  });
+});
+
+// ── initial render ──
+render(7);
+</script>
+</body>
+</html>
