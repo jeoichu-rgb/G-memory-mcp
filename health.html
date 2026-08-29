@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
@@ -116,7 +116,14 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 }
 
 /* Sync info */
-.sync{font-size:10px;color:var(--muted);text-align:center;padding:12px 0;border-top:1px solid var(--border);margin-top:8px;}
+.sync{font-size:10px;color:var(--muted);text-align:center;padding:12px 0;border-top:1px solid var(--border);margin-top:8px;display:flex;justify-content:space-between;align-items:center;}
+.sync-time{flex:1;}
+.report-btn{
+  background:transparent;border:1px solid var(--border2);color:var(--dim);
+  padding:4px 14px;border-radius:16px;font-size:10px;cursor:pointer;
+  font-family:var(--mono);transition:all .15s;text-decoration:none;display:inline-flex;align-items:center;gap:4px;
+}
+.report-btn:hover{border-color:var(--violet);color:var(--violet);}
 </style>
 </head>
 <body>
@@ -125,15 +132,15 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 <!-- ═══ DAY VIEW ═══ -->
 <div id="day-view" class="view on">
   <div class="hd">
-    <button class="hd-btn" onclick="goBack()" title="返回" style="font-size:18px;">✕</button>
-    <button class="hd-btn hd-cal" onclick="showCal()" title="日历"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="12" rx="2"/><line x1="1" y1="7" x2="15" y2="7"/><line x1="4" y1="1" x2="4" y2="5"/><line x1="12" y1="1" x2="12" y2="5"/></svg></button>
+    <button class="hd-btn" onclick="goBack()" title="Back" style="font-size:18px;">✕</button>
+    <button class="hd-btn hd-cal" onclick="showCal()" title="Calendar"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="14" height="12" rx="2"/><line x1="1" y1="7" x2="15" y2="7"/><line x1="4" y1="1" x2="4" y2="5"/><line x1="12" y1="1" x2="12" y2="5"/></svg></button>
     <button class="hd-btn" onclick="navDay(-1)">←</button>
     <div class="hd-date">
       <div id="d-date">—</div>
       <div class="hd-date-sub" id="d-weekday"></div>
     </div>
     <button class="hd-btn" onclick="navDay(1)">→</button>
-    <button class="hd-btn" onclick="navToday()">今</button>
+    <button class="hd-btn" onclick="navToday()" style="font-size:11px;">⟳</button>
   </div>
 
   <div id="day-content"></div>
@@ -142,8 +149,8 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 <!-- ═══ CALENDAR VIEW ═══ -->
 <div id="cal-view" class="view">
   <div class="hd">
-    <button class="hd-btn" onclick="goBack()" title="返回">←</button>
-    <div class="hd-date">日历</div>
+    <button class="hd-btn" onclick="goBack()" title="Back">←</button>
+    <div class="hd-date">Calendar</div>
   </div>
   <div class="cal-nav">
     <button class="hd-btn" onclick="navMonth(-1)">←</button>
@@ -151,8 +158,8 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
     <button class="hd-btn" onclick="navMonth(1)">→</button>
   </div>
   <div class="cal-wk">
-    <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div>
-    <div class="we">六</div><div class="we">日</div>
+    <div>M</div><div>T</div><div>W</div><div>T</div><div>F</div>
+    <div class="we">S</div><div class="we">S</div>
   </div>
   <div class="cal-grid" id="cal-grid"></div>
 </div>
@@ -160,10 +167,11 @@ body{color:var(--text);font-family:var(--mono);font-size:13px;}
 </div><!-- container -->
 
 <script>
-const WEEKDAYS = ['周日','周一','周二','周三','周四','周五','周六'];
+const WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const ZONES = [
-  {name:'舒缓',max:60},{name:'热身',max:90},{name:'燃脂',max:110},
-  {name:'有氧',max:130},{name:'无氧',max:150},{name:'极限',max:999}
+  {name:'Rest',max:60},{name:'Warm-up',max:90},{name:'Fat burn',max:110},
+  {name:'Cardio',max:130},{name:'Anaerobic',max:150},{name:'Peak',max:999}
 ];
 const STAGE_COLORS = {
   '深度睡眠':'#1e3a8a','核心睡眠':'#3b82f6','快速动眼睡眠':'#93c5fd',
@@ -190,7 +198,7 @@ function today() {
 
 function fmtDate(ds) {
   const [y,m,d] = ds.split('-');
-  return `${parseInt(m)}月${parseInt(d)}日`;
+  return `${MONTHS[parseInt(m)-1]} ${parseInt(d)}`;
 }
 
 function weekday(ds) {
@@ -243,7 +251,7 @@ function renderDay() {
   const el = document.getElementById('day-content');
 
   if (!rec) {
-    el.innerHTML = '<div class="no-data">暂无数据</div>';
+    el.innerHTML = '<div class="no-data">No data available</div>';
     return;
   }
 
@@ -267,23 +275,23 @@ function renderDay() {
 
   html += `<div class="stats">
     <div class="stat">
-      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--hr)" stroke-width="2" style="vertical-align:-1px"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> 心率</div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--hr)" stroke-width="2" style="vertical-align:-1px"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> Heart rate</div>
       <div class="stat-val">${hrAvg}<span class="stat-unit"> bpm</span></div>
-      <div class="stat-sub">${hrAvg !== '--' ? '↑'+hrMax+' ↓'+hrMin : '无数据'}</div>
+      <div class="stat-sub">${hrAvg !== '--' ? '↑'+hrMax+' ↓'+hrMin : 'No data'}</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#93c5fd" stroke-width="2" style="vertical-align:-1px"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg> 睡眠</div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#93c5fd" stroke-width="2" style="vertical-align:-1px"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg> Sleep</div>
       <div class="stat-val">${sleepInfo.totalStr || '--'}</div>
-      <div class="stat-sub">${sleepInfo.bedStr || '无数据'}</div>
+      <div class="stat-sub">${sleepInfo.bedStr || 'No data'}</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6ee7a0" stroke-width="2" style="vertical-align:-1px"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> 步数</div>
-      <div class="stat-val">${steps}<span class="stat-unit"> 步</span></div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6ee7a0" stroke-width="2" style="vertical-align:-1px"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> Steps</div>
+      <div class="stat-val">${steps}</div>
     </div>
     <div class="stat" style="display:flex;align-items:center;gap:8px;">
       <div style="flex:1;min-width:0;">
-        <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f4a261" stroke-width="2" style="vertical-align:-1px"><path d="M12 2c1 3 4 5.5 4 8.5a4 4 0 11-8 0C8 7.5 11 5 12 2z"/></svg> 活动能量</div>
-        <div class="stat-val">${cal}<span class="stat-unit"> 千卡</span></div>
+        <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f4a261" stroke-width="2" style="vertical-align:-1px"><path d="M12 2c1 3 4 5.5 4 8.5a4 4 0 11-8 0C8 7.5 11 5 12 2z"/></svg> Active energy</div>
+        <div class="stat-val">${cal}<span class="stat-unit"> kcal</span></div>
       </div>
       <svg viewBox="0 0 44 44" width="42" height="42" style="flex-shrink:0;">
         <circle cx="22" cy="22" r="${ringR}" fill="none" stroke="var(--border)" stroke-width="5"/>
@@ -304,7 +312,7 @@ function renderDay() {
   // Sync info
   if (rec.synced_at) {
     const st = new Date(rec.synced_at);
-    html += `<div class="sync">数据同步于 ${st.getMonth()+1}/${st.getDate()} ${String(st.getHours()).padStart(2,'0')}:${String(st.getMinutes()).padStart(2,'0')}</div>`;
+    html += `<div class="sync"><span class="sync-time">Synced ${st.getMonth()+1}/${st.getDate()} ${String(st.getHours()).padStart(2,'0')}:${String(st.getMinutes()).padStart(2,'0')}</span><a class="report-btn" href="/health/report">Weekly report →</a></div>`;
   }
 
   el.innerHTML = html;
@@ -312,13 +320,13 @@ function renderDay() {
 
 // ── Heart Rate ──
 function renderHRSection(rec) {
-  let html = '<div class="sec"><div class="sec-title">心率 · 24小时</div>';
+  let html = '<div class="sec"><div class="sec-title">Heart rate · 24h</div>';
 
   const vals = rec.hr_values ? rec.hr_values.split('\n').map(Number).filter(n=>!isNaN(n)) : [];
   const times = rec.hr_times ? rec.hr_times.split('\n').filter(t=>t.trim()) : [];
 
   if (vals.length === 0) {
-    html += '<div class="chart-wrap"><div class="no-data">心率数据不可用</div></div>';
+    html += '<div class="chart-wrap"><div class="no-data">Heart rate data unavailable</div></div>';
   } else {
     const maxV = Math.max(...vals, 100);
     const minV = Math.min(...vals.filter(v=>v>0), 40);
@@ -374,7 +382,7 @@ function renderHRSection(rec) {
 
     // Time labels — 固定 24h 轴
     html += '<div class="period-row">';
-    ['深夜 0-6','上午 6-12','下午 12-18','晚上 18-24'].forEach(p => {
+    ['0-6','6-12','12-18','18-24'].forEach(p => {
       html += `<div class="period">${p}</div>`;
     });
     html += '</div>';
@@ -435,17 +443,17 @@ function parseSleep(rec) {
 }
 
 function renderSleepSection(rec, info) {
-  let html = '<div class="sec"><div class="sec-title">睡眠</div>';
+  let html = '<div class="sec"><div class="sec-title">Sleep</div>';
 
   if (!info.segments.length || !info.bedStart) {
-    html += '<div class="chart-wrap"><div class="no-data">睡眠数据不可用</div></div></div>';
+    html += '<div class="chart-wrap"><div class="no-data">Sleep data unavailable</div></div></div>';
     return html;
   }
 
   // Find time range (exclude 卧床时间 for display, use actual sleep segments)
   const sleepSegs = info.segments.filter(s => s.stage !== '卧床时间');
   if (!sleepSegs.length) {
-    html += '<div class="chart-wrap"><div class="no-data">无睡眠分段</div></div></div>';
+    html += '<div class="chart-wrap"><div class="no-data">No sleep stages</div></div></div>';
     return html;
   }
 
@@ -481,7 +489,7 @@ function renderSleepSection(rec, info) {
   });
 
   // Row labels (left side, inside SVG)
-  const labels = ['清醒','REM','核心','深睡'];
+  const labels = ['Awake','REM','Core','Deep'];
   rows.forEach((_, ri) => {
     const y = ri * (rowH + gap) + rowH/2 + 3;
     svg += `<text x="3" y="${y}" fill="var(--dim)" font-size="8" font-family="var(--mono)" opacity="0.7">${labels[ri]}</text>`;
@@ -513,7 +521,7 @@ function renderSleepSection(rec, info) {
 
   // Duration summary
   html += '<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">';
-  [['深睡','深度睡眠','#1e3a8a'],['核心','核心睡眠','#3b82f6'],['REM','快速动眼睡眠','#93c5fd']].forEach(([label, key, color]) => {
+  [['Deep','深度睡眠','#1e3a8a'],['Core','核心睡眠','#3b82f6'],['REM','快速动眼睡眠','#93c5fd']].forEach(([label, key, color]) => {
     const mins = info.durations[key] || 0;
     html += `<div class="sleep-leg"><span class="sleep-dot" style="background:${color}"></span>${label} ${info.fmt(mins)}</div>`;
   });
@@ -525,7 +533,7 @@ function renderSleepSection(rec, info) {
 
 // ── Calendar ──
 function renderCal() {
-  document.getElementById('cal-title').textContent = `${calYear}年${calMonth+1}月`;
+  document.getElementById('cal-title').textContent = `${MONTHS[calMonth]} ${calYear}`;
   const grid = document.getElementById('cal-grid');
   const first = new Date(calYear, calMonth, 1);
   const lastDay = new Date(calYear, calMonth+1, 0).getDate();
