@@ -90,6 +90,7 @@ class CheckSecretMiddleware:
             or path == "/call.html"
             or path == "/diary-calendar.html"
             or path == "/health.html"
+            or path == "/health/report"
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
             or path == "/webhook/github"
@@ -236,6 +237,14 @@ async def serve_health(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>health.html not found</h1>", status_code=500)
+
+@app.get("/health/report")
+async def serve_health_report(request: Request):
+    try:
+        with open("health-report.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>health-report.html not found</h1>", status_code=500)
 
 
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts
