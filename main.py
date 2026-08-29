@@ -90,6 +90,7 @@ class CheckSecretMiddleware:
             or path == "/call.html"
             or path == "/diary-calendar.html"
             or path == "/health.html"
+            or path == "/health"
             or path == "/health/report"
             or method == "OPTIONS"
             or path.startswith("/.well-known/")
@@ -231,6 +232,7 @@ async def serve_diary_calendar(request: Request):
         return HTMLResponse(content="<h1>diary-calendar.html not found</h1>", status_code=500)
 
 @app.get("/health.html")
+@app.get("/health")
 async def serve_health(request: Request):
     try:
         with open("health.html", "r", encoding="utf-8") as f:
