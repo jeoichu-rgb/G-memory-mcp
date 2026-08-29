@@ -267,22 +267,22 @@ function renderDay() {
 
   html += `<div class="stats">
     <div class="stat">
-      <div class="stat-lbl"><span style="color:var(--hr)">♥</span> 心率</div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--hr)" stroke-width="2" style="vertical-align:-1px"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> 心率</div>
       <div class="stat-val">${hrAvg}<span class="stat-unit"> bpm</span></div>
       <div class="stat-sub">${hrAvg !== '--' ? '↑'+hrMax+' ↓'+hrMin : '无数据'}</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl">😴 睡眠</div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#93c5fd" stroke-width="2" style="vertical-align:-1px"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg> 睡眠</div>
       <div class="stat-val">${sleepInfo.totalStr || '--'}</div>
       <div class="stat-sub">${sleepInfo.bedStr || '无数据'}</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl">🏃 步数</div>
+      <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6ee7a0" stroke-width="2" style="vertical-align:-1px"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> 步数</div>
       <div class="stat-val">${steps}<span class="stat-unit"> 步</span></div>
     </div>
     <div class="stat" style="display:flex;align-items:center;gap:8px;">
       <div style="flex:1;min-width:0;">
-        <div class="stat-lbl">🔥 活动能量</div>
+        <div class="stat-lbl"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f4a261" stroke-width="2" style="vertical-align:-1px"><path d="M12 2c1 3 4 5.5 4 8.5a4 4 0 11-8 0C8 7.5 11 5 12 2z"/></svg> 活动能量</div>
         <div class="stat-val">${cal}<span class="stat-unit"> 千卡</span></div>
       </div>
       <svg viewBox="0 0 44 44" width="42" height="42" style="flex-shrink:0;">
