@@ -28,7 +28,8 @@ _sse.EventSourceResponse = _PatchedESR
 
 # ── 凭据持久化 ────────────────────────────────────────────────
 # 优先从文件读（扫码登录会写入），fallback 到环境变量
-CRED_FILE = Path(os.getenv("NETEASE_CRED_FILE", "/app/netease_cred.json"))
+_HERE = Path(__file__).resolve().parent
+CRED_FILE = Path(os.getenv("NETEASE_CRED_FILE", str(_HERE / "netease_cred.json")))
 
 def _load_cred() -> dict:
     """从文件读凭据 {music_u, csrf, uid}。"""
