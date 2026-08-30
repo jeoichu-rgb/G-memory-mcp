@@ -1,4 +1,5 @@
 import os
+import json
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -105,6 +106,7 @@ class CheckSecretMiddleware:
             or path == "/api/push/vapid-key"
             or path == "/health/update"
             or path == "/music"
+            or path == "/api/ears"
             or path.startswith("/api/ears/")
         ):
             await self.app(scope, receive, send)
