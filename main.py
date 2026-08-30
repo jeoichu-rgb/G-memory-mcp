@@ -104,6 +104,8 @@ class CheckSecretMiddleware:
             or path.startswith("/icon-")
             or path == "/api/push/vapid-key"
             or path == "/health/update"
+            or path == "/music"
+            or path.startswith("/api/ears/")
         ):
             await self.app(scope, receive, send)
             return
@@ -247,6 +249,54 @@ async def serve_health_report(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>health-report.html not found</h1>", status_code=500)
+
+
+# ── Music / Ears ──
+MUSIC_DIR = os.getenv("MUSIC_DIR", "/app/music")
+os.makedirs(MUSIC_DIR, exist_ok=True)
+
+@app.get("/music")
+async def serve_music(request: Request):
+    try:
+        with open("music.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>music.html not found</h1>", status_code=500)
+
+@app.get("/api/ears/{title}")
+async def get_ears(title: str):
+    """获取歌曲分析数据"""
+    path = os.path.join(MUSIC_DIR, f"{title}.ears.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return JSONResponse(content=json.loads(f.read()))
+    # 模糊匹配
+    for fname in os.listdir(MUSIC_DIR):
+        if fname.endswith(".ears.json") and title.lower() in fname.lower():
+            with open(os.path.join(MUSIC_DIR, fname), "r", encoding="utf-8") as f:
+                return JSONResponse(content=json.loads(f.read()))
+    raise HTTPException(status_code=404, detail="no ears data")
+
+@app.post("/api/ears/upload")
+async def upload_ears(request: Request):
+    """上传歌曲分析数据（需要认证）"""
+    data = await request.json()
+    title = data.get("title", "")
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    path = os.path.join(MUSIC_DIR, f"{title}.ears.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"ok": True, "title": title}
+
+@app.get("/api/ears")
+async def list_ears():
+    """列出所有已分析的歌曲"""
+    songs = []
+    for fname in sorted(os.listdir(MUSIC_DIR)):
+        if fname.endswith(".ears.json"):
+            songs.append(fname.replace(".ears.json", ""))
+    return {"songs": songs}
 
 
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts
