@@ -177,15 +177,74 @@ canvas{width:100%!important}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
-const DATA = [
-  {date:'8/22',steps:2090,cal:149.16,bedtime:'01:01',wake:'07:38',totalMin:353,deep:35,core:268,rem:50,hrAvg:68,hrHi:138,hrLo:49},
-  {date:'8/23',steps:973, cal:80.21, bedtime:'00:25',wake:'09:13',totalMin:484,deep:86,core:314,rem:84,hrAvg:69,hrHi:117,hrLo:48},
-  {date:'8/24',steps:862, cal:63.62, bedtime:'01:45',wake:'09:24',totalMin:402,deep:79,core:267,rem:56,hrAvg:69,hrHi:112,hrLo:45},
-  {date:'8/25',steps:2874,cal:207.57,bedtime:'01:30',wake:'09:16',totalMin:401,deep:74,core:278,rem:49,hrAvg:71,hrHi:136,hrLo:48},
-  {date:'8/26',steps:147, cal:36.84, bedtime:'00:28',wake:'10:25',totalMin:559,deep:115,core:383,rem:61,hrAvg:65,hrHi:114,hrLo:46},
-  {date:'8/27',steps:2983,cal:195.65,bedtime:'02:33',wake:'09:35',totalMin:381,deep:80,core:278,rem:23,hrAvg:72,hrHi:147,hrLo:53},
-  {date:'8/28',steps:760, cal:71.96, bedtime:'01:14',wake:'08:32',totalMin:397,deep:61,core:300,rem:36,hrAvg:69,hrHi:111,hrLo:48},
-];
+let DATA = [];
+
+// ── fetch from API & transform ──
+async function loadData() {
+  try {
+    const r = await fetch('/health/data');
+    const raw = await r.json();
+    DATA = raw.map(transformRecord).filter(d => d !== null);
+    // sort by date ascending
+    DATA.sort((a, b) => a._iso < b._iso ? -1 : 1);
+  } catch(e) {
+    console.error('Failed to load health data:', e);
+    DATA = [];
+  }
+  render(7);
+}
+
+function transformRecord(rec) {
+  if (!rec.date) return null;
+  const [y, m, d] = rec.date.split('-');
+  const dateLabel = parseInt(m) + '/' + parseInt(d);
+
+  // parse sleep segments
+  const stages = rec.sleep_stages ? rec.sleep_stages.split('\n') : [];
+  const starts = rec.sleep_starts ? rec.sleep_starts.split('\n') : [];
+  const ends = rec.sleep_ends ? rec.sleep_ends.split('\n') : [];
+
+  let totalMin = 0, deep = 0, core = 0, rem = 0;
+  let bedtime = '', wake = '';
+
+  if (stages.length && stages.length === starts.length && stages.length === ends.length) {
+    for (let i = 0; i < stages.length; i++) {
+      const stg = stages[i].trim();
+      const s = starts[i].trim();
+      const e = ends[i].trim();
+      const t0 = new Date(s.replace(' ', 'T'));
+      const t1 = new Date(e.replace(' ', 'T'));
+      if (isNaN(t0) || isNaN(t1)) continue;
+      const mins = (t1 - t0) / 60000;
+
+      if (stg === '卧床时间') {
+        bedtime = String(t0.getHours()).padStart(2, '0') + ':' + String(t0.getMinutes()).padStart(2, '0');
+        wake = String(t1.getHours()).padStart(2, '0') + ':' + String(t1.getMinutes()).padStart(2, '0');
+      } else {
+        totalMin += mins;
+        if (stg === '深度睡眠') deep += mins;
+        else if (stg === '核心睡眠') core += mins;
+        else if (stg === '快速动眼睡眠') rem += mins;
+      }
+    }
+  }
+
+  return {
+    _iso: rec.date,
+    date: dateLabel,
+    steps: parseInt(rec.steps) || 0,
+    cal: parseFloat(rec.active_cal) || 0,
+    bedtime: bedtime || '00:00',
+    wake: wake || '00:00',
+    totalMin: Math.round(totalMin),
+    deep: Math.round(deep),
+    core: Math.round(core),
+    rem: Math.round(rem),
+    hrAvg: parseInt(rec.hr_avg) || 0,
+    hrHi: parseInt(rec.hr_max) || 0,
+    hrLo: parseInt(rec.hr_min) || 0,
+  };
+}
 
 const gridColor = 'rgba(255,255,255,0.04)';
 const tickColor = '#4a4858';
@@ -398,7 +457,17 @@ function updateDateRange(data){
 
 // ── master render ──
 function render(range){
-  const data=DATA.slice(-range);
+  // filter by date: today minus range days
+  const now = new Date();
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - range);
+  const cutoffISO = cutoff.getFullYear()+'-'+String(cutoff.getMonth()+1).padStart(2,'0')+'-'+String(cutoff.getDate()).padStart(2,'0');
+  const data = DATA.filter(d => d._iso > cutoffISO);
+  if (!data.length) {
+    document.getElementById('date-range').textContent = 'No data in range';
+    document.getElementById('stats-row').innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#6b6878;padding:40px">No data available for the selected range</div>';
+    return;
+  }
   updateDateRange(data);
   renderStatCards(data);
   renderCharts(data);
@@ -415,7 +484,7 @@ document.querySelectorAll('.range-btn').forEach(btn=>{
 });
 
 // ── initial render ──
-render(7);
+loadData();
 </script>
 </body>
 </html>
