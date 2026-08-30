@@ -11,6 +11,7 @@ from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app, mcp_http_app
 from tts_mcp import tts_mcp_app, tts_mcp_http_app
+from netease_mcp import netease_mcp_app, netease_mcp_http_app
 import hmac
 import hashlib
 from claude_memory import claude_add_core_memory, claude_add_dynamic_memory, claude_search_memory
@@ -30,7 +31,8 @@ async def _lifespan(app_instance):
     # 手动启动 MCP Streamable HTTP 的 task group
     async with mcp_http_app.router.lifespan_context(mcp_http_app):
         async with tts_mcp_http_app.router.lifespan_context(tts_mcp_http_app):
-            yield
+            async with netease_mcp_http_app.router.lifespan_context(netease_mcp_http_app):
+                yield
 
 
 app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
@@ -63,6 +65,12 @@ tts_path = f"/tts/{PALACE_SECRET}"
 tts_http_path = f"/tts/{PALACE_SECRET}/http"
 app.mount(tts_http_path, tts_mcp_http_app)
 app.mount(tts_path, tts_mcp_app)
+
+# 网易云音乐 MCP 服务
+netease_path = f"/netease/{PALACE_SECRET}"
+netease_http_path = f"/netease/{PALACE_SECRET}/http"
+app.mount(netease_http_path, netease_mcp_http_app)
+app.mount(netease_path, netease_mcp_app)
 
 # TTS 音频静态文件
 from fastapi.staticfiles import StaticFiles as _StaticFiles
@@ -98,6 +106,7 @@ class CheckSecretMiddleware:
             or path == "/webhook/github"
             or path.startswith(mcp_path)
             or path.startswith(tts_path)
+            or path.startswith(netease_path)
             or path.startswith("/tts-audio/")
             or path == "/api/pebbling/event"
             or path == "/sw.js"
