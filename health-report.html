@@ -190,9 +190,11 @@ canvas{width:100%!important}
 let DATA = [];
 
 // ── fetch from API & transform ──
+function secret(){return localStorage.getItem('gmp_pw')||'';}
+
 async function loadData() {
   try {
-    const r = await fetch('/health/data');
+    const r = await fetch('/health/data',{headers:{'x-secret':secret()}});
     const raw = await r.json();
     DATA = raw.map(transformRecord).filter(d => d !== null);
     // sort by date ascending
@@ -467,12 +469,13 @@ function updateDateRange(data){
 
 // ── master render ──
 function render(range){
-  // filter by date: today minus range days
-  const now = new Date();
-  const cutoff = new Date(now);
-  cutoff.setDate(cutoff.getDate() - range);
-  const cutoffISO = cutoff.getFullYear()+'-'+String(cutoff.getMonth()+1).padStart(2,'0')+'-'+String(cutoff.getDate()).padStart(2,'0');
-  const data = DATA.filter(d => d._iso > cutoffISO);
+  if (!DATA.length) return;
+  // anchor from the latest record, not "today"
+  const latest = DATA[DATA.length - 1]._iso;
+  const anchor = new Date(latest + 'T00:00:00');
+  anchor.setDate(anchor.getDate() - range + 1);
+  const cutoffISO = anchor.getFullYear()+'-'+String(anchor.getMonth()+1).padStart(2,'0')+'-'+String(anchor.getDate()).padStart(2,'0');
+  const data = DATA.filter(d => d._iso >= cutoffISO);
   if (!data.length) {
     document.getElementById('date-range').textContent = 'No data in range';
     document.getElementById('stats-row').innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#6b6878;padding:40px">No data available for the selected range</div>';
