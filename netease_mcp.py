@@ -12,7 +12,9 @@ netease_mcp.py
 import os
 import json
 import re
+import time
 import httpx
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -24,10 +26,44 @@ class _PatchedESR(_OrigESR):
         super().__init__(*a, **kw)
 _sse.EventSourceResponse = _PatchedESR
 
-# ── 环境变量 ──────────────────────────────────────────────────
-MUSIC_U = os.getenv("NETEASE_MUSIC_U", "")
-CSRF_TOKEN = os.getenv("NETEASE_CSRF", "")
-NETEASE_UID = os.getenv("NETEASE_UID", "")
+# ── 凭据持久化 ────────────────────────────────────────────────
+# 优先从文件读（扫码登录会写入），fallback 到环境变量
+CRED_FILE = Path(os.getenv("NETEASE_CRED_FILE", "/app/netease_cred.json"))
+
+def _load_cred() -> dict:
+    """从文件读凭据 {music_u, csrf, uid}。"""
+    try:
+        if CRED_FILE.exists():
+            return json.loads(CRED_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def _save_cred(music_u: str, csrf: str = "", uid: str = "") -> None:
+    """持久化凭据到文件。"""
+    CRED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    old = _load_cred()
+    old.update({
+        "music_u": music_u,
+        "csrf": csrf or old.get("csrf", ""),
+        "uid": uid or old.get("uid", ""),
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    CRED_FILE.write_text(json.dumps(old, ensure_ascii=False, indent=2))
+    try:
+        CRED_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+def _get_music_u() -> str:
+    return _load_cred().get("music_u", "") or os.getenv("NETEASE_MUSIC_U", "")
+
+def _get_csrf() -> str:
+    return _load_cred().get("csrf", "") or os.getenv("NETEASE_CSRF", "")
+
+def _get_uid() -> str:
+    return _load_cred().get("uid", "") or os.getenv("NETEASE_UID", "")
+
 
 BASE_URL = "https://music.163.com"
 DEFAULT_BR = 128000          # 比特率，128k 足够 VPS 带宽
@@ -45,22 +81,23 @@ HEADERS = {
 def _build_cookie() -> str:
     """拼 Cookie 字符串，含 MUSIC_U 和 __csrf。"""
     parts = []
-    if MUSIC_U:
-        parts.append(f"MUSIC_U={MUSIC_U}")
-    if CSRF_TOKEN:
-        parts.append(f"__csrf={CSRF_TOKEN}")
+    mu = _get_music_u()
+    csrf = _get_csrf()
+    if mu:
+        parts.append(f"MUSIC_U={mu}")
+    if csrf:
+        parts.append(f"__csrf={csrf}")
     return "; ".join(parts)
-
-
-def _extract_csrf(cookie: str) -> str:
-    """从 cookie 字符串里抠 csrf token。"""
-    m = re.search(r"__csrf=([a-f0-9]+)", cookie)
-    return m.group(1) if m else ""
 
 
 def _csrf() -> str:
     """当前可用的 csrf token。"""
-    return CSRF_TOKEN or _extract_csrf(_build_cookie())
+    c = _get_csrf()
+    if c:
+        return c
+    # 从 cookie 里抠
+    m = re.search(r"__csrf=([a-f0-9]+)", _build_cookie())
+    return m.group(1) if m else ""
 
 
 async def _netease_get(path: str, params: dict | None = None) -> dict:
@@ -91,6 +128,20 @@ async def _netease_post(path: str, data: dict | None = None) -> dict:
         return resp.json()
 
 
+async def _netease_get_raw(path: str, params: dict | None = None) -> httpx.Response:
+    """GET 请求，返回原始 Response（用于提取 Set-Cookie）。"""
+    headers = {**HEADERS}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{BASE_URL}{path}",
+            params=params,
+            headers=headers,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        return resp
+
+
 # ── FastMCP 实例 ──────────────────────────────────────────────
 
 netease_mcp = FastMCP(
@@ -98,7 +149,8 @@ netease_mcp = FastMCP(
     instructions=(
         "网易云音乐控制器。可以搜歌、播放、看歌词、喜欢歌曲、管理歌单、听私人FM。\n"
         "播放不走 VPS 带宽——返回 CDN 直链，前端直接流式播放。\n"
-        "需要环境变量 NETEASE_MUSIC_U（登录 cookie）才能使用喜欢/歌单/FM 等登录功能。"
+        "首次使用需要扫码登录（qr_login_start → Jeoi 扫码 → qr_login_check）。\n"
+        "登录凭据自动持久化，重启不丢。"
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -106,6 +158,184 @@ netease_mcp = FastMCP(
         allowed_origins=["https://erikssheep.uk", "https://erikssheep.uk:*"],
     ),
 )
+
+
+# ── 工具：扫码登录 ────────────────────────────────────────────
+
+# 扫码会话缓存（进程内，重启需要重新扫）
+_qr_session: dict = {}
+
+
+@netease_mcp.tool()
+async def qr_login_start() -> str:
+    """
+    发起网易云扫码登录——第一步。
+    返回一个链接，Jeoi 用网易云 APP 扫码。
+    扫完之后调用 qr_login_check 确认。
+    """
+    global _qr_session
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{BASE_URL}/api/login/qrcode/unikey",
+                data={"type": "1"},
+                headers=HEADERS,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+
+        unikey = result.get("unikey", "")
+        if not unikey:
+            return f"获取二维码 key 失败：{result}"
+
+        _qr_session = {"unikey": unikey, "created": time.time()}
+
+        qr_url = f"https://music.163.com/login?codekey={unikey}"
+        # 前端可以用这个URL生成二维码图片，或者直接打开让手机扫屏幕
+        return (
+            f"📱 请用网易云音乐 APP 扫描二维码登录：\n\n"
+            f"二维码内容（让前端生成二维码图片）:\n{qr_url}\n\n"
+            f"或者在手机浏览器打开这个链接也可以确认登录。\n\n"
+            f"扫码后调用 qr_login_check 确认登录状态。\n"
+            f"⏰ 二维码有效期约 5 分钟。"
+        )
+    except Exception as e:
+        return f"发起扫码登录失败：{e}"
+
+
+@netease_mcp.tool()
+async def qr_login_check() -> str:
+    """
+    扫码登录——第二步。检查扫码状态。
+    801=等待扫码, 802=已扫码等待确认, 803=登录成功。
+    可以多次调用直到成功。
+    """
+    global _qr_session
+    unikey = _qr_session.get("unikey", "")
+    if not unikey:
+        return "还没有发起扫码，请先调用 qr_login_start。"
+
+    # 检查是否超时（5分钟）
+    if time.time() - _qr_session.get("created", 0) > 300:
+        _qr_session = {}
+        return "⏰ 二维码已过期，请重新调用 qr_login_start。"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{BASE_URL}/api/login/qrcode/client/login",
+                params={"key": unikey, "type": "1"},
+                headers=HEADERS,
+            )
+
+        result = resp.json()
+        code = result.get("code", 0)
+
+        if code == 801:
+            return "⏳ 等待扫码... Jeoi 用网易云 APP 扫一下二维码。"
+
+        if code == 802:
+            nickname = result.get("nickname", "")
+            avatar = result.get("avatarUrl", "")
+            return (
+                f"📱 已扫码！请在手机上点确认登录。\n"
+                + (f"   账号: {nickname}\n" if nickname else "")
+                + (f"   头像: {avatar}\n" if avatar else "")
+                + "再调用一次 qr_login_check 确认。"
+            )
+
+        if code == 803:
+            # 登录成功！从 Set-Cookie 提取 MUSIC_U 和 __csrf
+            cookies_raw = resp.headers.get_list("set-cookie") if hasattr(resp.headers, "get_list") else []
+            if not cookies_raw:
+                # httpx 的 headers 是 multi-value 的
+                cookies_raw = [v for k, v in resp.headers.multi_items() if k.lower() == "set-cookie"]
+
+            music_u = ""
+            csrf = ""
+            for c in cookies_raw:
+                if "MUSIC_U=" in c:
+                    m = re.search(r"MUSIC_U=([^;]+)", c)
+                    if m:
+                        music_u = m.group(1)
+                if "__csrf=" in c:
+                    m = re.search(r"__csrf=([^;]+)", c)
+                    if m:
+                        csrf = m.group(1)
+
+            # 也从 response body 里找
+            if not music_u:
+                cookie_str = result.get("cookie", "")
+                if cookie_str:
+                    m = re.search(r"MUSIC_U=([^;]+)", cookie_str)
+                    if m:
+                        music_u = m.group(1)
+                    m2 = re.search(r"__csrf=([a-f0-9]+)", cookie_str)
+                    if m2:
+                        csrf = m2.group(1)
+
+            if music_u:
+                _save_cred(music_u, csrf)
+                nickname = result.get("nickname", "")
+                _qr_session = {}
+
+                # 顺便拿 uid
+                try:
+                    acc = await _netease_get("/api/w/nuser/account/get")
+                    uid = str(acc.get("account", {}).get("id", ""))
+                    if uid:
+                        _save_cred(music_u, csrf, uid)
+                except Exception:
+                    pass
+
+                return (
+                    f"✅ 登录成功！{f'欢迎, {nickname}' if nickname else ''}\n"
+                    f"凭据已保存，重启后依然有效。\n"
+                    f"现在可以使用所有功能了——喜欢、歌单、私人FM、每日推荐。"
+                )
+            else:
+                _qr_session = {}
+                return (
+                    f"⚠️ 登录确认成功但未能提取 cookie。\n"
+                    f"Response: {json.dumps(result, ensure_ascii=False)[:500]}\n"
+                    f"可能需要手动从浏览器复制 MUSIC_U。"
+                )
+
+        # 其他状态码
+        _qr_session = {}
+        return f"登录失败：code={code}, msg={result.get('message', '')}"
+
+    except Exception as e:
+        return f"检查登录状态失败：{e}"
+
+
+@netease_mcp.tool()
+async def login_status() -> str:
+    """
+    查看当前登录状态。
+    """
+    mu = _get_music_u()
+    if not mu:
+        return "❌ 未登录。调用 qr_login_start 扫码登录。"
+
+    try:
+        acc = await _netease_get("/api/w/nuser/account/get")
+        profile = acc.get("profile", {})
+        if profile:
+            nickname = profile.get("nickname", "")
+            uid = profile.get("userId", "")
+            avatar = profile.get("avatarUrl", "")
+            vip = profile.get("vipType", 0)
+            return (
+                f"✅ 已登录\n"
+                f"   昵称: {nickname}\n"
+                f"   UID: {uid}\n"
+                f"   VIP: {'是' if vip else '否'}\n"
+                + (f"   头像: {avatar}\n" if avatar else "")
+            )
+        return f"✅ cookie 存在但无法获取用户信息（可能过期）。\n建议重新 qr_login_start 扫码登录。"
+    except Exception as e:
+        return f"✅ cookie 存在但验证失败：{e}\n可能需要重新登录。"
 
 
 # ── 工具：搜索 ────────────────────────────────────────────────
@@ -325,8 +555,8 @@ async def like(song_id: int, do_like: bool = True) -> str:
     do_like: True=喜欢, False=取消
     """
     csrf = _csrf()
-    if not csrf or not MUSIC_U:
-        return "需要登录凭据（NETEASE_MUSIC_U + NETEASE_CSRF）才能操作喜欢。"
+    if not csrf or not _get_music_u():
+        return "需要先登录（调用 qr_login_start 扫码）。"
     try:
         result = await _netease_get(
             "/api/song/like",
@@ -350,11 +580,11 @@ async def liked_list() -> str:
     """
     获取 Jeoi 的喜欢列表（红心歌曲 ID 列表）。
     """
-    if not MUSIC_U:
-        return "需要 NETEASE_MUSIC_U 登录凭据。"
+    if not _get_music_u():
+        return "需要先登录（调用 qr_login_start 扫码）。"
     try:
         # 先拿 uid
-        uid = NETEASE_UID
+        uid = _get_uid()
         if not uid:
             acc = await _netease_get("/api/w/nuser/account/get")
             uid = str(acc.get("account", {}).get("id", ""))
@@ -383,9 +613,9 @@ async def user_playlists(uid: str = "") -> str:
     """
     try:
         if not uid:
-            if NETEASE_UID:
-                uid = NETEASE_UID
-            elif MUSIC_U:
+            if _get_uid():
+                uid = _get_uid()
+            elif _get_music_u():
                 acc = await _netease_get("/api/w/nuser/account/get")
                 uid = str(acc.get("account", {}).get("id", ""))
         if not uid:
@@ -447,7 +677,7 @@ async def playlist_create(name: str, privacy: int = 0) -> str:
     privacy: 0=公开, 10=隐私
     """
     csrf = _csrf()
-    if not csrf or not MUSIC_U:
+    if not csrf or not _get_music_u():
         return "需要登录凭据。"
     try:
         result = await _netease_post(
@@ -470,7 +700,7 @@ async def playlist_add(playlist_id: int, song_ids: str) -> str:
     song_ids: 逗号分隔的歌曲 ID
     """
     csrf = _csrf()
-    if not csrf or not MUSIC_U:
+    if not csrf or not _get_music_u():
         return "需要登录凭据。"
     try:
         ids = [i.strip() for i in song_ids.split(",") if i.strip()]
@@ -498,7 +728,7 @@ async def playlist_remove(playlist_id: int, song_ids: str) -> str:
     song_ids: 逗号分隔的歌曲 ID
     """
     csrf = _csrf()
-    if not csrf or not MUSIC_U:
+    if not csrf or not _get_music_u():
         return "需要登录凭据。"
     try:
         ids = [i.strip() for i in song_ids.split(",") if i.strip()]
@@ -526,8 +756,8 @@ async def personal_fm() -> str:
     获取私人 FM 推荐歌曲（每次返回几首，不重复）。
     需要登录。
     """
-    if not MUSIC_U:
-        return "需要 NETEASE_MUSIC_U 登录凭据。"
+    if not _get_music_u():
+        return "需要先登录（调用 qr_login_start 扫码）。"
     try:
         result = await _netease_get("/api/v1/radio/get")
         songs = result.get("data", [])
@@ -561,8 +791,8 @@ async def recommend_songs() -> str:
     """
     获取每日推荐歌曲。需要登录。
     """
-    if not MUSIC_U:
-        return "需要 NETEASE_MUSIC_U 登录凭据。"
+    if not _get_music_u():
+        return "需要先登录（调用 qr_login_start 扫码）。"
     try:
         result = await _netease_get("/api/v3/discovery/recommend/songs")
         songs = result.get("data", {}).get("dailySongs", [])
