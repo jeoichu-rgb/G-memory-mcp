@@ -74,6 +74,15 @@ app.add_middleware(
 
 PALACE_SECRET = os.getenv("PALACE_SECRET", "")
 CC_CWD = os.getenv("CC_CWD", "/opt/G-memory-mcp")
+
+# ── 网易云音乐 MCP（挂在网关上，软重启即生效）──
+# URL: music.erikssheep.uk/{secret}/sse → Traefik → :3000/{secret}/sse
+try:
+    from netease_mcp import netease_mcp_app
+    app.mount(f"/{PALACE_SECRET}", netease_mcp_app)
+    logging.getLogger("cc-gw").info("NetEase MCP mounted")
+except Exception as _e:
+    logging.getLogger("cc-gw").warning(f"NetEase MCP mount failed: {_e}")
 TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "6830267835")
 HISTORY_DIR = Path(CC_CWD) / "chat_history"

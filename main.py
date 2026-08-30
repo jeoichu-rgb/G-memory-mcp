@@ -1,6 +1,8 @@
 import os
 import json
+import re
 import time
+import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -11,6 +13,7 @@ from sync_memory import ingest_obsidian_vault
 from gateway import compress_and_store, count_rounds, get_rolling_context
 from claude_mcp import mcp_app, mcp_http_app
 from tts_mcp import tts_mcp_app, tts_mcp_http_app
+from netease_mcp import netease_mcp_app, netease_mcp_http_app
 import hmac
 import hashlib
 from claude_memory import claude_add_core_memory, claude_add_dynamic_memory, claude_search_memory
@@ -30,7 +33,8 @@ async def _lifespan(app_instance):
     # 手动启动 MCP Streamable HTTP 的 task group
     async with mcp_http_app.router.lifespan_context(mcp_http_app):
         async with tts_mcp_http_app.router.lifespan_context(tts_mcp_http_app):
-            yield
+            async with netease_mcp_http_app.router.lifespan_context(netease_mcp_http_app):
+                yield
 
 
 app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
@@ -63,6 +67,12 @@ tts_path = f"/tts/{PALACE_SECRET}"
 tts_http_path = f"/tts/{PALACE_SECRET}/http"
 app.mount(tts_http_path, tts_mcp_http_app)
 app.mount(tts_path, tts_mcp_app)
+
+# 网易云音乐 MCP 服务
+netease_path = f"/netease/{PALACE_SECRET}"
+netease_http_path = f"/netease/{PALACE_SECRET}/http"
+app.mount(netease_http_path, netease_mcp_http_app)
+app.mount(netease_path, netease_mcp_app)
 
 # TTS 音频静态文件
 from fastapi.staticfiles import StaticFiles as _StaticFiles
@@ -98,6 +108,7 @@ class CheckSecretMiddleware:
             or path == "/webhook/github"
             or path.startswith(mcp_path)
             or path.startswith(tts_path)
+            or path.startswith(netease_path)
             or path.startswith("/tts-audio/")
             or path == "/api/pebbling/event"
             or path == "/sw.js"
@@ -108,6 +119,7 @@ class CheckSecretMiddleware:
             or path == "/music"
             or path == "/api/ears"
             or path.startswith("/api/ears/")
+            or path.startswith("/api/netease/")
         ):
             await self.app(scope, receive, send)
             return
@@ -300,6 +312,168 @@ async def list_ears():
             songs.append(fname.replace(".ears.json", ""))
     return {"songs": songs}
 
+
+# ── 网易云 REST API（给前端 music.html 用）──────────────────
+from netease_mcp import (
+    _netease_get, _netease_post, _netease_get_raw,
+    _get_music_u, _get_csrf, _get_uid, _save_cred, _csrf,
+)
+import netease_mcp as _nm
+
+@app.post("/api/netease/qr/start")
+async def netease_qr_start():
+    """前端发起扫码登录。"""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://music.163.com/api/login/qrcode/unikey",
+                data={"type": "1"},
+                headers=_nm.HEADERS,
+            )
+            result = resp.json()
+        unikey = result.get("unikey", "")
+        if not unikey:
+            return JSONResponse(status_code=500, content={"error": "获取二维码失败"})
+        _nm._qr_session = {"unikey": unikey, "created": time.time()}
+        return {"unikey": unikey, "qr_url": f"https://music.163.com/login?codekey={unikey}"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/netease/qr/check")
+async def netease_qr_check():
+    """前端轮询扫码状态。"""
+    unikey = _nm._qr_session.get("unikey", "")
+    if not unikey:
+        return JSONResponse(status_code=400, content={"error": "未发起扫码"})
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://music.163.com/api/login/qrcode/client/login",
+                params={"key": unikey, "type": "1"},
+                headers=_nm.HEADERS,
+            )
+        result = resp.json()
+        code = result.get("code", 0)
+
+        if code == 803:
+            # 提取 cookie
+            music_u = ""
+            csrf = ""
+            cookies_raw = [v for k, v in resp.headers.multi_items() if k.lower() == "set-cookie"]
+            for c in cookies_raw:
+                m = re.search(r"MUSIC_U=([^;]+)", c)
+                if m: music_u = m.group(1)
+                m2 = re.search(r"__csrf=([a-f0-9]+)", c)
+                if m2: csrf = m2.group(1)
+            if not music_u:
+                cookie_str = result.get("cookie", "")
+                m = re.search(r"MUSIC_U=([^;]+)", cookie_str)
+                if m: music_u = m.group(1)
+                m2 = re.search(r"__csrf=([a-f0-9]+)", cookie_str)
+                if m2: csrf = m2.group(1)
+
+            if music_u:
+                _save_cred(music_u, csrf)
+                _nm._qr_session = {}
+                # 拿 uid
+                try:
+                    acc = await _netease_get("/api/w/nuser/account/get")
+                    uid = str(acc.get("account", {}).get("id", ""))
+                    if uid: _save_cred(music_u, csrf, uid)
+                except Exception:
+                    pass
+
+        return {
+            "code": code,
+            "nickname": result.get("nickname", ""),
+            "avatarUrl": result.get("avatarUrl", ""),
+            "logged_in": code == 803,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/netease/status")
+async def netease_status():
+    """检查网易云登录状态。"""
+    mu = _get_music_u()
+    if not mu:
+        return {"logged_in": False}
+    try:
+        acc = await _netease_get("/api/w/nuser/account/get")
+        profile = acc.get("profile", {})
+        return {
+            "logged_in": True,
+            "nickname": profile.get("nickname", ""),
+            "uid": profile.get("userId", ""),
+            "avatarUrl": profile.get("avatarUrl", ""),
+            "vipType": profile.get("vipType", 0),
+        }
+    except Exception:
+        return {"logged_in": False, "error": "cookie may be expired"}
+
+
+@app.get("/api/netease/search")
+async def netease_search(q: str, limit: int = 20):
+    """搜索歌曲。"""
+    result = await _netease_get("/api/search/get", params={"s": q, "type": 1, "limit": limit, "offset": 0})
+    songs = result.get("result", {}).get("songs", [])
+    ids = [s["id"] for s in songs]
+    detail = await _netease_post("/api/v3/song/detail", data={"c": json.dumps([{"id": i} for i in ids])})
+    detail_map = {s["id"]: s for s in detail.get("songs", [])}
+    out = []
+    for s in songs:
+        d = detail_map.get(s["id"], {})
+        out.append({
+            "id": s["id"],
+            "name": s["name"],
+            "artists": [a["name"] for a in s.get("artists", [])],
+            "album": s.get("album", {}).get("name", ""),
+            "cover": d.get("al", {}).get("picUrl", ""),
+            "duration": s.get("duration", 0),
+        })
+    return {"songs": out}
+
+
+@app.get("/api/netease/song/url")
+async def netease_song_url(id: int, br: int = 128000):
+    """获取播放 CDN 直链。"""
+    result = await _netease_get("/api/song/enhance/player/url", params={"ids": f"[{id}]", "br": br})
+    data = result.get("data", [])
+    if data and data[0].get("url"):
+        return {"url": data[0]["url"], "br": data[0].get("br", 0), "type": data[0].get("type", "")}
+    return JSONResponse(status_code=404, content={"error": "无法获取播放链接"})
+
+
+@app.get("/api/netease/lyric")
+async def netease_lyric(id: int):
+    """获取歌词。"""
+    from netease_mcp import _parse_lrc
+    result = await _netease_get("/api/song/lyric", params={"id": id, "lv": 1, "tv": 1})
+    return {
+        "orig": _parse_lrc(result.get("lrc", {}).get("lyric", "")),
+        "trans": _parse_lrc(result.get("tlyric", {}).get("lyric", "")),
+    }
+
+
+@app.post("/api/netease/like")
+async def netease_like(request: Request):
+    """喜欢/取消喜欢。"""
+    data = await request.json()
+    song_id = data.get("id")
+    do_like = data.get("like", True)
+    csrf = _csrf()
+    if not csrf or not _get_music_u():
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+    result = await _netease_get("/api/song/like", params={
+        "trackId": song_id, "like": str(do_like).lower(), "csrf_token": csrf,
+    })
+    return {"code": result.get("code"), "liked": do_like}
+
+
+import httpx as _httpx  # already imported above, just being explicit for this block
 
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts
 import asyncio as _asyncio
