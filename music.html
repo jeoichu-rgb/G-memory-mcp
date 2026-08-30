@@ -370,6 +370,8 @@ function showPlayer() {
   document.getElementById('screen-connect').style.display = 'none';
   document.getElementById('screen-player').classList.add('on');
   document.getElementById('btn-disconnect').classList.remove('hidden');
+  // 默认先显示 idle，等轮询结果再切
+  setIdle();
 }
 
 function startPolling() {
@@ -404,6 +406,7 @@ async function fetchNowPlaying() {
     handleTrack(data);
   } catch (e) {
     console.warn('poll error', e);
+    setIdle();
   }
 }
 
