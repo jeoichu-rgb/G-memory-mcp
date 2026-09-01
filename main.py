@@ -404,7 +404,11 @@ async def netease_status():
         return {"logged_in": False}
     try:
         acc = await _netease_get("/api/w/nuser/account/get")
-        profile = acc.get("profile", {})
+        if not acc or not isinstance(acc, dict):
+            return {"logged_in": False, "error": "API returned empty response — cookie may be invalid"}
+        profile = acc.get("profile") or {}
+        if not profile:
+            return {"logged_in": False, "error": f"no profile in response (code={acc.get('code', '?')})"}
         return {
             "logged_in": True,
             "nickname": profile.get("nickname", ""),
@@ -413,7 +417,7 @@ async def netease_status():
             "vipType": profile.get("vipType", 0),
         }
     except Exception as e:
-        return {"logged_in": False, "error": f"cookie may be expired: {type(e).__name__}: {e}", "music_u_len": len(mu)}
+        return {"logged_in": False, "error": f"request failed: {type(e).__name__}: {e}"}
 
 
 @app.get("/api/netease/search")
