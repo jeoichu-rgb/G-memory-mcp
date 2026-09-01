@@ -412,8 +412,8 @@ async def netease_status():
             "avatarUrl": profile.get("avatarUrl", ""),
             "vipType": profile.get("vipType", 0),
         }
-    except Exception:
-        return {"logged_in": False, "error": "cookie may be expired"}
+    except Exception as e:
+        return {"logged_in": False, "error": f"cookie may be expired: {type(e).__name__}: {e}", "music_u_len": len(mu)}
 
 
 @app.get("/api/netease/search")
