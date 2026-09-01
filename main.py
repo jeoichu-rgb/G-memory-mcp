@@ -4,7 +4,7 @@ import re
 import time
 import httpx
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from openai import OpenAI
@@ -22,7 +22,7 @@ SGT = timezone(timedelta(hours=8))
 
 # --- 新增的底层依赖 ---
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 os.makedirs("logs", exist_ok=True)
 
@@ -452,6 +452,64 @@ async def netease_song_url(id: int, br: int = 128000):
     if data and data[0].get("url"):
         return {"url": data[0]["url"], "br": data[0].get("br", 0), "type": data[0].get("type", "")}
     return JSONResponse(status_code=404, content={"error": "无法获取播放链接"})
+
+
+_cdn_cache: dict[tuple, tuple[str, str, float]] = {}   # (id,br) → (url, ext, timestamp)
+
+async def _resolve_cdn(song_id: int, br: int = 128000) -> tuple[str, str] | None:
+    """获取 CDN URL，5 分钟缓存。"""
+    key = (song_id, br)
+    if key in _cdn_cache:
+        url, ext, ts = _cdn_cache[key]
+        if time.time() - ts < 300:
+            return url, ext
+    result = await _netease_get("/api/song/enhance/player/url", params={"ids": f"[{song_id}]", "br": br})
+    data = result.get("data", [])
+    if not data or not data[0].get("url"):
+        return None
+    url = data[0]["url"]
+    ext = data[0].get("type", "mp3") or "mp3"
+    _cdn_cache[key] = (url, ext, time.time())
+    return url, ext
+
+@app.get("/api/netease/song/stream")
+async def netease_song_stream(request: Request, id: int, br: int = 128000):
+    """代理音频流——CDN URL 和获取者 IP 绑定，前端直连会 403。支持 Range seek。"""
+    resolved = await _resolve_cdn(id, br)
+    if not resolved:
+        return JSONResponse(status_code=404, content={"error": "无法获取播放链接"})
+    cdn_url, ext = resolved
+    media_type = f"audio/{ext}"
+
+    # 透传 Range header 给 CDN
+    fwd_headers: dict[str, str] = {}
+    if rng := request.headers.get("range"):
+        fwd_headers["Range"] = rng
+
+    client = httpx.AsyncClient(timeout=120, follow_redirects=True)
+    upstream = await client.send(
+        client.build_request("GET", cdn_url, headers=fwd_headers), stream=True,
+    )
+
+    out_headers: dict[str, str] = {"Accept-Ranges": "bytes"}
+    for h in ("content-length", "content-range"):
+        if v := upstream.headers.get(h):
+            out_headers[h] = v
+
+    async def _iter():
+        try:
+            async for chunk in upstream.aiter_bytes(65536):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _iter(),
+        status_code=upstream.status_code,
+        media_type=media_type,
+        headers=out_headers,
+    )
 
 
 @app.get("/api/netease/lyric")

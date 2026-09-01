@@ -48,7 +48,7 @@ header>*{pointer-events:auto;}
 .page.out{opacity:0;visibility:hidden;pointer-events:none;}
 
 /* ── Vinyl Page ── */
-.page-vinyl{padding:42px 0 160px;gap:20px;justify-content:flex-start;padding-top:max(60px,8vh);}
+.page-vinyl{padding:0 0 260px;justify-content:center;}
 
 .vinyl-container{position:relative;width:var(--vs);height:var(--vs);flex-shrink:0;}
 
@@ -99,20 +99,23 @@ header>*{pointer-events:auto;}
   box-shadow:inset 0 0 2px rgba(0,0,0,.8);z-index:2;}
 @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 
-/* Song Info */
-.song-info{text-align:left;padding:0 28px;width:100%;}
-.song-title-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+/* Song Info (inside dock) */
+.song-info{padding:0 0 10px;width:100%;}
+.song-title-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.song-title-left{display:flex;align-items:center;gap:8px;min-width:0;flex:1;}
 .song-title{font-family:-apple-system,'SF Pro Display','Helvetica Neue',sans-serif;
-  font-size:20px;font-weight:600;color:var(--wh);
-  max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  font-size:22px;font-weight:600;color:var(--wh);letter-spacing:-.02em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .vip-badge{font-size:9px;padding:1px 5px;border:1px solid var(--vip);
   color:var(--vip);border-radius:3px;letter-spacing:.04em;flex-shrink:0;line-height:1.4;}
 .vip-badge.hidden{display:none;}
 .song-artist{font-family:-apple-system,'SF Pro Display','Helvetica Neue',sans-serif;
-  font-size:14px;color:var(--dim);margin-top:4px;}
+  font-size:15px;color:var(--dim);margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 /* Like Button */
-.btn-like{background:none;border:none;cursor:pointer;padding:10px;margin-top:4px;display:inline-flex;}
+.btn-like{background:none;border:none;cursor:pointer;padding:8px;
+  display:inline-flex;flex-shrink:0;}
 .btn-like svg{width:22px;height:22px;transition:all .25s;}
 .btn-like .heart-outline{color:var(--dim);}
 .btn-like .heart-fill{color:var(--red);display:none;}
@@ -302,21 +305,6 @@ footer.collapsed .dock-inner{max-height:0;opacity:0;}
         <div class="vinyl-hole"></div>
       </div>
     </div>
-    <div class="song-info">
-      <div class="song-title-row">
-        <span class="song-title" id="song-title"></span>
-        <span class="vip-badge hidden" id="vip-badge">VIP</span>
-      </div>
-      <div class="song-artist" id="song-artist"></div>
-      <button class="btn-like" id="btn-like" style="display:none">
-        <svg class="heart-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 21s-8-5.5-8-11c0-2.76 2.24-5 5-5 1.6 0 3 .8 3 .8s1.4-.8 3-.8c2.76 0 5 2.24 5 5 0 5.5-8 11-8 11z"/>
-        </svg>
-        <svg class="heart-fill" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-          <path d="M12 21s-8-5.5-8-11c0-2.76 2.24-5 5-5 1.6 0 3 .8 3 .8s1.4-.8 3-.8c2.76 0 5 2.24 5 5 0 5.5-8 11-8 11z"/>
-        </svg>
-      </button>
-    </div>
   </section>
 
   <!-- Page 2: Lyrics -->
@@ -329,6 +317,23 @@ footer.collapsed .dock-inner{max-height:0;opacity:0;}
 
 <!-- ── Footer Dock ── -->
 <footer id="dock">
+  <div class="song-info" id="song-info">
+    <div class="song-title-row">
+      <div class="song-title-left">
+        <span class="song-title" id="song-title"></span>
+        <span class="vip-badge hidden" id="vip-badge">VIP</span>
+      </div>
+      <button class="btn-like" id="btn-like" style="display:none">
+        <svg class="heart-outline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 21s-8-5.5-8-11c0-2.76 2.24-5 5-5 1.6 0 3 .8 3 .8s1.4-.8 3-.8c2.76 0 5 2.24 5 5 0 5.5-8 11-8 11z"/>
+        </svg>
+        <svg class="heart-fill" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+          <path d="M12 21s-8-5.5-8-11c0-2.76 2.24-5 5-5 1.6 0 3 .8 3 .8s1.4-.8 3-.8c2.76 0 5 2.24 5 5 0 5.5-8 11-8 11z"/>
+        </svg>
+      </button>
+    </div>
+    <div class="song-artist" id="song-artist"></div>
+  </div>
   <div class="progress-row">
     <span class="time" id="time-cur">0:00</span>
     <div class="progress-track" id="progress-track">
@@ -589,22 +594,8 @@ async function selectSong(song) {
   updateSongUI(song);
   closeSearch();
 
-  // Get CDN url
-  let urlData = null;
-  try {
-    const r = await fetch('/api/netease/song/url?id=' + song.id);
-    if (r.ok) urlData = await r.json();
-  } catch (e) {}
-
-  if (!urlData || !urlData.url) {
-    showToast('需要VIP — 可跳转 Apple Music');
-    el.vinyl.classList.remove('spinning');
-    el.tonearm.classList.remove('on');
-    el.btnPlay.classList.remove('playing');
-    return;
-  }
-
-  audio.src = urlData.url;
+  // Stream through VPS proxy (CDN URL is IP-bound, direct fetch 403s)
+  audio.src = '/api/netease/song/stream?id=' + song.id;
   audio.play().catch(() => {});
 
   // Load lyrics
@@ -654,6 +645,12 @@ audio.addEventListener('ended', () => {
     el.tonearm.classList.remove('on');
     el.btnPlay.classList.remove('playing');
   }
+});
+audio.addEventListener('error', () => {
+  el.vinyl.classList.remove('spinning');
+  el.tonearm.classList.remove('on');
+  el.btnPlay.classList.remove('playing');
+  showToast('播放失败 — 可能需要VIP');
 });
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
