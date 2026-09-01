@@ -476,6 +476,7 @@ let lyricsLines = [];     // [{time, text, trans}]
 let activeLyricIdx = -1;
 let reportTimer = null;
 let searchTimer = null;
+let playError = false;
 
 // Playlist & repeat
 let playlist = [];         // [{id, name, artists, album, cover, duration, fee}]
@@ -642,6 +643,7 @@ function updateSongUI(song) {
    AUDIO EVENTS
 ════════════════════════════════════ */
 audio.addEventListener('play', () => {
+  playError = false;
   el.vinyl.classList.add('spinning');
   el.tonearm.classList.add('on');
   el.btnPlay.classList.add('playing');
@@ -665,10 +667,11 @@ audio.addEventListener('ended', () => {
   }
 });
 audio.addEventListener('error', () => {
+  playError = true;
   el.vinyl.classList.remove('spinning');
   el.tonearm.classList.remove('on');
   el.btnPlay.classList.remove('playing');
-  showToast('播放失败 — 可能需要VIP');
+  showToast('播放失败 — 点击重试');
 });
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
@@ -763,6 +766,12 @@ $('btn-spectrum').onclick = () => {
 
 el.btnPlay.onclick = () => {
   if (!currentSong) { openSearch(); return; }
+  if (playError && currentSong) {
+    playError = false;
+    audio.src = '/api/netease/song/stream?id=' + currentSong.id;
+    audio.play().catch(() => {});
+    return;
+  }
   if (audio.paused) audio.play().catch(() => {}); else audio.pause();
 };
 
