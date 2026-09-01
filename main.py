@@ -117,6 +117,7 @@ class CheckSecretMiddleware:
             or path == "/api/push/vapid-key"
             or path == "/health/update"
             or path == "/music"
+            or path.startswith("/api/music/")
             or path == "/api/ears"
             or path.startswith("/api/ears/")
             or path.startswith("/api/netease/")
@@ -423,6 +424,7 @@ async def netease_search(q: str, limit: int = 20):
     ids = [s["id"] for s in songs]
     detail = await _netease_post("/api/v3/song/detail", data={"c": json.dumps([{"id": i} for i in ids])})
     detail_map = {s["id"]: s for s in detail.get("songs", [])}
+    privs = {p["id"]: p for p in detail.get("privileges", [])}
     out = []
     for s in songs:
         d = detail_map.get(s["id"], {})
@@ -433,6 +435,7 @@ async def netease_search(q: str, limit: int = 20):
             "album": s.get("album", {}).get("name", ""),
             "cover": d.get("al", {}).get("picUrl", ""),
             "duration": s.get("duration", 0),
+            "fee": privs.get(s["id"], {}).get("fee", 0),
         })
     return {"songs": out}
 
@@ -473,8 +476,26 @@ async def netease_like(request: Request):
     return {"code": result.get("code"), "liked": do_like}
 
 
-import httpx as _httpx  # already imported above, just being explicit for this block
+# ── Now Playing 状态（前端上报，MCP 读取）──
+NOW_PLAYING_FILE = os.path.join(MUSIC_DIR, "now_playing.json")
 
+@app.get("/api/music/now-playing")
+async def get_now_playing():
+    if os.path.exists(NOW_PLAYING_FILE):
+        with open(NOW_PLAYING_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {"playing": False}
+
+@app.post("/api/music/now-playing")
+async def set_now_playing(request: Request):
+    data = await request.json()
+    data["updated_at"] = time.time()
+    with open(NOW_PLAYING_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    return {"ok": True}
+
+
+import httpx as _httpx  # already imported above, just being explicit for this block
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts
 import asyncio as _asyncio
 
