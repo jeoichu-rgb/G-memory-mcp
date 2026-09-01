@@ -786,7 +786,7 @@ el.btnPlay.onclick = () => {
   if (!currentSong) { openSearch(); return; }
   if (playError && currentSong) {
     playError = false;
-    audio.src = '/api/netease/song/stream?id=' + currentSong.id;
+    audio.src = '/api/netease/song/stream?id=' + currentSong.id + '&_t=' + Date.now();
     audio.play().catch(() => {});
     return;
   }

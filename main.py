@@ -495,9 +495,20 @@ async def netease_song_stream(request: Request, id: int, br: int = 128000):
         fwd["Range"] = rng
 
     client = httpx.AsyncClient(timeout=120, follow_redirects=True)
-    upstream = await client.send(
-        client.build_request("GET", cdn_url, headers=fwd), stream=True,
-    )
+    try:
+        upstream = await client.send(
+            client.build_request("GET", cdn_url, headers=fwd), stream=True,
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        await client.aclose()
+        _cdn_cache.pop((id, br), None)
+        return JSONResponse(status_code=502, content={"error": "CDN 连接失败"})
+
+    if upstream.status_code >= 400:
+        await upstream.aclose()
+        await client.aclose()
+        _cdn_cache.pop((id, br), None)
+        return JSONResponse(status_code=upstream.status_code, content={"error": "CDN 播放失败，请重试"})
 
     out_headers: dict[str, str] = {"Accept-Ranges": "bytes"}
     for h in ("content-length", "content-range"):
