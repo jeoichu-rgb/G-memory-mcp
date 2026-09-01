@@ -485,6 +485,14 @@ async def netease_playlists():
     """获取用户歌单列表。"""
     uid = _get_uid()
     if not uid:
+        # Try to fetch uid from account API
+        try:
+            acc = await _netease_get("/api/w/nuser/account/get")
+            if acc and isinstance(acc, dict):
+                uid = str((acc.get("profile") or {}).get("userId", ""))
+        except Exception:
+            pass
+    if not uid:
         return JSONResponse(status_code=401, content={"error": "未登录"})
     result = await _netease_get("/api/user/playlist", params={"uid": uid, "limit": 50, "offset": 0})
     playlists = result.get("playlist", []) if result else []
