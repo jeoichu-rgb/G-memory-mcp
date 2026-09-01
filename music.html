@@ -692,16 +692,16 @@ let audioCtx, analyser, freqData;
 let specOn = false, specRAF = null, specInnerR = 0;
 const specCanvas = $('spectrum-canvas');
 const specCtx = specCanvas.getContext('2d');
-const SPEC_PAD = 40;
-const SPEC_BARS = 80;
+const SPEC_PAD = 44;
+const SPEC_BARS = 180;
 
 function initAnalyser() {
   if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const src = audioCtx.createMediaElementSource(audio);
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.82;
+  analyser.fftSize = 512;
+  analyser.smoothingTimeConstant = 0.78;
   freqData = new Uint8Array(analyser.frequencyBinCount);
   src.connect(analyser);
   analyser.connect(audioCtx.destination);
@@ -710,7 +710,7 @@ function initAnalyser() {
 function sizeSpecCanvas() {
   const vs = el.vinyl.offsetWidth;
   if (!vs) return;
-  specInnerR = vs / 2 + 3;
+  specInnerR = vs / 2 + 2;
   const sz = vs + SPEC_PAD * 2;
   const dpr = window.devicePixelRatio || 1;
   specCanvas.width = sz * dpr;
@@ -725,23 +725,38 @@ function drawSpec() {
   const sz = parseFloat(specCanvas.style.width) || 0;
   if (!sz || !analyser) return;
   specCtx.clearRect(0, 0, sz, sz);
+  const cx = sz / 2, cy = sz / 2;
+
+  // Base ring — always visible thin circle
+  specCtx.beginPath();
+  specCtx.arc(cx, cy, specInnerR, 0, Math.PI * 2);
+  specCtx.strokeStyle = 'rgba(200,190,240,0.12)';
+  specCtx.lineWidth = 0.7;
+  specCtx.stroke();
+
   if (audio.paused) return;
   analyser.getByteFrequencyData(freqData);
-  const cx = sz / 2, cy = sz / 2;
-  const maxBar = SPEC_PAD - 6;
+  const maxBar = SPEC_PAD - 4;
+  const n = freqData.length;
+
+  specCtx.lineWidth = 1;
+  specCtx.lineCap = 'round';
   for (let i = 0; i < SPEC_BARS; i++) {
-    const di = Math.floor(i * freqData.length / SPEC_BARS);
-    const val = freqData[di] / 255;
-    if (val < 0.02) continue;
+    // Interpolate between bins for smooth density
+    const fi = (i / SPEC_BARS) * n;
+    const lo = Math.floor(fi);
+    const hi = Math.min(lo + 1, n - 1);
+    const t = fi - lo;
+    const raw = (freqData[lo] * (1 - t) + freqData[hi] * t) / 255;
+    const val = raw * raw; // Square — quiet stays flat, loud spikes hard
+    if (val < 0.005) continue;
     const ang = (i / SPEC_BARS) * Math.PI * 2 - Math.PI / 2;
-    const len = val * maxBar + 2;
+    const len = val * maxBar;
     const cos = Math.cos(ang), sin = Math.sin(ang);
     specCtx.beginPath();
     specCtx.moveTo(cx + cos * specInnerR, cy + sin * specInnerR);
     specCtx.lineTo(cx + cos * (specInnerR + len), cy + sin * (specInnerR + len));
-    specCtx.strokeStyle = 'rgba(200,190,240,' + (0.1 + val * 0.6).toFixed(2) + ')';
-    specCtx.lineWidth = 2.5;
-    specCtx.lineCap = 'round';
+    specCtx.strokeStyle = 'rgba(200,190,240,' + (0.18 + val * 0.72).toFixed(2) + ')';
     specCtx.stroke();
   }
 }
