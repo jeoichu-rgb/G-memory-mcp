@@ -22,8 +22,7 @@ SGT = timezone(timedelta(hours=8))
 
 # --- 新增的底层依赖 ---
 from fastapi import Request
-from pathlib import Path
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 os.makedirs("logs", exist_ok=True)
 
@@ -456,11 +455,9 @@ async def netease_song_url(id: int, br: int = 128000):
 
 
 _cdn_cache: dict[tuple, tuple[str, str, float]] = {}   # (id,br) → (url, ext, timestamp)
-MUSIC_CACHE = Path("data/music_cache")
-MUSIC_CACHE.mkdir(parents=True, exist_ok=True)
 
 async def _resolve_cdn(song_id: int, br: int = 128000) -> tuple[str, str] | None:
-    """获取 CDN URL，5 分钟缓存。"""
+    """获取 CDN URL，5 分钟缓存。首次探测可达性，403 就 fallback m701。"""
     key = (song_id, br)
     if key in _cdn_cache:
         url, ext, ts = _cdn_cache[key]
@@ -472,77 +469,53 @@ async def _resolve_cdn(song_id: int, br: int = 128000) -> tuple[str, str] | None
         return None
     url = data[0]["url"]
     ext = data[0].get("type", "mp3") or "mp3"
+    # 探测 CDN 节点可达性
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            probe = await c.head(url)
+            probe.raise_for_status()
+    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout):
+        fallback = re.sub(r"m\d+\.music\.126\.net", "m701.music.126.net", url)
+        if fallback != url:
+            url = fallback
     _cdn_cache[key] = (url, ext, time.time())
     return url, ext
 
-async def _download_audio(cdn_url: str, dest: Path):
-    """下载音频到本地缓存，带 CDN m701 fallback。"""
-    async def _dl(url: str):
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
-            async with c.stream("GET", url) as resp:
-                resp.raise_for_status()
-                with open(dest, "wb") as f:
-                    async for chunk in resp.aiter_bytes(65536):
-                        f.write(chunk)
-    try:
-        await _dl(cdn_url)
-    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ConnectTimeout):
-        # CDN fallback: m数字 → m701（对海外 IP 稳定可用）
-        fallback = re.sub(r"m\d+\.music\.126\.net", "m701.music.126.net", cdn_url)
-        if fallback != cdn_url:
-            await _dl(fallback)
-        else:
-            raise
-
 @app.get("/api/netease/song/stream")
 async def netease_song_stream(request: Request, id: int, br: int = 128000):
-    """音频代理——下载到本地缓存 + CDN fallback + Range seek。"""
-    cache_file = MUSIC_CACHE / f"{id}.mp3"
+    """流式代理——CDN fallback m701 + Range 透传。不落盘，不占磁盘。"""
+    resolved = await _resolve_cdn(id, br)
+    if not resolved:
+        return JSONResponse(status_code=404, content={"error": "无法获取播放链接"})
+    cdn_url, ext = resolved
 
-    # 缓存不存在时下载
-    if not (cache_file.exists() and cache_file.stat().st_size > 0):
-        resolved = await _resolve_cdn(id, br)
-        if not resolved:
-            return JSONResponse(status_code=404, content={"error": "无法获取播放链接"})
-        cdn_url, _ext = resolved
+    # 透传 Range header
+    fwd: dict[str, str] = {}
+    if rng := request.headers.get("range"):
+        fwd["Range"] = rng
+
+    client = httpx.AsyncClient(timeout=120, follow_redirects=True)
+    upstream = await client.send(
+        client.build_request("GET", cdn_url, headers=fwd), stream=True,
+    )
+
+    out_headers: dict[str, str] = {"Accept-Ranges": "bytes"}
+    for h in ("content-length", "content-range"):
+        if v := upstream.headers.get(h):
+            out_headers[h] = v
+
+    async def _iter():
         try:
-            await _download_audio(cdn_url, cache_file)
-        except Exception:
-            cache_file.unlink(missing_ok=True)
-            return JSONResponse(status_code=502, content={"error": "音频下载失败"})
+            async for chunk in upstream.aiter_bytes(65536):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
 
-    size = cache_file.stat().st_size
-    range_hdr = request.headers.get("range")
-
-    if range_hdr:
-        m = re.match(r"bytes=(\d*)-(\d*)", range_hdr)
-        start = int(m.group(1)) if m and m.group(1) else 0
-        end = int(m.group(2)) if m and m.group(2) else size - 1
-        end = min(end, size - 1)
-        length = end - start + 1
-
-        async def _range():
-            with open(cache_file, "rb") as f:
-                f.seek(start)
-                left = length
-                while left > 0:
-                    chunk = f.read(min(65536, left))
-                    if not chunk:
-                        break
-                    left -= len(chunk)
-                    yield chunk
-
-        return StreamingResponse(
-            _range(), status_code=206, media_type="audio/mpeg",
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{size}",
-                "Content-Length": str(length),
-                "Accept-Ranges": "bytes",
-            },
-        )
-
-    return FileResponse(cache_file, media_type="audio/mpeg",
-                        headers={"Accept-Ranges": "bytes"})
+    return StreamingResponse(
+        _iter(), status_code=upstream.status_code,
+        media_type=f"audio/{ext}", headers=out_headers,
+    )
 
 
 @app.get("/api/netease/lyric")
