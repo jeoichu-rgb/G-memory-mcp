@@ -480,6 +480,40 @@ async def netease_like(request: Request):
     return {"code": result.get("code"), "liked": do_like}
 
 
+@app.get("/api/netease/playlists")
+async def netease_playlists():
+    """获取用户歌单列表。"""
+    uid = _get_uid()
+    if not uid:
+        return JSONResponse(status_code=401, content={"error": "未登录"})
+    result = await _netease_get("/api/user/playlist", params={"uid": uid, "limit": 50, "offset": 0})
+    playlists = result.get("playlist", []) if result else []
+    return {"playlists": [
+        {"id": p["id"], "name": p["name"], "count": p.get("trackCount", 0),
+         "cover": p.get("coverImgUrl", "")}
+        for p in playlists
+    ]}
+
+
+@app.get("/api/netease/playlist/detail")
+async def netease_playlist_detail(id: int):
+    """获取歌单内歌曲列表。"""
+    result = await _netease_get("/api/v6/playlist/detail", params={"id": id, "n": 1000})
+    if not result or not isinstance(result, dict):
+        return JSONResponse(status_code=404, content={"error": "歌单不存在"})
+    tracks = result.get("playlist", {}).get("tracks", [])
+    privs = {p["id"]: p for p in result.get("privileges", [])}
+    return {"songs": [
+        {"id": t["id"], "name": t["name"],
+         "artists": [a.get("name", "") for a in t.get("ar", [])],
+         "album": t.get("al", {}).get("name", ""),
+         "cover": t.get("al", {}).get("picUrl", ""),
+         "duration": t.get("dt", 0),
+         "fee": privs.get(t["id"], {}).get("fee", 0)}
+        for t in tracks
+    ]}
+
+
 # ── Now Playing 状态（前端上报，MCP 读取）──
 NOW_PLAYING_FILE = os.path.join(MUSIC_DIR, "now_playing.json")
 

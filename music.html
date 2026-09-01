@@ -128,29 +128,34 @@ header>*{pointer-events:auto;}
 .lyric-line{font-family:-apple-system,'SF Pro Display','Helvetica Neue','PingFang SC',sans-serif;
   font-size:26px;font-weight:700;line-height:1.45;letter-spacing:-.01em;
   color:rgba(255,255,255,.28);transition:color .4s,transform .35s,text-shadow .4s;
-  padding:8px 0 2px;cursor:default;}
+  padding:2px 0;margin:6px 0 0;cursor:default;}
 .lyric-line.active{color:var(--wh);transform:scale(1.02);transform-origin:left center;
   text-shadow:0 0 18px rgba(255,255,255,.1);}
 .lyric-line.near{color:rgba(255,255,255,.45);}
 .lyric-trans{font-family:-apple-system,'SF Pro Display','Helvetica Neue','PingFang SC',sans-serif;
   font-size:14px;font-weight:500;color:rgba(255,255,255,.18);
-  padding-bottom:6px;cursor:default;}
+  margin:0 0 4px;padding:0;cursor:default;}
 .lyric-placeholder{font-size:13px;color:var(--dim);font-style:italic;
   text-align:center;padding-top:36vh;}
 
-/* ── Footer ── */
+/* ── Footer Dock ── */
 footer{position:fixed;bottom:0;left:0;right:0;z-index:20;
-  padding:0 20px calc(env(safe-area-inset-bottom,12px) + 10px);
-  background:linear-gradient(transparent,rgba(0,0,0,.45) 30%);}
-.progress-row{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
-.time{font-size:10px;color:var(--dim);min-width:32px;font-variant-numeric:tabular-nums;}
+  padding:0 20px calc(env(safe-area-inset-bottom,12px) + 8px);
+  background:linear-gradient(transparent,rgba(0,0,0,.5) 30%);}
+.dock-inner{transition:max-height .4s cubic-bezier(.32,.72,.24,1),opacity .3s;
+  max-height:200px;opacity:1;overflow:hidden;}
+footer.collapsed .dock-inner{max-height:0;opacity:0;}
+.progress-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.time{font-family:-apple-system,'SF Pro Display','Helvetica Neue',sans-serif;
+  font-size:11px;font-weight:500;font-variant-numeric:tabular-nums;
+  color:var(--dim);min-width:34px;letter-spacing:-.02em;}
 .time:last-child{text-align:right;}
 .progress-track{flex:1;height:3px;background:var(--muted);border-radius:2px;
   position:relative;cursor:pointer;touch-action:none;}
 .progress-fill{height:100%;background:var(--dim);border-radius:2px;
   transition:width .15s linear;pointer-events:none;}
 .progress-track:active .progress-fill{background:var(--wh);}
-.controls{display:flex;justify-content:center;align-items:center;gap:44px;}
+.controls{display:flex;justify-content:center;align-items:center;gap:44px;margin-bottom:8px;}
 .btn-ctrl{background:none;border:none;color:var(--wh);cursor:pointer;
   padding:6px;display:flex;align-items:center;justify-content:center;
   opacity:.85;transition:opacity .15s;}
@@ -161,6 +166,33 @@ footer{position:fixed;bottom:0;left:0;right:0;z-index:20;
 .btn-play .icon-pause{display:none;}
 .btn-play.playing .icon-play{display:none;}
 .btn-play.playing .icon-pause{display:block;}
+.toolbar{display:flex;justify-content:space-between;align-items:center;padding:4px 4px 0;}
+.toolbar-right{display:flex;align-items:center;gap:4px;}
+.btn-tool{background:none;border:none;color:var(--dim);cursor:pointer;
+  padding:8px;display:flex;align-items:center;justify-content:center;
+  transition:color .15s;}
+.btn-tool:active{opacity:.5;}
+.btn-tool svg{width:20px;height:20px;}
+.btn-tool.active{color:var(--wh);}
+
+/* ── Playlist Menu ── */
+.playlist-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.45);
+  display:flex;align-items:flex-end;justify-content:center;
+  transition:opacity .2s,visibility .2s;}
+.playlist-overlay.hidden{opacity:0;visibility:hidden;pointer-events:none;}
+.playlist-menu{width:100%;max-width:420px;background:#1c1c1e;
+  border-radius:14px 14px 0 0;padding:12px 0 calc(env(safe-area-inset-bottom,12px) + 8px);
+  max-height:60vh;display:flex;flex-direction:column;}
+.playlist-menu-hd{font-size:14px;font-weight:600;color:var(--wh);padding:4px 20px 12px;
+  border-bottom:1px solid rgba(255,255,255,.06);}
+.playlist-menu-list{flex:1;overflow-y:auto;}
+.playlist-item{display:flex;align-items:center;gap:12px;padding:12px 20px;cursor:pointer;
+  transition:background .1s;}
+.playlist-item:active{background:rgba(255,255,255,.04);}
+.playlist-item.current{color:var(--red);}
+.pi-cover{width:40px;height:40px;border-radius:4px;object-fit:cover;background:#1a1d24;flex-shrink:0;}
+.pi-name{flex:1;font-size:14px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pi-count{font-size:11px;color:var(--dim);flex-shrink:0;}
 
 /* ── Search Overlay ── */
 .search-overlay{position:fixed;inset:0;z-index:100;background:rgba(6,8,14,.94);
@@ -269,8 +301,8 @@ footer{position:fixed;bottom:0;left:0;right:0;z-index:20;
   </section>
 </div>
 
-<!-- ── Footer ── -->
-<footer>
+<!-- ── Footer Dock ── -->
+<footer id="dock">
   <div class="progress-row">
     <span class="time" id="time-cur">0:00</span>
     <div class="progress-track" id="progress-track">
@@ -278,30 +310,70 @@ footer{position:fixed;bottom:0;left:0;right:0;z-index:20;
     </div>
     <span class="time" id="time-dur">0:00</span>
   </div>
-  <div class="controls">
-    <button class="btn-ctrl" id="btn-prev" disabled aria-label="上一首">
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <rect x="4" y="5" width="2" height="14" rx="1"/>
-        <path d="M20 5v14l-12-7z"/>
-      </svg>
-    </button>
-    <button class="btn-ctrl btn-play" id="btn-play" aria-label="播放">
-      <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M8 5.14v13.72c0 .79.87 1.27 1.54.84l10.93-6.86a1 1 0 000-1.68L9.54 4.3A1 1 0 008 5.14z"/>
-      </svg>
-      <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="4" width="4" height="16" rx="1.2"/>
-        <rect x="14" y="4" width="4" height="16" rx="1.2"/>
-      </svg>
-    </button>
-    <button class="btn-ctrl" id="btn-next" disabled aria-label="下一首">
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M4 5v14l12-7z"/>
-        <rect x="18" y="5" width="2" height="14" rx="1"/>
-      </svg>
-    </button>
+  <div class="dock-inner">
+    <div class="controls">
+      <button class="btn-ctrl" id="btn-prev" disabled aria-label="上一首">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <rect x="4" y="5" width="2" height="14" rx="1"/>
+          <path d="M20 5v14l-12-7z"/>
+        </svg>
+      </button>
+      <button class="btn-ctrl btn-play" id="btn-play" aria-label="播放">
+        <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8 5.14v13.72c0 .79.87 1.27 1.54.84l10.93-6.86a1 1 0 000-1.68L9.54 4.3A1 1 0 008 5.14z"/>
+        </svg>
+        <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="4" width="4" height="16" rx="1.2"/>
+          <rect x="14" y="4" width="4" height="16" rx="1.2"/>
+        </svg>
+      </button>
+      <button class="btn-ctrl" id="btn-next" disabled aria-label="下一首">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M4 5v14l12-7z"/>
+          <rect x="18" y="5" width="2" height="14" rx="1"/>
+        </svg>
+      </button>
+    </div>
+    <div class="toolbar">
+      <!-- 聊天（占位） -->
+      <button class="btn-tool" id="btn-chat" aria-label="对话">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        </svg>
+      </button>
+      <div class="toolbar-right">
+        <!-- 循环模式 -->
+        <button class="btn-tool" id="btn-repeat" aria-label="循环模式">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="17 1 21 5 17 9"/>
+            <path d="M3 11V9a4 4 0 014-4h14"/>
+            <polyline points="7 23 3 19 7 15"/>
+            <path d="M21 13v2a4 4 0 01-4 4H3"/>
+          </svg>
+        </button>
+        <!-- 歌单 -->
+        <button class="btn-tool" id="btn-playlist-menu" aria-label="歌单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <line x1="8" y1="6" x2="21" y2="6"/>
+            <line x1="8" y1="12" x2="21" y2="12"/>
+            <line x1="8" y1="18" x2="21" y2="18"/>
+            <line x1="3" y1="6" x2="3.01" y2="6"/>
+            <line x1="3" y1="12" x2="3.01" y2="12"/>
+            <line x1="3" y1="18" x2="3.01" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
   </div>
 </footer>
+
+<!-- ── Playlist Overlay ── -->
+<div class="playlist-overlay hidden" id="playlist-overlay">
+  <div class="playlist-menu">
+    <div class="playlist-menu-hd">选择歌单</div>
+    <div class="playlist-menu-list" id="playlist-menu-list"></div>
+  </div>
+</div>
 
 <!-- ── Search Overlay ── -->
 <div class="search-overlay hidden" id="search-overlay">
@@ -350,6 +422,15 @@ let activeLyricIdx = -1;
 let reportTimer = null;
 let searchTimer = null;
 
+// Playlist & repeat
+let playlist = [];         // [{id, name, artists, album, cover, duration, fee}]
+let playIdx = -1;          // current index in playlist
+let repeatMode = 'list';   // 'list' | 'one' | 'shuffle'
+let currentPage = 'vinyl';
+let playlists = [];        // [{id, name, count, cover}]
+let activePlaylistId = null;
+let dockTimer = null;
+
 /* ════════════════════════════════════
    ELEMENTS
 ════════════════════════════════════ */
@@ -379,6 +460,12 @@ const el = {
   searchEmpty:  $('search-empty'),
   shareOverlay: $('share-overlay'),
   toast:        $('toast'),
+  dock:         $('dock'),
+  btnRepeat:    $('btn-repeat'),
+  btnPrev:      $('btn-prev'),
+  btnNext:      $('btn-next'),
+  playlistOverlay: $('playlist-overlay'),
+  playlistList: $('playlist-menu-list'),
 };
 
 /* ════════════════════════════════════
@@ -462,6 +549,9 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 ════════════════════════════════════ */
 async function selectSong(song) {
   currentSong = song;
+  // Track index in playlist
+  const idx = playlist.findIndex(s => s.id === song.id);
+  if (idx >= 0) playIdx = idx;
   updateSongUI(song);
   closeSearch();
 
@@ -520,10 +610,16 @@ audio.addEventListener('pause', () => {
   el.btnPlay.classList.remove('playing');
 });
 audio.addEventListener('ended', () => {
-  el.vinyl.classList.remove('spinning');
-  el.tonearm.classList.remove('on');
-  el.btnPlay.classList.remove('playing');
   clearInterval(reportTimer);
+  if (repeatMode === 'one') {
+    audio.currentTime = 0; audio.play().catch(() => {});
+  } else if (playlist.length > 0) {
+    playNext();
+  } else {
+    el.vinyl.classList.remove('spinning');
+    el.tonearm.classList.remove('on');
+    el.btnPlay.classList.remove('playing');
+  }
 });
 audio.addEventListener('timeupdate', () => {
   if (!audio.duration) return;
@@ -557,8 +653,16 @@ el.progTrack.addEventListener('pointerup', () => { dragging = false; });
    PAGE SWITCHING
 ════════════════════════════════════ */
 function showPage(name) {
+  currentPage = name;
   el.pageVinyl.classList.toggle('out', name !== 'vinyl');
   el.pageLyric.classList.toggle('out', name !== 'lyric');
+  // Auto-collapse dock on lyrics page after 5s
+  clearTimeout(dockTimer);
+  if (name === 'lyric') {
+    dockTimer = setTimeout(() => el.dock.classList.add('collapsed'), 5000);
+  } else {
+    el.dock.classList.remove('collapsed');
+  }
 }
 
 el.pageVinyl.addEventListener('click', e => {
@@ -736,6 +840,132 @@ function reportNowPlaying() {
     }),
   }).catch(() => {});
 }
+
+/* ════════════════════════════════════
+   DOCK COLLAPSE / EXPAND
+════════════════════════════════════ */
+function expandDock() {
+  el.dock.classList.remove('collapsed');
+  clearTimeout(dockTimer);
+  if (currentPage === 'lyric') {
+    dockTimer = setTimeout(() => el.dock.classList.add('collapsed'), 5000);
+  }
+}
+// Touch / scroll → expand dock
+el.dock.addEventListener('pointerdown', expandDock);
+el.lyricsScroll.addEventListener('scroll', expandDock, { passive: true });
+el.lyricsScroll.addEventListener('touchstart', expandDock, { passive: true });
+
+/* ════════════════════════════════════
+   REPEAT MODE
+════════════════════════════════════ */
+const repeatIcons = {
+  list: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/>
+    <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>`,
+  one: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/>
+    <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>
+    <text x="12" y="15" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">1</text></svg>`,
+  shuffle: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+    <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
+    <line x1="4" y1="4" x2="9" y2="9"/></svg>`,
+};
+function cycleRepeat() {
+  const modes = ['list', 'one', 'shuffle'];
+  const i = modes.indexOf(repeatMode);
+  repeatMode = modes[(i + 1) % modes.length];
+  el.btnRepeat.innerHTML = repeatIcons[repeatMode];
+  el.btnRepeat.classList.toggle('active', repeatMode !== 'list');
+  const labels = { list: '列表循环', one: '单曲循环', shuffle: '随机播放' };
+  showToast(labels[repeatMode]);
+}
+el.btnRepeat.onclick = cycleRepeat;
+
+/* ════════════════════════════════════
+   PLAYLIST & PREV/NEXT
+════════════════════════════════════ */
+function playNext() {
+  if (!playlist.length) return;
+  if (repeatMode === 'shuffle') {
+    playIdx = Math.floor(Math.random() * playlist.length);
+  } else {
+    playIdx = (playIdx + 1) % playlist.length;
+  }
+  selectSong(playlist[playIdx]);
+  updateNavButtons();
+}
+function playPrev() {
+  if (!playlist.length) return;
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (repeatMode === 'shuffle') {
+    playIdx = Math.floor(Math.random() * playlist.length);
+  } else {
+    playIdx = (playIdx - 1 + playlist.length) % playlist.length;
+  }
+  selectSong(playlist[playIdx]);
+  updateNavButtons();
+}
+function updateNavButtons() {
+  const has = playlist.length > 0;
+  el.btnPrev.disabled = !has;
+  el.btnNext.disabled = !has;
+}
+el.btnPrev.onclick = playPrev;
+el.btnNext.onclick = playNext;
+
+/* ════════════════════════════════════
+   PLAYLIST MENU
+════════════════════════════════════ */
+function openPlaylistMenu() { el.playlistOverlay.classList.remove('hidden'); loadPlaylists(); }
+function closePlaylistMenu() { el.playlistOverlay.classList.add('hidden'); }
+$('btn-playlist-menu').onclick = openPlaylistMenu;
+el.playlistOverlay.addEventListener('click', e => { if (e.target === el.playlistOverlay) closePlaylistMenu(); });
+
+async function loadPlaylists() {
+  el.playlistList.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim);font-size:12px">加载中...</div>';
+  try {
+    const r = await fetch('/api/netease/playlists');
+    const data = await r.json();
+    playlists = data.playlists || [];
+    if (!playlists.length) { el.playlistList.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim);font-size:12px">未找到歌单</div>'; return; }
+    el.playlistList.innerHTML = '';
+    playlists.forEach(p => {
+      const div = document.createElement('div');
+      div.className = 'playlist-item' + (p.id === activePlaylistId ? ' current' : '');
+      div.innerHTML = `<img class="pi-cover" src="${p.cover}?param=80y80" alt="" loading="lazy">
+        <span class="pi-name">${esc(p.name)}</span>
+        <span class="pi-count">${p.count}首</span>`;
+      div.addEventListener('click', () => loadPlaylist(p.id));
+      el.playlistList.appendChild(div);
+    });
+  } catch (e) {
+    el.playlistList.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim);font-size:12px">加载失败</div>';
+  }
+}
+
+async function loadPlaylist(id) {
+  closePlaylistMenu();
+  showToast('加载歌单...');
+  try {
+    const r = await fetch('/api/netease/playlist/detail?id=' + id);
+    const data = await r.json();
+    playlist = data.songs || [];
+    activePlaylistId = id;
+    playIdx = 0;
+    updateNavButtons();
+    if (playlist.length) {
+      selectSong(playlist[0]);
+      showToast('已加载 ' + playlist.length + ' 首');
+    }
+  } catch (e) {
+    showToast('加载失败');
+  }
+}
+
+// Chat button placeholder
+$('btn-chat').onclick = () => showToast('对话功能开发中');
 
 /* ════════════════════════════════════
    INIT
