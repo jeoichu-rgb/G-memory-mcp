@@ -99,6 +99,13 @@ header>*{pointer-events:auto;}
   box-shadow:inset 0 0 2px rgba(0,0,0,.8);z-index:2;}
 @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 
+/* ── Spectrum Ring ── */
+#spectrum-canvas{position:absolute;top:50%;left:50%;
+  transform:translate(-50%,-50%);pointer-events:none;}
+.vinyl-container.spectrum-on .vinyl::after{
+  box-shadow:none;border-color:transparent;
+  transition:box-shadow .4s,border-color .4s;}
+
 /* Song Info (inside dock) */
 .song-info{padding:0 0 10px;width:100%;}
 .song-title-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
@@ -298,7 +305,8 @@ footer.collapsed .dock-inner{max-height:0;opacity:0;}
 
   <!-- Page 1: Vinyl -->
   <section class="page page-vinyl" id="page-vinyl">
-    <div class="vinyl-container">
+    <div class="vinyl-container" id="vinyl-container">
+      <canvas id="spectrum-canvas"></canvas>
       <div class="tonearm" id="tonearm"></div>
       <div class="vinyl" id="vinyl">
         <img class="vinyl-cover" id="vinyl-cover" src="" alt="">
@@ -370,6 +378,16 @@ footer.collapsed .dock-inner{max-height:0;opacity:0;}
       <button class="btn-tool" id="btn-chat" aria-label="对话">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        </svg>
+      </button>
+      <!-- 频谱光环 -->
+      <button class="btn-tool" id="btn-spectrum" aria-label="频谱">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+          <rect x="2" y="14" width="2.4" height="6" rx="1"/>
+          <rect x="6.5" y="8" width="2.4" height="12" rx="1"/>
+          <rect x="11" y="4" width="2.4" height="16" rx="1"/>
+          <rect x="15.5" y="10" width="2.4" height="10" rx="1"/>
+          <rect x="20" y="13" width="2.4" height="7" rx="1"/>
         </svg>
       </button>
       <div class="toolbar-right">
@@ -661,6 +679,88 @@ audio.addEventListener('timeupdate', () => {
   syncLyrics(audio.currentTime);
 });
 
+/* ════════════════════════════════════
+   SPECTRUM RING
+════════════════════════════════════ */
+let audioCtx, analyser, freqData;
+let specOn = false, specRAF = null, specInnerR = 0;
+const specCanvas = $('spectrum-canvas');
+const specCtx = specCanvas.getContext('2d');
+const SPEC_PAD = 40;
+const SPEC_BARS = 80;
+
+function initAnalyser() {
+  if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = audioCtx.createMediaElementSource(audio);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.82;
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+  src.connect(analyser);
+  analyser.connect(audioCtx.destination);
+}
+
+function sizeSpecCanvas() {
+  const vs = el.vinyl.offsetWidth;
+  if (!vs) return;
+  specInnerR = vs / 2 + 3;
+  const sz = vs + SPEC_PAD * 2;
+  const dpr = window.devicePixelRatio || 1;
+  specCanvas.width = sz * dpr;
+  specCanvas.height = sz * dpr;
+  specCanvas.style.width = sz + 'px';
+  specCanvas.style.height = sz + 'px';
+  specCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawSpec() {
+  specRAF = requestAnimationFrame(drawSpec);
+  const sz = parseFloat(specCanvas.style.width) || 0;
+  if (!sz || !analyser) return;
+  specCtx.clearRect(0, 0, sz, sz);
+  if (audio.paused) return;
+  analyser.getByteFrequencyData(freqData);
+  const cx = sz / 2, cy = sz / 2;
+  const maxBar = SPEC_PAD - 6;
+  for (let i = 0; i < SPEC_BARS; i++) {
+    const di = Math.floor(i * freqData.length / SPEC_BARS);
+    const val = freqData[di] / 255;
+    if (val < 0.02) continue;
+    const ang = (i / SPEC_BARS) * Math.PI * 2 - Math.PI / 2;
+    const len = val * maxBar + 2;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    specCtx.beginPath();
+    specCtx.moveTo(cx + cos * specInnerR, cy + sin * specInnerR);
+    specCtx.lineTo(cx + cos * (specInnerR + len), cy + sin * (specInnerR + len));
+    specCtx.strokeStyle = 'rgba(200,190,240,' + (0.1 + val * 0.6).toFixed(2) + ')';
+    specCtx.lineWidth = 2.5;
+    specCtx.lineCap = 'round';
+    specCtx.stroke();
+  }
+}
+
+function startSpec() { if (!specRAF) { sizeSpecCanvas(); specRAF = requestAnimationFrame(drawSpec); } }
+function stopSpec() {
+  if (specRAF) { cancelAnimationFrame(specRAF); specRAF = null; }
+  const sz = parseFloat(specCanvas.style.width) || 0;
+  if (sz) specCtx.clearRect(0, 0, sz, sz);
+}
+
+// Keep AudioContext alive once created (audio routes through it)
+audio.addEventListener('play', () => {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  if (specOn && currentPage === 'vinyl') startSpec();
+});
+
+$('btn-spectrum').onclick = () => {
+  specOn = !specOn;
+  $('vinyl-container').classList.toggle('spectrum-on', specOn);
+  $('btn-spectrum').classList.toggle('active', specOn);
+  if (specOn) { initAnalyser(); startSpec(); }
+  else stopSpec();
+};
+
 el.btnPlay.onclick = () => {
   if (!currentSong) { openSearch(); return; }
   if (audio.paused) audio.play().catch(() => {}); else audio.pause();
@@ -687,6 +787,9 @@ function showPage(name) {
   currentPage = name;
   el.pageVinyl.classList.toggle('out', name !== 'vinyl');
   el.pageLyric.classList.toggle('out', name !== 'lyric');
+  // Spectrum: stop on lyrics, resume on vinyl
+  if (name === 'vinyl' && specOn && !audio.paused) startSpec();
+  if (name !== 'vinyl') stopSpec();
   // Auto-collapse dock on lyrics page after 5s
   clearTimeout(dockTimer);
   if (name === 'lyric') {
