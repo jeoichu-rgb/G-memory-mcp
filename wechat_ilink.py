@@ -412,6 +412,11 @@ class WeChatGateway:
         self._seen_msg_ids: set[str] = set()
         # cursor 变化时自动存盘，防止重启后重放历史消息
         self.client._on_cursor_update = self._save_token
+        # ── 消息防抖合并 ──
+        # 连续快速发的多条消息攒起来，等停下来再一起送进 Claude
+        self._msg_buffer: list[str] = []
+        self._debounce_task: asyncio.Task | None = None
+        self._debounce_seconds: float = 6.0
 
     def set_message_handler(self, handler):
         """
@@ -572,9 +577,39 @@ class WeChatGateway:
 
         log.info(f"WeChat msg: {text[:80]}")
 
+        # ── 防抖合并：攒消息，等停下来再一起送 ──
+        self._msg_buffer.append(text)
+        # 第一条进来时发 typing，让 Jeoi 知道在收
+        if len(self._msg_buffer) == 1:
+            try:
+                await self.client.send_typing(user_id, status=1)
+            except Exception:
+                pass
+        if self._debounce_task:
+            self._debounce_task.cancel()
+        self._debounce_task = asyncio.create_task(
+            self._flush_after_debounce(user_id)
+        )
+
+    async def _flush_after_debounce(self, user_id: str):
+        """防抖等待结束，合并缓冲区消息一次性送进 Claude。"""
+        await asyncio.sleep(self._debounce_seconds)
+
+        msgs = list(self._msg_buffer)
+        self._msg_buffer.clear()
+        self._debounce_task = None
+
+        if not msgs:
+            return
+
+        merged = "\n".join(msgs)
+        count = len(msgs)
+        if count > 1:
+            log.info(f"WeChat debounce: merged {count} msgs → {len(merged)} chars")
+
         if self._on_message:
             try:
-                await self._on_message(user_id, text)
+                await self._on_message(user_id, merged)
             except Exception as e:
                 log.error(f"WeChat message handler error: {e}")
 
