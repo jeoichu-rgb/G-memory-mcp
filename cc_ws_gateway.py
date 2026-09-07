@@ -3705,7 +3705,7 @@ async def startup_load_sessions():
 async def websocket_endpoint(ws: WebSocket):
     # _user_msg_active was assigned here without `global` — every "block the
     # background oneshots" write silently landed on a local shadow.
-    global active_ws, _active_frontend_ws, _ws_last_activity, _user_msg_active
+    global active_ws, _active_frontend_ws, _ws_last_activity, _user_msg_active, _last_msg_source
     await ws.accept()
     active_ws = ws
     _active_frontend_ws = ws
