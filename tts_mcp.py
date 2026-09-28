@@ -11,9 +11,12 @@ tts_mcp.py
 
 import os
 import io
+import json
 import uuid
 import time
 import wave
+import tempfile
+import subprocess
 import httpx
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -184,6 +187,78 @@ def _call_gsvi_tts(
     }
 
 
+def _binaural_postprocess(
+    mono_audio_path: str,
+    text: str,
+    spatial_cues_str: str,
+    had_inline_tags: bool,
+    inline_tags: list | None,
+) -> dict:
+    """
+    双耳后处理：mono mp3/wav → binaural stereo mp3。
+    返回 {"filename", "duration_ms", "size_bytes"}。
+    """
+    from binaural import process_binaural, align_anchors
+
+    tmp_wav_in = None
+    tmp_wav_out = None
+    try:
+        # mp3 → wav（如果输入是mp3）
+        if mono_audio_path.endswith(".mp3"):
+            tmp_wav_in = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}.wav")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", mono_audio_path, "-ac", "1", tmp_wav_in],
+                capture_output=True, check=True,
+            )
+            wav_in = tmp_wav_in
+        else:
+            wav_in = mono_audio_path
+
+        # 确定 cues
+        spatial_cues = None
+        anchors = None
+        if spatial_cues_str:
+            anchors = json.loads(spatial_cues_str)
+        elif had_inline_tags and inline_tags:
+            anchors = inline_tags
+
+        # 渲染双耳
+        tmp_wav_out = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}_binaural.wav")
+        process_binaural(
+            wav_in, tmp_wav_out,
+            text=text,
+            spatial_cues=anchors if (anchors and "text" in anchors[0]) else None,
+            inline_tags=anchors if (anchors and "char_pos" in anchors[0]) else None,
+        )
+
+        # wav → mp3（立体声，192k 保留空间感）
+        out_filename = f"{uuid.uuid4().hex[:12]}_binaural.mp3"
+        out_path = str(TTS_AUDIO_DIR / out_filename)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_wav_out, "-b:a", "192k", "-ac", "2", out_path],
+            capture_output=True, check=True,
+        )
+
+        # 读时长
+        out_size = os.path.getsize(out_path)
+        # 从 wav 头读时长
+        with wave.open(tmp_wav_out, "rb") as wf:
+            duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
+
+        return {
+            "filename": out_filename,
+            "duration_ms": duration_ms,
+            "size_bytes": out_size,
+        }
+    finally:
+        for f in (tmp_wav_in, tmp_wav_out):
+            if f and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+
 @tts_mcp.tool()
 def erik_speak(
     text: str,
@@ -191,26 +266,54 @@ def erik_speak(
     speed: float = 1.0,
     pitch: int = 0,
     backend: str = "minimax",
+    binaural: bool = False,
+    spatial_cues: str = "",
 ) -> str:
     """
     把文字转成 Erik 的语音。
-    text: 要说的话
+    text: 要说的话。binaural 模式下可用内联标签：[右耳]别动[脑后]我在后面
     emotion: 情绪。minimax后端: happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper；local后端: 默认/温柔。留空自动。
     speed: 语速 0.5~2.0，默认 1.0
     pitch: 音高 -12~12，默认 0（仅minimax）
     backend: "minimax"（云端）或 "local"（本地 GPT-SoVITS，需要 Jeoi 电脑在线）
+    binaural: 双耳ASMR模式。声音在头边移动，需戴耳机。
+    spatial_cues: 空间走位（仅 binaural=True 时有效）。JSON 格式，两种写法：
+      文本锚点: [{"text":"别动","tag":"右耳"},{"text":"后面","tag":"脑后"}]
+      不传则用 text 里的内联标签 [右耳][左耳][脑后][面前][贴近][退开]，都没有就随机走位。
     返回格式化的语音标记，直接贴到回复末尾即可。
     """
     try:
+        # ── 内联标签预处理 ──
+        tts_text = text
+        inline_tags = None
+        had_inline_tags = False
+        if binaural and not spatial_cues:
+            from binaural import parse_inline_tags
+            clean, tags = parse_inline_tags(text)
+            if tags:
+                tts_text = clean
+                inline_tags = tags
+                had_inline_tags = True
+
+        # ── TTS 生成 ──
         if backend == "local":
             gsvi_emotion = emotion if emotion else "默认"
-            result = _call_gsvi_tts(text, gsvi_emotion, speed)
+            result = _call_gsvi_tts(tts_text, gsvi_emotion, speed)
         else:
-            result = _call_minimax_tts(text, emotion, speed, pitch)
+            result = _call_minimax_tts(tts_text, emotion, speed, pitch)
+
+        # ── 双耳后处理 ──
+        if binaural:
+            mono_path = str(TTS_AUDIO_DIR / result["filename"])
+            result = _binaural_postprocess(
+                mono_path, tts_text, spatial_cues, had_inline_tags, inline_tags,
+            )
+
         url = f"/tts-audio/{result['filename']}"
         duration = round(result["duration_ms"] / 1000, 1)
+        mode = " 🎧双耳" if binaural else ""
         return (
-            f"语音已生成 ({duration}s, {result['size_bytes']//1024}KB)\n"
+            f"语音已生成{mode} ({duration}s, {result['size_bytes']//1024}KB)\n"
             f"<!--voice:{url}|{duration}|{text}-->"
         )
     except Exception as e:
