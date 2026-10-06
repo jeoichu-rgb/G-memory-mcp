@@ -274,13 +274,34 @@ let sfxBlobUrl = null;
 let sfxMode = '';       // 'background' | 'foreground' | ''
 let sfxVolume = 0.2;    // sfx 层音量设定值
 let sfxFading = null;   // ducking 动画 requestAnimationFrame id
+let _sfxUnlocked = false;
 
-function startSfx(url, mode, volume, doLoop) {
-  stopSfx();
-  sfxMode = mode || 'background';
-  sfxVolume = (typeof volume === 'number') ? volume : (sfxMode === 'foreground' ? 0.8 : 0.2);
+/** 在用户手势中调用——预创建 sfxAudio 并做静音 play 解锁 iOS 自动播放 */
+function unlockSfxAudio() {
+  if (_sfxUnlocked) return;
   sfxAudio = new Audio();
   sfxAudio.setAttribute('playsinline', '');
+  sfxAudio.volume = 0;
+  // 极短静音 wav，触发 iOS 解锁
+  sfxAudio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+  sfxAudio.play().then(() => {
+    sfxAudio.pause();
+    sfxAudio.src = '';
+    sfxAudio.volume = 0.2;
+    _sfxUnlocked = true;
+    console.log('[sfx] iOS audio unlocked');
+  }).catch(() => {});
+}
+
+function startSfx(url, mode, volume, doLoop) {
+  stopSfx(true);  // 清理旧状态但保留已解锁的元素
+  sfxMode = mode || 'background';
+  sfxVolume = (typeof volume === 'number') ? volume : (sfxMode === 'foreground' ? 0.8 : 0.2);
+  // 复用已解锁的元素，iOS 不允许在非手势链里 new Audio().play()
+  if (!sfxAudio) {
+    sfxAudio = new Audio();
+    sfxAudio.setAttribute('playsinline', '');
+  }
   sfxAudio.loop = doLoop !== false;
   sfxAudio.volume = sfxVolume;
   fetch(API_BASE + url).then(r => {
@@ -295,9 +316,13 @@ function startSfx(url, mode, volume, doLoop) {
   }).catch(e => console.error('[sfx] load error:', e));
 }
 
-function stopSfx() {
+function stopSfx(keepElement) {
   if (sfxFading) { cancelAnimationFrame(sfxFading); sfxFading = null; }
-  if (sfxAudio) { sfxAudio.pause(); sfxAudio.src = ''; sfxAudio = null; }
+  if (sfxAudio) {
+    sfxAudio.pause();
+    sfxAudio.src = '';
+    if (!keepElement) { sfxAudio = null; _sfxUnlocked = false; }
+  }
   if (sfxBlobUrl) { URL.revokeObjectURL(sfxBlobUrl); sfxBlobUrl = null; }
   sfxMode = '';
   // foreground 模式下 voice 音量可能被降低，恢复
@@ -373,12 +398,13 @@ function wsSend(ev, data) {
 /* ── Dial (user gesture unlocks audio) ── */
 function dialClick() {
   document.getElementById('dialBtn').style.display = 'none';
-  // user gesture → unlock audio
+  // user gesture → unlock audio (voice + sfx)
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   const buf = ctx.createBuffer(1, 1, 22050);
   const s = ctx.createBufferSource();
   s.buffer = buf; s.connect(ctx.destination); s.start();
   audio.play().then(() => audio.pause()).catch(() => {});
+  unlockSfxAudio();
   startCall();
 }
 
@@ -394,6 +420,7 @@ function acceptCall() {
   const s = ctx.createBufferSource();
   s.buffer = buf; s.connect(ctx.destination); s.start();
   audio.play().then(() => audio.pause()).catch(() => {});
+  unlockSfxAudio();
 
   callActive = true;
   callStart = Date.now();
