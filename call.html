@@ -279,18 +279,29 @@ let _sfxUnlocked = false;
 /** 在用户手势中调用——预创建 sfxAudio 并做静音 play 解锁 iOS 自动播放 */
 function unlockSfxAudio() {
   if (_sfxUnlocked) return;
-  sfxAudio = new Audio();
-  sfxAudio.setAttribute('playsinline', '');
-  sfxAudio.volume = 0;
-  // 极短静音 wav，触发 iOS 解锁
-  sfxAudio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-  sfxAudio.play().then(() => {
-    sfxAudio.pause();
-    sfxAudio.src = '';
-    sfxAudio.volume = 0.2;
-    _sfxUnlocked = true;
-    console.log('[sfx] iOS audio unlocked');
-  }).catch(() => {});
+  try {
+    sfxAudio = new Audio();
+    sfxAudio.setAttribute('playsinline', '');
+    sfxAudio.volume = 0;
+    // 极短静音 wav，触发 iOS 解锁
+    sfxAudio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    var p = sfxAudio.play();  // 旧版 Safari play() 可能不返回 Promise
+    if (p && typeof p.then === 'function') {
+      p.then(function() {
+        sfxAudio.pause();
+        sfxAudio.src = '';
+        sfxAudio.volume = 0.2;
+        _sfxUnlocked = true;
+        console.log('[sfx] iOS audio unlocked');
+      }).catch(function() { _sfxUnlocked = true; });
+    } else {
+      _sfxUnlocked = true;
+      console.log('[sfx] unlocked (no promise)');
+    }
+  } catch(e) {
+    console.warn('[sfx] unlock failed:', e);
+    _sfxUnlocked = true;  // 标记已尝试，别再重试阻塞
+  }
 }
 
 function startSfx(url, mode, volume, doLoop) {
