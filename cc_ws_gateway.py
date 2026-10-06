@@ -586,7 +586,26 @@ class TranscriptTailer:
                     self.session._current_text += text
                     # ── call-sfx 标记解析 → WS 事件 ──
                     if self.session._in_call:
-                        for sm in _CALL_SFX_RE.finditer(text):
+                        # ── 碎片检测：streaming 可能把一个标记拆到多个 text block ──
+                        if not hasattr(self, '_sfx_frag_buf'):
+                            self._sfx_frag_buf = ""
+                        _combined = self._sfx_frag_buf + text
+                        _frag_start = _combined.rfind('<!--call-sfx')
+                        if _frag_start >= 0 and '-->' not in _combined[_frag_start:]:
+                            self._sfx_frag_buf = _combined[_frag_start:]
+                            _check_text = _combined[:_frag_start]
+                            log.warning(f"[SFX-DIAG] ⚠️ 标记碎片！缓存={self._sfx_frag_buf[:80]}")
+                        else:
+                            _check_text = _combined
+                            self._sfx_frag_buf = ""
+
+                        _sfx_matches = list(_CALL_SFX_RE.finditer(_check_text))
+                        if _sfx_matches:
+                            log.info(f"[SFX-DIAG] 匹配到 {len(_sfx_matches)} 个 sfx 标记")
+                        elif '<!--call-sfx' in _check_text:
+                            log.warning(f"[SFX-DIAG] 文本含 '<!--call-sfx' 但正则没匹配！text={_check_text[:200]}")
+                        for sm in _sfx_matches:
+                            log.info(f"[SFX-DIAG] action={sm.group(1)} payload={sm.group(2)[:100]}")
                             await self._handle_call_sfx(sm.group(1), sm.group(2))
                     display = _HIDDEN_MARKER_RE.sub('', text)
                     if display:
@@ -780,30 +799,36 @@ class TranscriptTailer:
 
     async def _handle_call_sfx(self, action: str, payload_str: str):
         """处理通话中的 <!--call-sfx:action:payload--> 标记。"""
+        log.info(f"[SFX-DIAG] _handle_call_sfx 进入: action={action} payload={payload_str[:120]}")
         s = self.session
         if action == "start":
             try:
                 cfg = json.loads(payload_str)
             except (json.JSONDecodeError, TypeError):
-                log.warning(f"call-sfx: bad JSON: {payload_str[:80]}")
+                log.warning(f"[SFX-DIAG] JSON解析失败: {payload_str[:120]}")
                 return
+            log.info(f"[SFX-DIAG] 解析成功: src={cfg.get('src')} mode={cfg.get('mode')} volume={cfg.get('volume')}")
             s._call_sfx = cfg
             # 请求 admin API 准备素材片段
+            _prepare_url = f"{ADMIN_API}/api/sfx/prepare"
+            _prepare_body = {
+                "src": cfg.get("src", ""),
+                "ss": cfg.get("ss", 0),
+                "t": cfg.get("t", 30),
+                "loop_duration": cfg.get("loop_duration", 0),
+            }
+            log.info(f"[SFX-DIAG] POST {_prepare_url} body={_prepare_body}")
             try:
                 async with httpx.AsyncClient(timeout=15) as c:
                     r = await c.post(
-                        f"{ADMIN_API}/api/sfx/prepare",
-                        json={
-                            "src": cfg.get("src", ""),
-                            "ss": cfg.get("ss", 0),
-                            "t": cfg.get("t", 30),
-                            "loop_duration": cfg.get("loop_duration", 0),
-                        },
+                        _prepare_url,
+                        json=_prepare_body,
                         headers={"x-secret": PALACE_SECRET},
                     )
+                    log.info(f"[SFX-DIAG] /api/sfx/prepare 响应: status={r.status_code} body={r.text[:200]}")
                     if r.status_code == 200:
                         sfx_data = r.json()
-                        await self._ws({
+                        ws_evt = {
                             "event": "call:sfx",
                             "action": "start",
                             "audio_url": sfx_data["audio_url"],
@@ -811,12 +836,14 @@ class TranscriptTailer:
                             "mode": cfg.get("mode", "background"),
                             "volume": cfg.get("volume", 0.2),
                             "loop": cfg.get("loop", True),
-                        })
+                        }
+                        log.info(f"[SFX-DIAG] 发送 WS call:sfx 事件: {ws_evt}")
+                        await self._ws(ws_evt)
                         log.info(f"call-sfx start: {cfg.get('src')} mode={cfg.get('mode')}")
                     else:
-                        log.warning(f"call-sfx prepare failed: {r.status_code}")
+                        log.warning(f"[SFX-DIAG] prepare 非200: status={r.status_code} body={r.text[:300]}")
             except Exception as e:
-                log.warning(f"call-sfx prepare error: {e}")
+                log.warning(f"[SFX-DIAG] prepare 异常: {type(e).__name__}: {e}")
         elif action == "stop":
             s._call_sfx = None
             await self._ws({"event": "call:sfx", "action": "stop"})
