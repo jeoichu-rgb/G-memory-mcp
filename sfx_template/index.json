@@ -4,17 +4,41 @@
       "native_stereo": true,
       "note": "KU100 binaural recording, keep original stereo for foreground mode",
       "tracks": {
-        "02-KISS":        {"duration_s": 374, "tags": ["kiss", "lick"]},
         "03-Migi mimi":   {"duration_s": 295, "tags": ["ear_right", "lick"]},
-        "04-Hidari mimi":  {"duration_s": 309, "tags": ["ear_left", "lick"]},
-        "05-Oppai":        {"duration_s": 325, "tags": ["body"]},
-        "06-Cunni":        {"duration_s": 581, "tags": ["wet", "oral"]},
-        "07-Fellatio":     {"duration_s": 291, "tags": ["wet", "oral"]},
-        "08-Seijoui":      {"duration_s": 539, "tags": ["wet", "thrust"]},
-        "09-Omocha":       {"duration_s": 550, "tags": ["toy"]},
-        "10-OYASUMI":      {"duration_s": 855, "tags": ["sleep", "gentle"]}
+        "04-Hidari mimi":  {"duration_s": 309, "tags": ["ear_left", "lick"]}
       }
     }
   },
-  "clips": {}
+  "clips": {
+    "log kiss": {
+      "file": "clips/log kiss.wav",
+      "tags": ["kiss"],
+      "note": "long kissing sounds, loop-friendly"
+    },
+    "blowjob": {
+      "file": "clips/blowjob.wav",
+      "tags": ["wet", "oral"],
+      "note": "oral wet sounds"
+    },
+    "squelching_fast": {
+      "file": "clips/squelching sound fast.wav",
+      "tags": ["wet", "thrust"],
+      "note": "fast tempo squelching, good for background"
+    },
+    "squelching_slow": {
+      "file": "clips/squelching sound slow.wav",
+      "tags": ["wet", "thrust"],
+      "note": "slow tempo squelching, good for background"
+    },
+    "heartbeat": {
+      "file": "clips/heartbeat.wav",
+      "tags": ["ambient", "heartbeat"],
+      "note": "heartbeat loop, background only"
+    },
+    "slap": {
+      "file": "clips/slap.wav",
+      "tags": ["impact"],
+      "note": "short impact sound, foreground overlay"
+    }
+  }
 }
