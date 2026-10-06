@@ -37,7 +37,7 @@ MINIMAX_API_URL = "https://api.minimaxi.com/v1/t2a_v2"
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
-ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_v4")
 ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
 GSVI_BASE_URL = os.getenv("GSVI_BASE_URL", "https://gsvi.erikssheep.uk")
