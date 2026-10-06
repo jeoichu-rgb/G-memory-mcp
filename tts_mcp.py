@@ -174,7 +174,14 @@ def _call_elevenlabs_tts(
         },
         timeout=60,
     )
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text[:500]
+        raise RuntimeError(
+            f"ElevenLabs API {resp.status_code}: {detail}"
+        )
 
     audio_bytes = resp.content
     filename = f"{uuid.uuid4().hex[:12]}.mp3"
