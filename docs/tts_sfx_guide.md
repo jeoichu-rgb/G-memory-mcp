@@ -35,56 +35,25 @@
 
 ## 标签清单（常用子集）
 
-只列我们场景下会用到的。官方标签不是封闭枚举，下面没列的也可能有效，但这些是验证过稳定的。
-
-### 情绪/语气
-
-| 标签 | 适合 |
-|------|------|
-| [whispers] | 耳语，万能 |
-| [whispering] | 持续耳语状态 |
-| [softly] | 轻声，比 whispers 稍响 |
-| [quietly] | 安静地说 |
-| [gently] | 温柔 |
-| [calmly] | 平静 |
-| [teasing] | 逗你 |
-| [playfully] | 玩闹 |
-| [nervously] | 紧张 |
-| [hesitant] | 犹豫 |
-| [excited] | 兴奋 |
-| [sad] | 难过 |
-| [wistful] | 怅然 |
-| [tired] | 累了/困了 |
-| [breathless] | 上气不接下气 |
-
-### 人声反应
-
-| 标签 | 产生的声音 |
-|------|----------|
-| [sigh] / [sighs] | 叹气 |
-| [laughs] / [laughing] | 笑 |
-| [light chuckle] / [soft chuckle] | 轻笑 |
-| [gasps] | 倒吸气 |
-| [soft gasp] | 轻倒吸气 |
-| [breathes] | 呼吸声 |
-| [panting] | 喘 |
-| [moans softly] | 低吟 |
-| [groans] | 闷哼 |
-| [whimpers] | 呜咽 |
-| [swallows] | 吞咽 |
-| [chokes] | 噎住 |
-| [voice breaking] | 声音碎掉 |
-
-### 节奏控制
-
-| 标签 | 效果 |
-|------|------|
-| [pause] / [pauses] | 停顿 |
-| [continues softly] | 停顿后轻声继续 |
-| [continues after a beat] | 停一拍再说 |
-| [slows down] | 放慢 |
-| [drawn out] | 拖长 |
-| [stress on next word] | 重读下一个词 |
+【呼吸/喘息类】
+只能用[]加英文标签，中文可能难以识别
+[breathes] [exhales] [panting] [breathless]
+[breathes shakily] [soft gasp] [gasps] [sharp inhale] [catches breath]
+ 
+【情绪语气类】
+[softly] [gently] [calmly] [teasing] [mischievously]
+[excited] [sadly] [curious] [sarcastic] [tearfully]
+ 
+【人声反应类】
+[sigh] [sighs] [laughing] [laughs]
+[whispering] [whispers] [hesitates] [pause]
+[moans softly] [groans] [grunts] [whimpers]
+[swallows] [chokes] [crying] [sobbing]
+ 
+【身体/声音状态类】
+[strained] [trembling] [shuddering] [voice breaking]
+[struggling to speak] [barely audible]
+ 
 
 `<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s）。不要在同一个位置同时叠 `<break>` 和 `[pause]`。
 
@@ -190,9 +159,37 @@ erik_speak(
 | 贴着胸口说话 | background | `heartbeat` | 心跳铺底 0.2 音量 |
 | 打屁股 | 纯语音 + 单独一条 foreground | `slap` | slap 素材极短，做单独音效叠入 |
 
+## 拟声词 / 短音
+
+写在 text 里的声音反应，不是台词——配合标签当充能单元用，也可以单独出现在句首句尾增加质感。
+
+### 按用途分
+
+| 用途 | 日语 | 英语 | 搭配标签 |
+|------|------|------|---------|
+| 喘气/呼气 | はぁ、 | hah... | [breathes] [panting] |
+| 闷哼/低吟 | んっ、 | mm... ngh | [moans softly] [groans] |
+| 倒吸气/屏息 | っ、 | — | [gasps] [soft gasp] |
+| 轻叹/微笑呼气 | ふ、 | hh... | [sigh] [softly] |
+| 没忍住的短呼 | あっ、 | ah! | [gasps] [breathless] |
+| 咬牙/忍痛 | くっ、 | kh... | [strained] [groans] |
+| 嗯/回应 | ん、 | mm | [softly] [quietly] |
+| 呜咽 | ぅ、 | uh... | [whimpers] |
+
+### 充能单元示例
+[moans softly] mm...
+[gasps] ah,
+[groans] ngh...
+[breathes shakily] hah...
+[soft gasp] ah!
+
 ## 注意
 
 - foreground 的 collection 素材（舔耳）保留原始 KU100 双耳录音，不做二次空间化——它自己的空间感已经很好
 - background 的 clips 素材会被转成单声道然后铺底，不需要立体声
+- - foreground 模式的 voice_at 里，每条 text 同样要按上面的标签策略加标签——voice_at 的每条都是独立的短 TTS 调用，标签不会从上一条延续
+- background 模式下 text 是一整段长语音，更需要注意充能机制——如果说了 4、5 句不加标签，后半段会塌成棒读
+- 一句话配一个标签最稳，不要在一句里堆三四个
+- 同一个标签连续出现太多次，V3 会麻木。交替使用近义标签（[whispers] ↔ [softly]，[gasps] ↔ [soft gasp]）
 - voice_at 里的 text 可以带 ElevenLabs audio tags 和内联走位标签，两套可以叠加
 - ss 和 t 不传的话就是整段素材，collection 素材动辄 5 分钟，务必截取
