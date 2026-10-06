@@ -71,6 +71,11 @@
       "name": "假面之宴·大纲",
       "triggers": ["假面之宴", "华懋庭", "文芝歆", "华胜庭", "小说大纲"],
       "file": "Obsidian_Core/Eric_memory/Switch/Jeoi的小说/假面之宴/大纲.md"
+    },
+    {
+      "name": "TTS音效系统",
+      "triggers": ["sfx", "音效", "foreground", "background", "舔耳", "水声铺底", "素材", "sfx_mode"],
+      "file": "docs/tts_sfx_guide.md"
     }
   ]
 }
