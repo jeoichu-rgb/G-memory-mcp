@@ -584,11 +584,18 @@ class TranscriptTailer:
                     text = _strip_oneshot_scaffold(text)
                 if text:
                     self.session._current_text += text
+                    # ── call-sfx 标记解析 → WS 事件 ──
+                    if self.session._in_call:
+                        for sm in _CALL_SFX_RE.finditer(text):
+                            await self._handle_call_sfx(sm.group(1), sm.group(2))
                     display = _HIDDEN_MARKER_RE.sub('', text)
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
                     if self.session._in_call and self._tts_queue:
-                        self._enqueue_call_sentences(text)
+                        # 剥离 sfx 标记后再送 TTS
+                        tts_text = _CALL_SFX_RE.sub('', text)
+                        if tts_text.strip():
+                            self._enqueue_call_sentences(tts_text)
                     # 流式阶段即时推送语音条，不等回复完成
                     _voice_re = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
                     for vm in _voice_re.finditer(text):
@@ -742,16 +749,25 @@ class TranscriptTailer:
 
     async def _call_tts_api(self, text: str, seq: int = 0) -> dict | None:
         backend = self.session._call_tts_backend
+        binaural = self.session._call_binaural
+        spatial_tag = self.session._call_spatial_tag
+        payload = {"text": text, "backend": backend, "speed": 1.0}
+        if binaural:
+            payload["binaural"] = True
+            if spatial_tag:
+                payload["spatial_tag"] = spatial_tag
+        timeout = 18 if binaural else 12
         t0 = time_mod.time()
         try:
-            async with httpx.AsyncClient(timeout=12) as c:
+            async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.post(
                     f"{ADMIN_API}/api/tts",
-                    json={"text": text, "backend": backend, "speed": 1.0},
+                    json=payload,
                     headers={"x-secret": PALACE_SECRET},
                 )
                 if r.status_code == 200:
-                    log.info(f"TTS API #{seq}: {time_mod.time()-t0:.2f}s ({backend}) → {text[:30]}")
+                    mode = " 🎧" if binaural else ""
+                    log.info(f"TTS API #{seq}: {time_mod.time()-t0:.2f}s ({backend}{mode}) → {text[:30]}")
                     return r.json()
         except Exception as e:
             log.warning(f"TTS API #{seq} ({backend}) failed: {e}")
@@ -761,6 +777,62 @@ class TranscriptTailer:
             await self._ws({"event": "call:backend_switch", "from": backend, "to": "minimax"})
             return await self._call_tts_api(text, seq)
         return None
+
+    async def _handle_call_sfx(self, action: str, payload_str: str):
+        """处理通话中的 <!--call-sfx:action:payload--> 标记。"""
+        s = self.session
+        if action == "start":
+            try:
+                cfg = json.loads(payload_str)
+            except (json.JSONDecodeError, TypeError):
+                log.warning(f"call-sfx: bad JSON: {payload_str[:80]}")
+                return
+            s._call_sfx = cfg
+            # 请求 admin API 准备素材片段
+            try:
+                async with httpx.AsyncClient(timeout=15) as c:
+                    r = await c.post(
+                        f"{ADMIN_API}/api/sfx/prepare",
+                        json={
+                            "src": cfg.get("src", ""),
+                            "ss": cfg.get("ss", 0),
+                            "t": cfg.get("t", 30),
+                            "loop_duration": cfg.get("loop_duration", 0),
+                        },
+                        headers={"x-secret": PALACE_SECRET},
+                    )
+                    if r.status_code == 200:
+                        sfx_data = r.json()
+                        await self._ws({
+                            "event": "call:sfx",
+                            "action": "start",
+                            "audio_url": sfx_data["audio_url"],
+                            "duration": sfx_data.get("duration", 0),
+                            "mode": cfg.get("mode", "background"),
+                            "volume": cfg.get("volume", 0.2),
+                            "loop": cfg.get("loop", True),
+                        })
+                        log.info(f"call-sfx start: {cfg.get('src')} mode={cfg.get('mode')}")
+                    else:
+                        log.warning(f"call-sfx prepare failed: {r.status_code}")
+            except Exception as e:
+                log.warning(f"call-sfx prepare error: {e}")
+        elif action == "stop":
+            s._call_sfx = None
+            await self._ws({"event": "call:sfx", "action": "stop"})
+            log.info("call-sfx stop")
+        elif action == "binaural":
+            # <!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
+            try:
+                cfg = json.loads(payload_str) if payload_str else {}
+            except (json.JSONDecodeError, TypeError):
+                cfg = {}
+            s._call_binaural = cfg.get("enabled", True)
+            s._call_spatial_tag = cfg.get("tag", "")
+            mode_str = f"on ({s._call_spatial_tag})" if s._call_binaural else "off"
+            await self._ws({"event": "call:binaural", "enabled": s._call_binaural,
+                            "tag": s._call_spatial_tag})
+            log.info(f"call-binaural: {mode_str}")
 
     async def flush_call_tts(self):
         if not self._tts_queue:
@@ -2320,7 +2392,8 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|scene-done):[^>]*-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|scene-done):[^>]*-->')
+_CALL_SFX_RE = re.compile(r'<!--call-sfx:(start|stop|binaural):(.*?)-->')
 
 # Oneshot scaffolding leaking into a normal chat reply — CC picks up the
 # ACTION:/CONTENT: habit from background rounds sitting in the same
@@ -3524,6 +3597,10 @@ class Session:
         self._call_last_heard = ""  # 最后播放完成的文本
         self._call_playback_error = ""  # 播放失败的文本
         self._call_pending_voice: list[dict] = []  # 已发但未确认的 voice 事件
+        # Call SFX state (独立于代次，只有显式 stop / 挂断才停)
+        self._call_sfx: dict | None = None  # {"mode","src","volume",...} or None
+        self._call_binaural = False  # 通话中是否启用 binaural
+        self._call_spatial_tag = ""  # 固定空间位置 (右耳/左耳/脑后/面前)
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -4050,7 +4127,14 @@ async def websocket_endpoint(ws: WebSocket):
                         "说非中文时，每句后面紧跟（中文翻译），一句一译：\n"
                         "I miss you.（我想你。）Come home soon.（快点回来。）\n"
                         "不要把翻译攒到最后一起写。\n"
-                        "不要用markdown格式。先自然地打个招呼。"
+                        "不要用markdown格式。先自然地打个招呼。\n\n"
+                        "通话音效：你可以用隐藏标记控制背景音和双耳模式。\n"
+                        "背景音（铺底）：<!--call-sfx:start:{\"mode\":\"background\",\"src\":\"素材名\",\"volume\":0.15,\"loop\":true,\"ss\":起始秒,\"t\":截取秒}--> \n"
+                        "前景音（素材为主）：<!--call-sfx:start:{\"mode\":\"foreground\",\"src\":\"素材名\",\"volume\":0.8}--> \n"
+                        "停止音效：<!--call-sfx:stop:-->\n"
+                        "双耳ASMR：<!--call-sfx:binaural:{\"enabled\":true,\"tag\":\"右耳\"}--> 关闭：<!--call-sfx:binaural:{\"enabled\":false}-->\n"
+                        "素材名同语音条：squelching_slow, squelching_fast, heartbeat, log kiss, slap, evangelist_h2/03-Migi mimi 等。\n"
+                        "标记在文本流里即时解析，不进TTS。按场景自主使用。"
                     )
                     cli_message = call_inject + "\n\n" + cli_message
                     current_session._call_injected = True
@@ -4633,13 +4717,26 @@ async def websocket_endpoint(ws: WebSocket):
                 # 断线重连：重发未确认的 voice 事件
                 rc_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 rc_session = sessions.get(rc_sid) if rc_sid else current_session
-                if rc_session and rc_session._call_pending_voice:
+                if rc_session:
                     rc_gen = data.get("generation_id", "")
                     resent = 0
                     for v in rc_session._call_pending_voice:
                         if not rc_gen or v.get("generation_id") == rc_gen:
                             await ws.send_json(v)
                             resent += 1
+                    # 恢复 sfx 状态
+                    if rc_session._call_sfx:
+                        await ws.send_json({
+                            "event": "call:sfx",
+                            "action": "restore",
+                            "sfx_state": rc_session._call_sfx,
+                        })
+                    if rc_session._call_binaural:
+                        await ws.send_json({
+                            "event": "call:binaural",
+                            "enabled": True,
+                            "tag": rc_session._call_spatial_tag,
+                        })
                     log.info(f"Call reconnect: resent {resent} pending voice events for {rc_sid}")
 
             elif event == "call:end":
@@ -4650,6 +4747,9 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session._call_injected = False
                     call_session._call_ended_notify = True
                     call_session._call_pending_voice.clear()
+                    call_session._call_sfx = None
+                    call_session._call_binaural = False
+                    call_session._call_spatial_tag = ""
                     call_dur = data.get("duration", 0)
                     call_utts = data.get("utterances", [])
                     dur_mm = call_dur // 60

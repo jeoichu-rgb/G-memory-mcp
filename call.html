@@ -268,6 +268,54 @@ let incomingTimeout = null;
 const audio = new Audio();
 audio.setAttribute('playsinline', '');
 
+/* ── SFX 双音轨（背景/前景音效）── */
+let sfxAudio = null;
+let sfxBlobUrl = null;
+let sfxMode = '';       // 'background' | 'foreground' | ''
+let sfxVolume = 0.2;    // sfx 层音量设定值
+let sfxFading = null;   // ducking 动画 requestAnimationFrame id
+
+function startSfx(url, mode, volume, doLoop) {
+  stopSfx();
+  sfxMode = mode || 'background';
+  sfxVolume = (typeof volume === 'number') ? volume : (sfxMode === 'foreground' ? 0.8 : 0.2);
+  sfxAudio = new Audio();
+  sfxAudio.setAttribute('playsinline', '');
+  sfxAudio.loop = doLoop !== false;
+  sfxAudio.volume = sfxVolume;
+  fetch(API_BASE + url).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.blob();
+  }).then(blob => {
+    if (!sfxAudio) return;  // 已被 stopSfx 清理
+    sfxBlobUrl = URL.createObjectURL(blob);
+    sfxAudio.src = sfxBlobUrl;
+    sfxAudio.play().catch(e => console.warn('SFX play:', e));
+    console.log('[sfx] started:', sfxMode, url);
+  }).catch(e => console.error('[sfx] load error:', e));
+}
+
+function stopSfx() {
+  if (sfxFading) { cancelAnimationFrame(sfxFading); sfxFading = null; }
+  if (sfxAudio) { sfxAudio.pause(); sfxAudio.src = ''; sfxAudio = null; }
+  if (sfxBlobUrl) { URL.revokeObjectURL(sfxBlobUrl); sfxBlobUrl = null; }
+  sfxMode = '';
+  // foreground 模式下 voice 音量可能被降低，恢复
+  audio.volume = 1.0;
+}
+
+function duckSfx(voicePlaying) {
+  if (!sfxAudio || !sfxMode) return;
+  if (sfxMode === 'background') {
+    // 语音为主，背景音铺底：voice 播放时压低 sfx 到设定值 × 0.35
+    sfxAudio.volume = voicePlaying ? sfxVolume * 0.35 : sfxVolume;
+  } else if (sfxMode === 'foreground') {
+    // 素材为主：voice 播放时 sfx 稍压，voice 音量降低
+    sfxAudio.volume = voicePlaying ? sfxVolume * 0.55 : sfxVolume;
+    audio.volume = voicePlaying ? 0.45 : 1.0;
+  }
+}
+
 /* ── Init ── */
 (function init() {
   const p = new URLSearchParams(location.search);
@@ -432,6 +480,25 @@ function handleWS(d) {
         setTimeout(() => { if (callActive) setStatus('通话中'); }, 4000);
       }
       break;
+    case 'call:sfx':
+      if (!callActive) break;
+      if (d.action === 'start') {
+        startSfx(d.audio_url, d.mode, d.volume, d.loop);
+        duckSfx(playing);  // 如果正在播放 voice，立即 duck
+      } else if (d.action === 'stop') {
+        stopSfx();
+      } else if (d.action === 'restore') {
+        // 断线恢复：后端下发之前的 sfx 状态
+        if (d.sfx_state && d.sfx_state.audio_url) {
+          startSfx(d.sfx_state.audio_url, d.sfx_state.mode, d.sfx_state.volume, d.sfx_state.loop);
+          duckSfx(playing);
+        }
+      }
+      break;
+    case 'call:binaural':
+      // 仅通知，实际 binaural 处理在服务端
+      console.log('[binaural]', d.enabled ? 'on' : 'off', d.tag || '');
+      break;
     case 'message:complete':
       onReplyDone();
       break;
@@ -515,15 +582,16 @@ function enqueueAudio(url, text, subtitle) {
 
 function playNext() {
   while (audioQ.length && audioQ[0].error) audioQ.shift();
-  if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); return; }
+  if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); duckSfx(false); return; }
   const item = audioQ[0];
-  if (!item.ready) { playing = false; return; }
+  if (!item.ready) { playing = false; duckSfx(false); return; }
   audioQ.shift();
   playing = true;
   currentPlayingText = item.text;
   showWave(true);
   setStatus('说话中……');
   setSub(item.text, item.subtitle);
+  duckSfx(true);
   audio.src = item.blobUrl;
   audio.oncanplaythrough = () => {
     audio.oncanplaythrough = null;
@@ -536,13 +604,13 @@ function playNext() {
   audio.load();
 }
 audio.addEventListener('ended', () => {
-  // 上报：这句话播放完了
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'completed' });
+  duckSfx(false);
   playNext();
 });
 audio.addEventListener('error', () => {
-  // 上报：播放失败
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'error', position: audio.currentTime || 0 });
+  duckSfx(false);
   playNext();
 });
 
@@ -563,6 +631,7 @@ function hangup() {
   clearInterval(timerIv);
   audio.pause();
   audioQ = [];
+  stopSfx();  // 停止背景/前景音效
   // 释放所有缓存的 blob URL
   for (const b of blobCache) URL.revokeObjectURL(b);
   blobCache = [];

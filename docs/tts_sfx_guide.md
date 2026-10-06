@@ -193,3 +193,69 @@ erik_speak(
 - 同一个标签连续出现太多次，V3 会麻木。交替使用近义标签（[whispers] ↔ [softly]，[gasps] ↔ [soft gasp]）
 - voice_at 里的 text 可以带 ElevenLabs audio tags 和内联走位标签，两套可以叠加
 - ss 和 t 不传的话就是整段素材，collection 素材动辄 5 分钟，务必截取
+
+---
+
+## 通话模式（Voice Call）
+
+语音通话中不调 erik_speak，文本由网关自动 TTS。音效通过在回复文本里写隐藏标记控制。
+
+### 背景音（background）
+
+铺底水声、心跳等。前端独立音轨循环播放，voice 播放时自动 ducking。
+
+**开启：**
+```
+<!--call-sfx:start:{"mode":"background","src":"squelching_slow","volume":0.15,"loop":true,"ss":0,"t":30}-->
+```
+
+**停止：**
+```
+<!--call-sfx:stop:-->
+```
+
+参数同语音条的 sfx：src 素材名，ss 起始秒，t 截取秒，volume 音量（0.1~0.25 合适），loop 循环。
+
+### 前景音（foreground）
+
+素材为主（舔耳、亲吻），TTS 语音低音量叠入。
+
+```
+<!--call-sfx:start:{"mode":"foreground","src":"evangelist_h2/03-Migi mimi","volume":0.8,"ss":30,"t":25}-->
+```
+
+foreground 模式下 voice 音量自动降到 45%，sfx 在 voice 播放时轻压到 55%。
+
+### 双耳 ASMR（binaural）
+
+每句 TTS 自动做 HRIR 双耳化，声音固定在头部某个位置。
+
+**开启：**
+```
+<!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
+```
+
+**关闭：**
+```
+<!--call-sfx:binaural:{"enabled":false}-->
+```
+
+tag 可选：右耳、左耳、脑后、面前。不传 tag 时随机走位。
+
+binaural 增加约 0.3s 延迟（固定位置无需 Whisper 对齐），通话短句可接受。
+
+### 组合使用
+
+可以同时开 sfx + binaural：背景铺水声 + 语音双耳化。
+
+```
+<!--call-sfx:start:{"mode":"background","src":"squelching_slow","volume":0.15,"loop":true}-->
+<!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
+```
+
+### 注意
+
+- sfx 独立于代次隔离：打断对话不停止 sfx，只有 `call-sfx:stop` 或挂断才停
+- 标记在文本流里即时解析，不进 TTS 队列
+- foreground + collection 素材（舔耳）保留原始 KU100 双耳录音
+- 通话中 binaural 用简化版（固定位置），不做 Whisper 词级对齐

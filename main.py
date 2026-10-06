@@ -620,12 +620,129 @@ import httpx as _httpx  # already imported above, just being explicit for this b
 from tts_mcp import _call_minimax_tts, _call_gsvi_tts, _call_elevenlabs_tts
 import asyncio as _asyncio
 
+
+def _binaural_for_call(tts_result: dict, spatial_tag: str = "") -> dict:
+    """轻量版 binaural 后处理，用于通话模式。固定位置，无需 Whisper 对齐。"""
+    import uuid
+    import wave
+    import subprocess
+    from pathlib import Path
+    from binaural import render_binaural
+
+    tts_dir = Path(os.getenv("TTS_AUDIO_DIR", "/app/tts_audio"))
+    mono_path = str(tts_dir / tts_result["filename"])
+
+    tmp_wav_in = str(tts_dir / f"_tmp_{uuid.uuid4().hex[:8]}.wav")
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", mono_path, "-ac", "1", tmp_wav_in],
+        capture_output=True, check=True,
+    )
+
+    tmp_wav_out = str(tts_dir / f"_tmp_{uuid.uuid4().hex[:8]}_binaural.wav")
+    cues = [{"t": 0, "tag": spatial_tag}] if spatial_tag else None
+    render_binaural(tmp_wav_in, tmp_wav_out, cues)
+
+    out_filename = f"{uuid.uuid4().hex[:12]}_binaural.mp3"
+    out_path = str(tts_dir / out_filename)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", tmp_wav_out,
+         "-b:a", "192k", "-ac", "2", out_path],
+        capture_output=True, check=True,
+    )
+
+    with wave.open(tmp_wav_out, "rb") as wf:
+        duration_ms = int(wf.getnframes() / wf.getframerate() * 1000)
+    out_size = os.path.getsize(out_path)
+
+    for f in (tmp_wav_in, tmp_wav_out):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    return {
+        "filename": out_filename,
+        "duration_ms": duration_ms,
+        "size_bytes": out_size,
+    }
+
+
+def _prepare_sfx_clip(src: str, ss: float, t: float, loop_duration: float) -> dict:
+    """截取 sfx 素材片段，可选循环，输出 mp3 供前端播放。"""
+    import uuid
+    import subprocess
+    from pathlib import Path
+    from sfx_mixer import _resolve_path, MIX_FS
+
+    tts_dir = Path(os.getenv("TTS_AUDIO_DIR", "/app/tts_audio"))
+    src_path = _resolve_path(src)
+
+    tmp_wav = str(tts_dir / f"_tmp_{uuid.uuid4().hex[:8]}_sfx.wav")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+    if ss > 0:
+        cmd.extend(["-ss", str(ss)])
+    cmd.extend(["-i", str(src_path)])
+    if t > 0:
+        cmd.extend(["-t", str(t)])
+    cmd.extend(["-ar", str(MIX_FS), tmp_wav])
+    subprocess.run(cmd, capture_output=True, check=True)
+
+    if loop_duration > 0:
+        import numpy as np
+        from scipy.io import wavfile
+        from sfx_mixer import loop_to_length, finalize_wav
+
+        fs, data = wavfile.read(tmp_wav)
+        if np.issubdtype(data.dtype, np.integer):
+            data = data.astype(np.float64) / np.iinfo(data.dtype).max
+        else:
+            data = data.astype(np.float64)
+        target_samples = int(loop_duration * MIX_FS)
+        looped = loop_to_length(data, target_samples)
+        finalize_wav(looped, tmp_wav)
+
+    out_filename = f"sfx_{uuid.uuid4().hex[:12]}.mp3"
+    out_path = str(tts_dir / out_filename)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", tmp_wav, "-b:a", "192k", out_path],
+        capture_output=True, check=True,
+    )
+
+    duration = 0
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "json", out_path],
+            capture_output=True, text=True, check=True,
+        )
+        info = json.loads(probe.stdout)
+        duration = round(float(info["format"]["duration"]), 1)
+    except Exception:
+        pass
+
+    out_size = os.path.getsize(out_path)
+    if os.path.exists(tmp_wav):
+        try:
+            os.remove(tmp_wav)
+        except OSError:
+            pass
+
+    return {
+        "audio_url": f"/tts-audio/{out_filename}",
+        "duration": duration,
+        "size_bytes": out_size,
+    }
+
+
 @app.post("/api/tts")
 async def api_tts(request: Request):
     data = await request.json()
     text = data.get("text", "")
     backend = data.get("backend", "minimax")
     speed = data.get("speed", 1.0)
+    binaural = data.get("binaural", False)
+    spatial_tag = data.get("spatial_tag", "")
     if not text:
         return JSONResponse(status_code=400, content={"error": "text required"})
     try:
@@ -636,9 +753,36 @@ async def api_tts(request: Request):
             result = await loop.run_in_executor(None, lambda: _call_elevenlabs_tts(text, speed=speed))
         else:
             result = await loop.run_in_executor(None, lambda: _call_minimax_tts(text, speed=speed))
+        if binaural:
+            _r, _st = result, spatial_tag
+            result = await loop.run_in_executor(
+                None, lambda: _binaural_for_call(_r, _st),
+            )
         audio_url = f"/tts-audio/{result['filename']}"
         duration = round(result["duration_ms"] / 1000, 1)
         return JSONResponse({"audio_url": audio_url, "duration": duration, "text": text})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/sfx/prepare")
+async def api_sfx_prepare(request: Request):
+    """截取 sfx 素材片段，转 mp3 缓存，返回可播放 URL。"""
+    data = await request.json()
+    src = data.get("src", "")
+    ss = data.get("ss", 0)
+    t = data.get("t", 30)
+    loop_duration = data.get("loop_duration", 0)
+    if not src:
+        return JSONResponse(status_code=400, content={"error": "src required"})
+    loop = _asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _prepare_sfx_clip(src, ss, t, loop_duration),
+        )
+        return JSONResponse(result)
+    except FileNotFoundError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
