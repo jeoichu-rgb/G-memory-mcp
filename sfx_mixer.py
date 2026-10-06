@@ -42,9 +42,20 @@ def invalidate_index():
 
 def _resolve_path(src: str) -> Path:
     """
+    先查 index.json 里的 file 映射，再按名字搜索。
     "collection/track" → /app/sfx/collections/collection/track.mp3
-    "clip_name"        → /app/sfx/clips/clip_name.wav
+    "clip_name"        → index.json clips[clip_name].file，或 /app/sfx/clips/clip_name.*
     """
+    idx = _load_index()
+
+    # 优先用 index.json 里的 file 字段（支持文件名带空格等情况）
+    if "/" not in src and src in idx.get("clips", {}):
+        mapped = idx["clips"][src].get("file")
+        if mapped:
+            p = SFX_DIR / mapped
+            if p.exists():
+                return p
+
     if "/" in src:
         collection, track = src.split("/", 1)
         base = SFX_DIR / "collections" / collection
