@@ -387,7 +387,8 @@ def _sfx_foreground(
     前景模式：素材为主音轨 + TTS 短句按时间点叠入。
     返回 {filename, duration_ms, size_bytes}。
     """
-    from sfx_mixer import load_sfx, load_voice_wav, mix_foreground, finalize_wav
+    from sfx_mixer import load_sfx, load_voice_wav, mix_foreground, finalize_wav, \
+        loop_to_length, MIX_FS
 
     sfx_cfg = json.loads(sfx_str)
     voice_at = json.loads(voice_at_str) if voice_at_str else []
@@ -398,6 +399,11 @@ def _sfx_foreground(
         ss=sfx_cfg.get("ss", 0),
         t=sfx_cfg.get("t", 0),
     )
+
+    # loop：截取的片段循环到 duration 秒
+    if sfx_cfg.get("loop") and sfx_cfg.get("duration"):
+        target = int(sfx_cfg["duration"] * MIX_FS)
+        sfx_audio = loop_to_length(sfx_audio, target)
 
     # 2. 对每个 voice_at 条目生成 TTS + binaural
     clips = []
@@ -525,7 +531,7 @@ def erik_speak(
     binaural: 双耳ASMR模式。声音在头边移动，需戴耳机。
     spatial_cues: 空间走位（仅 binaural=True 时有效）。JSON 格式：[{"text":"别动","tag":"右耳"}]
     sfx_mode: 音效模式。"foreground"=素材为主+TTS短句叠入；"background"=TTS为主+素材铺底循环。留空不用音效。
-    sfx: 音效素材 JSON。{"src":"collection/track","ss":起始秒,"t":时长秒,"volume":音量0~1,"loop":true,"voice_volume":语音音量0~1}
+    sfx: 音效素材 JSON。{"src":"collection/track","ss":起始秒,"t":截取秒,"volume":音量0~1,"loop":true循环播放截取片段,"duration":循环总时长秒(foreground+loop时必填),"voice_volume":语音音量0~1}
     voice_at: (仅foreground) TTS短句时间点 JSON。[{"t":5,"text":"[右耳][whispers] 别动"},{"t":20,"text":"乖"}]
     返回格式化的语音标记，直接贴到回复末尾即可。
     """
