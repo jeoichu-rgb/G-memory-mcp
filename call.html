@@ -256,8 +256,11 @@ let ws, sessionId, callStart, timerIv;
 let accumText = '', voiceEvents = [];
 let utterances = [];   // {text, translation, audio_url, duration}
 let audioQ = [];
+let blobCache = [];  // 缓存所有 blobUrl，挂断时统一释放
 let playing = false;
 let callActive = false;
+let currentGenId = '';  // 代次隔离：只接受当前 generation 的 voice 事件
+let currentPlayingText = '';  // 当前正在播放的文本，用于上报
 let firstSend = true;
 let isIncoming = false;
 let incomingTimeout = null;
@@ -299,7 +302,12 @@ function connectWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen = () => {
     wsSend('session:switch', { sessionId });
-    if (!isIncoming) {
+    if (callActive) {
+      // 断线重连：请求恢复未送达的音频
+      wsSend('call:reconnect', { sessionId, generation_id: currentGenId });
+      setStatus('重连中……');
+      setTimeout(() => { if (callActive && !playing) setStatus('通话中'); }, 3000);
+    } else if (!isIncoming) {
       setStatus('等待拨号');
       document.getElementById('dialBtn').style.display = '';
     }
@@ -382,6 +390,11 @@ function sendMsg() {
   if (!txt) return;
   inp.value = '';
 
+  // 新一轮对话：清空旧代次，接受新 generation
+  currentGenId = '';
+  audio.pause();
+  audioQ = [];
+
   wsSend('chat:send', { message: txt, sessionId, call_mode: true });
   showThinking(true);
   setSub('', '');
@@ -403,6 +416,11 @@ function handleWS(d) {
       break;
     case 'voice':
       if (!callActive) break;
+      // 代次隔离：记住第一个 generation_id，丢弃旧代次
+      if (d.generation_id) {
+        if (!currentGenId) currentGenId = d.generation_id;
+        if (d.generation_id !== currentGenId) break;
+      }
       voiceEvents.push({ audio_url: d.audio_url, duration: d.duration, text: d.text, subtitle: d.subtitle || '' });
       setStatus('说话中……');
       showThinking(false);
@@ -484,6 +502,7 @@ function enqueueAudio(url, text, subtitle) {
     return r.blob();
   }).then(blob => {
     item.blobUrl = URL.createObjectURL(blob);
+    blobCache.push(item.blobUrl);
     item.ready = true;
     if (!playing) playNext();
   }).catch(err => {
@@ -501,6 +520,7 @@ function playNext() {
   if (!item.ready) { playing = false; return; }
   audioQ.shift();
   playing = true;
+  currentPlayingText = item.text;
   showWave(true);
   setStatus('说话中……');
   setSub(item.text, item.subtitle);
@@ -509,21 +529,20 @@ function playNext() {
     audio.oncanplaythrough = null;
     audio.play().catch(err => {
       console.error('play failed:', err);
-      URL.revokeObjectURL(item.blobUrl);
       playNext();
     });
   };
-  audio.onerror = () => { console.error('audio play error'); URL.revokeObjectURL(item.blobUrl); playNext(); };
+  audio.onerror = () => { console.error('audio play error'); playNext(); };
   audio.load();
 }
 audio.addEventListener('ended', () => {
-  const prev = audio.src;
-  if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  // 上报：这句话播放完了
+  if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'completed' });
   playNext();
 });
 audio.addEventListener('error', () => {
-  const prev = audio.src;
-  if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+  // 上报：播放失败
+  if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'error', position: audio.currentTime || 0 });
   playNext();
 });
 
@@ -544,6 +563,9 @@ function hangup() {
   clearInterval(timerIv);
   audio.pause();
   audioQ = [];
+  // 释放所有缓存的 blob URL
+  for (const b of blobCache) URL.revokeObjectURL(b);
+  blobCache = [];
 
   // stop TTS worker immediately (HTTP bypasses WS event queue)
   fetch(WS_URL.replace('wss://', 'https://').replace('/ws', '') + '/internal/call-stop', {

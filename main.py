@@ -617,7 +617,7 @@ async def set_now_playing(request: Request):
 
 
 import httpx as _httpx  # already imported above, just being explicit for this block
-from tts_mcp import _call_minimax_tts, _call_gsvi_tts
+from tts_mcp import _call_minimax_tts, _call_gsvi_tts, _call_elevenlabs_tts
 import asyncio as _asyncio
 
 @app.post("/api/tts")
@@ -632,6 +632,8 @@ async def api_tts(request: Request):
         loop = _asyncio.get_event_loop()
         if backend == "local":
             result = await loop.run_in_executor(None, lambda: _call_gsvi_tts(text, speed=speed))
+        elif backend == "elevenlabs":
+            result = await loop.run_in_executor(None, lambda: _call_elevenlabs_tts(text, speed=speed))
         else:
             result = await loop.run_in_executor(None, lambda: _call_minimax_tts(text, speed=speed))
         audio_url = f"/tts-audio/{result['filename']}"

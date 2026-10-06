@@ -635,6 +635,27 @@ class TranscriptTailer:
         subtitle = ' '.join(p[1:-1] for p in parens) if parens else ''
         return tts_text, subtitle
 
+    _TTS_BATCH_MAX = 100  # 单句最大字数，超过按逗号/分号切
+
+    @staticmethod
+    def _split_long(text: str, limit: int = 100) -> list[str]:
+        """超长句按逗号/分号二次切分，保证每段 ≤ limit 字。"""
+        if len(text) <= limit:
+            return [text]
+        chunks = []
+        buf = ""
+        for ch in text:
+            buf += ch
+            if ch in '，,；;、' and len(buf) >= 20:
+                chunks.append(buf)
+                buf = ""
+        if buf:
+            if chunks and len(buf) < 10:
+                chunks[-1] += buf
+            else:
+                chunks.append(buf)
+        return chunks
+
     def _enqueue_call_sentences(self, text: str):
         buf = self.session._call_sentence_buf + text
         parts = self._split_sentences_skip_parens(buf)
@@ -643,15 +664,23 @@ class TranscriptTailer:
                 sent = sent.strip()
                 if not sent:
                     continue
-                tts_text, subtitle = self._extract_tts_and_subtitle(sent)
-                if tts_text:
-                    self._tts_queue.put_nowait((tts_text, subtitle))
+                for chunk in self._split_long(sent, self._TTS_BATCH_MAX):
+                    tts_text, subtitle = self._extract_tts_and_subtitle(chunk)
+                    if tts_text:
+                        self._tts_queue.put_nowait((tts_text, subtitle))
             self.session._call_sentence_buf = parts[-1]
         else:
             self.session._call_sentence_buf = buf
 
+    _TTS_PREFETCH_LIMIT = 2  # 最多同时飞行的 TTS API 请求
+
     async def _tts_worker_loop(self):
         slots = asyncio.Queue()
+        sem = asyncio.Semaphore(self._TTS_PREFETCH_LIMIT)
+
+        async def _tts_with_sem(text, seq):
+            async with sem:
+                return await self._call_tts_api(text, seq)
 
         async def feeder():
             seq = 0
@@ -662,26 +691,34 @@ class TranscriptTailer:
                     break
                 text, subtitle = item
                 seq += 1
-                log.info(f"TTS feeder: #{seq} started → {text[:30]}")
-                task = asyncio.create_task(self._call_tts_api(text, seq))
-                await slots.put((task, text, subtitle, seq))
+                gen_id = self.session._call_generation_id
+                log.info(f"TTS feeder: #{seq} gen={gen_id} started → {text[:30]}")
+                task = asyncio.create_task(_tts_with_sem(text, seq))
+                await slots.put((task, text, subtitle, seq, gen_id))
 
         async def sender():
             while True:
                 entry = await slots.get()
                 if entry is None or self.session._call_stop.is_set():
                     break
-                task, text, subtitle, seq = entry
+                task, text, subtitle, seq, gen_id = entry
                 result = await task
+                # 代次隔离：如果 generation 已经变了，丢弃旧代次的音频
+                if gen_id != self.session._call_generation_id:
+                    log.info(f"TTS sender: #{seq} discarded (stale gen={gen_id})")
+                    continue
                 if result and not self.session._call_stop.is_set():
-                    log.info(f"TTS sender: #{seq} sending voice → {text[:30]}")
-                    await self._ws({
+                    voice_evt = {
                         "event": "voice",
                         "audio_url": result["audio_url"],
                         "duration": result["duration"],
                         "text": text,
                         "subtitle": subtitle,
-                    })
+                        "generation_id": gen_id,
+                    }
+                    log.info(f"TTS sender: #{seq} gen={gen_id} sending voice → {text[:30]}")
+                    self.session._call_pending_voice.append(voice_evt)
+                    await self._ws(voice_evt)
 
         feeder_task = asyncio.create_task(feeder())
         try:
@@ -705,10 +742,10 @@ class TranscriptTailer:
                     return r.json()
         except Exception as e:
             log.warning(f"TTS API #{seq} ({backend}) failed: {e}")
-        if backend == "local":
+        if backend in ("local", "elevenlabs"):
             self.session._call_tts_backend = "minimax"
-            log.info("Call TTS: local→minimax (local failed mid-call)")
-            await self._ws({"event": "call:backend_switch", "from": "local", "to": "minimax"})
+            log.info(f"Call TTS: {backend}→minimax (failed mid-call)")
+            await self._ws({"event": "call:backend_switch", "from": backend, "to": "minimax"})
             return await self._call_tts_api(text, seq)
         return None
 
@@ -3466,10 +3503,14 @@ class Session:
         # Voice call mode
         self._in_call = False
         self._call_injected = False
-        self._call_tts_backend = "minimax"
+        self._call_tts_backend = "elevenlabs"
         self._call_sentence_buf = ""
         self._call_stop = asyncio.Event()
         self._call_ended_notify = False
+        self._call_generation_id = ""  # 代次 ID，隔离打断/挂断前的旧事件
+        self._call_last_heard = ""  # 最后播放完成的文本
+        self._call_playback_error = ""  # 播放失败的文本
+        self._call_pending_voice: list[dict] = []  # 已发但未确认的 voice 事件
 
     def to_dict(self):
         now = datetime.now(SGT)
@@ -3948,6 +3989,8 @@ async def websocket_endpoint(ws: WebSocket):
                 call_mode = data.get("call_mode", False)
                 if call_mode:
                     current_session._in_call = True
+                    # 每轮新消息 = 新代次，旧 TTS 事件不再送达
+                    current_session._call_generation_id = uuid.uuid4().hex[:8]
 
                 # Save user message & update last_active immediately
                 msg_source = "voice_call" if call_mode else None
@@ -3976,13 +4019,14 @@ async def websocket_endpoint(ws: WebSocket):
                 # Voice call: detect TTS backend + inject system prompt
                 if call_mode and not current_session._call_injected:
                     current_session._call_stop.clear()
-                    # Detect GSVI once on dial
+                    current_session._call_generation_id = uuid.uuid4().hex[:8]
+                    # Detect GSVI once on dial; default elevenlabs, fallback minimax
                     try:
                         async with httpx.AsyncClient(timeout=4) as _hc:
                             _hr = await _hc.get(GSVI_BASE_URL)
-                            current_session._call_tts_backend = "local" if _hr.status_code < 500 else "minimax"
+                            current_session._call_tts_backend = "local" if _hr.status_code < 500 else "elevenlabs"
                     except Exception:
-                        current_session._call_tts_backend = "minimax"
+                        current_session._call_tts_backend = "elevenlabs"
                     log.info(f"Call TTS backend: {current_session._call_tts_backend}")
                     call_inject = (
                         "[voice-call] Jeoi正在跟你语音通话。\n"
@@ -3997,6 +4041,12 @@ async def websocket_endpoint(ws: WebSocket):
                     cli_message = call_inject + "\n\n" + cli_message
                     current_session._call_injected = True
                     log.info(f"Voice call started for session {current_session.id}")
+                # 通话连续性：上一轮播放失败时注入提示
+                if call_mode and current_session._call_playback_error:
+                    playback_hint = f"[call_playback] Jeoi上一轮没听完你说的话，你说到\"{current_session._call_last_heard}\"时播放中断了。接着说，不要重复已经听到的部分。"
+                    cli_message = playback_hint + "\n" + cli_message
+                    current_session._call_playback_error = ""
+                    log.info("Injected call_playback continuity hint")
                 if current_session._call_ended_notify:
                     cli_message = "[call-ended] Jeoi刚才挂断了通话，现在是正常聊天模式。\n\n" + cli_message
                     current_session._call_ended_notify = False
@@ -4508,13 +4558,14 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session = call_session
                     call_session._in_call = True
                     call_session._call_stop.clear()
+                    call_session._call_generation_id = uuid.uuid4().hex[:8]
                     call_session._call_injected = True
                     try:
                         async with httpx.AsyncClient(timeout=4) as _hc:
                             _hr = await _hc.get(GSVI_BASE_URL)
-                            call_session._call_tts_backend = "local" if _hr.status_code < 500 else "minimax"
+                            call_session._call_tts_backend = "local" if _hr.status_code < 500 else "elevenlabs"
                     except Exception:
-                        call_session._call_tts_backend = "minimax"
+                        call_session._call_tts_backend = "elevenlabs"
                     log.info(f"Incoming call accepted: session={call_sid}, tts={call_session._call_tts_backend}")
                     now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
                     call_inject = (
@@ -4546,6 +4597,37 @@ async def websocket_endpoint(ws: WebSocket):
                         if action != "none" and content:
                             await push_pebbling_msg("call_reject", content, call_session)
 
+            elif event == "call:heard":
+                # 记录播放进度，用于连续性提示
+                heard_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                heard_session = sessions.get(heard_sid) if heard_sid else current_session
+                if heard_session:
+                    status = data.get("status", "completed")
+                    heard_text = data.get("text", "")
+                    if status == "completed":
+                        heard_session._call_last_heard = heard_text
+                        # 从 pending 里移除已确认播放的
+                        heard_session._call_pending_voice = [
+                            v for v in heard_session._call_pending_voice
+                            if v.get("text") != heard_text
+                        ]
+                    elif status == "error":
+                        heard_session._call_playback_error = heard_text
+                        log.info(f"Call playback error: {heard_text[:30]}")
+
+            elif event == "call:reconnect":
+                # 断线重连：重发未确认的 voice 事件
+                rc_sid = data.get("sessionId") or (current_session.id if current_session else None)
+                rc_session = sessions.get(rc_sid) if rc_sid else current_session
+                if rc_session and rc_session._call_pending_voice:
+                    rc_gen = data.get("generation_id", "")
+                    resent = 0
+                    for v in rc_session._call_pending_voice:
+                        if not rc_gen or v.get("generation_id") == rc_gen:
+                            await ws.send_json(v)
+                            resent += 1
+                    log.info(f"Call reconnect: resent {resent} pending voice events for {rc_sid}")
+
             elif event == "call:end":
                 call_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 call_session = sessions.get(call_sid) if call_sid else current_session
@@ -4553,6 +4635,7 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session._in_call = False
                     call_session._call_injected = False
                     call_session._call_ended_notify = True
+                    call_session._call_pending_voice.clear()
                     call_dur = data.get("duration", 0)
                     call_utts = data.get("utterances", [])
                     dur_mm = call_dur // 60
