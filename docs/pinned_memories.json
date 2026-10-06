@@ -74,7 +74,7 @@
     },
     {
       "name": "TTS音效系统",
-      "triggers": ["sfx", "音效", "foreground", "background", "舔耳", "水声铺底", "素材", "sfx_mode"],
+      "triggers": ["sfx", "音效", "foreground", "连麦", "舔耳", "phone sex", "麦麦", "sfx_mode"],
       "file": "docs/tts_sfx_guide.md"
     }
   ]
