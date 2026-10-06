@@ -589,6 +589,19 @@ class TranscriptTailer:
                         await self._ws({"event": "stream:text", "text": display})
                     if self.session._in_call and self._tts_queue:
                         self._enqueue_call_sentences(text)
+                    # 流式阶段即时推送语音条，不等回复完成
+                    _voice_re = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+                    for vm in _voice_re.finditer(text):
+                        _vm_data = {
+                            "audio_url": vm.group(1),
+                            "duration": float(vm.group(2)),
+                            "text": vm.group(3),
+                        }
+                        if not hasattr(self.session, '_streamed_voice_urls'):
+                            self.session._streamed_voice_urls = set()
+                        self.session._streamed_voice_urls.add(_vm_data["audio_url"])
+                        await self._ws({"event": "voice", **_vm_data})
+                        log.info(f"Voice (streamed): {_vm_data['duration']}s")
 
 
         stop_reason = msg.get("stop_reason", "")
@@ -3531,6 +3544,7 @@ class Session:
         self._current_thinking = ""
         self._current_tools = []
         self._result_sent = False
+        self._streamed_voice_urls = set()
         self._stop_requested = False
         self._call_sentence_buf = ""
 
@@ -4836,13 +4850,17 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         pass
                     log.info(f"Erik reacted {emoji} on #{idx + 1} (addressed {kind}{n})")
 
+        _already_streamed = getattr(session, '_streamed_voice_urls', set())
         for vm in voice_messages:
             append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
-            try:
-                await ws.send_json({"event": "voice", **vm})
-            except Exception:
-                pass
-            log.info(f"Voice message: {vm['duration']}s")
+            # 跳过流式阶段已经发过的，避免重复
+            if vm["audio_url"] not in _already_streamed:
+                try:
+                    await ws.send_json({"event": "voice", **vm})
+                except Exception:
+                    pass
+                log.info(f"Voice message: {vm['duration']}s")
+        session._streamed_voice_urls = set()
 
         if session._current_text or session._current_thinking or voice_messages:
             if session._current_text:
