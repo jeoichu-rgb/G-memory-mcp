@@ -35,6 +35,11 @@ MINIMAX_VOICE_ID = os.getenv("MINIMAX_VOICE_ID", "moss_audio_c363eee9-6418-11f1-
 MINIMAX_MODEL = os.getenv("MINIMAX_TTS_MODEL", "speech-02-hd")
 MINIMAX_API_URL = "https://api.minimaxi.com/v1/t2a_v2"
 
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+
 GSVI_BASE_URL = os.getenv("GSVI_BASE_URL", "https://gsvi.erikssheep.uk")
 GSVI_APP_KEY = os.getenv("GSVI_APP_KEY", "")
 GSVI_MODEL = os.getenv("GSVI_MODEL", "Erik")
@@ -52,6 +57,8 @@ tts_mcp = FastMCP(
         "erik_speak 有两个后端：backend=\"minimax\"（默认，云端MiniMax API，随时可用）"
         "和 backend=\"local\"（本地 GPT-SoVITS，走 Cloudflare Tunnel 到 Jeoi 电脑上的 GSVI 服务，"
         "只有 Jeoi 电脑开机且 GPT-SoVITS + cloudflared 在跑时才可用）。"
+        "还有 backend=\"elevenlabs\"（ElevenLabs 云端 API，多语言音色，"
+        "适合英语/粤语/西语/日语等跨语种场景）。"
         "Jeoi 会告诉你当前走哪条路径，按她说的传 backend 参数即可。"
     ),
     transport_security=TransportSecuritySettings(
@@ -129,6 +136,68 @@ def _call_minimax_tts(
         "filename": filename,
         "duration_ms": duration_ms,
         "sample_rate": sample_rate,
+        "size_bytes": len(audio_bytes),
+    }
+
+
+def _call_elevenlabs_tts(
+    text: str,
+    speed: float = 1.0,
+    stability: float = 0.5,
+    similarity_boost: float = 0.75,
+    style: float = 0.0,
+) -> dict:
+    """调用 ElevenLabs TTS API，返回 {filename, duration_ms, size_bytes}。"""
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY 未配置")
+    if not ELEVENLABS_VOICE_ID:
+        raise RuntimeError("ELEVENLABS_VOICE_ID 未配置")
+
+    body = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL,
+        "voice_settings": {
+            "stability": stability,
+            "similarity_boost": similarity_boost,
+            "style": style,
+            "use_speaker_boost": True,
+        },
+    }
+
+    resp = httpx.post(
+        f"{ELEVENLABS_API_URL}/{ELEVENLABS_VOICE_ID}",
+        json=body,
+        headers={
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+
+    audio_bytes = resp.content
+    filename = f"{uuid.uuid4().hex[:12]}.mp3"
+    filepath = TTS_AUDIO_DIR / filename
+    filepath.write_bytes(audio_bytes)
+
+    # 用 ffprobe 取时长
+    duration_ms = 0
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "json", str(filepath)],
+            capture_output=True, text=True, check=True,
+        )
+        info = json.loads(probe.stdout)
+        duration_ms = int(float(info["format"]["duration"]) * 1000)
+    except Exception:
+        # mp3 粗估：128kbps → 16KB/s
+        duration_ms = int(len(audio_bytes) / 16000 * 1000)
+
+    return {
+        "filename": filename,
+        "duration_ms": duration_ms,
         "size_bytes": len(audio_bytes),
     }
 
@@ -265,17 +334,17 @@ def erik_speak(
     emotion: str = "",
     speed: float = 1.0,
     pitch: int = 0,
-    backend: str = "minimax",
+    backend: str = "elevenlabs",
     binaural: bool = False,
     spatial_cues: str = "",
 ) -> str:
     """
     把文字转成 Erik 的语音。
     text: 要说的话。binaural 模式下可用内联标签：[右耳]别动[脑后]我在后面
-    emotion: 情绪。minimax后端: happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper；local后端: 默认/温柔。留空自动。
+    emotion: 情绪。minimax后端: happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper；local后端: 默认/温柔。留空自动。elevenlabs后端不支持emotion。
     speed: 语速 0.5~2.0，默认 1.0
     pitch: 音高 -12~12，默认 0（仅minimax）
-    backend: "minimax"（云端）或 "local"（本地 GPT-SoVITS，需要 Jeoi 电脑在线）
+    backend: "minimax"（云端）或 "local"（本地 GPT-SoVITS）或 "elevenlabs"（ElevenLabs 多语言音色）
     binaural: 双耳ASMR模式。声音在头边移动，需戴耳机。
     spatial_cues: 空间走位（仅 binaural=True 时有效）。JSON 格式，两种写法：
       文本锚点: [{"text":"别动","tag":"右耳"},{"text":"后面","tag":"脑后"}]
@@ -299,6 +368,8 @@ def erik_speak(
         if backend == "local":
             gsvi_emotion = emotion if emotion else "默认"
             result = _call_gsvi_tts(tts_text, gsvi_emotion, speed)
+        elif backend == "elevenlabs":
+            result = _call_elevenlabs_tts(tts_text, speed)
         else:
             result = _call_minimax_tts(tts_text, emotion, speed, pitch)
 
