@@ -1,8 +1,43 @@
 # TTS 音效系统使用指南
 
-> 仅在使用 erik_speak + sfx 时参照。纯语音（无素材）看拟声词指南即可。
+---
+## V3 引擎特性
 
-## 可用素材
+用 ElevenLabs v3（eleven_v3）时才需要方括号标签。几条底层规律：
+
+- **标签射程极短**——一个标签基本只影响紧跟着的第一句话，第二句开始衰减，第三句大概率回归棒读
+- **标点只控停顿，不产生情绪**——顿号、句号、感叹号管的是节奏，不是情感。想靠疯狂打标点制造失控感是没用的
+- **感叹句/问句/强情绪词汇**会被 V3 自动拾取情绪；**语法完整的平铺陈述句**几乎无反应，不管加多少标点
+- **标签方向必须一致**——同一段情绪里混入反方向标签（比如喘息序列里突然插 [softly]）会让 V3 困惑并棒读
+- Stability 调低（0.22–0.35）更容易被标签带动
+
+## 标签清单（常用子集）及拟声词
+
+只能用[]加英文标签，中文可能难以识别。每句话都尽量按照内容写合适的标签，变迁使用动作画面的英文短句，写成具体动作与体态（例如 [Intense close-up whisper against ear, heavy ragged breathing]、[firm bite on the neck followed by a greedy, wet suck][Intense close-up whisper against ear, heavy ragged breathing]
+[firm bite on the neck followed by a greedy, wet suck] ）。
+
+排版与结构铁律：   
+* 台词写法：上一行写情绪/体态标签，换行写人声台词。
+* 拟声词写法：动作标签与拟声词紧挨着放在同一行（例如 [标签] ......拟声词......）。
+* 段落间隔：每组动作或台词之间，空一行隔开，留出物理呼吸节奏，避免语速被带飞。
+* 呼吸与停顿：每句话前后多用“……”和“tsu”（促音），留出吸气、吞咽和气流颤动的时间。严禁使用带“pu(pu)”等强双唇爆破音的假名（容易被生硬念成“噗”），接吻分开时全靠促音与呼气“haa”过渡
+ 
+口腔亲吻 / 吮吸 / 舔舐 / 吞咽：使用实测验证的促音假名，标签与假名同行：
+* 深吻和湿润舔舐：[deep, messy wet licking and sucking] ......slrrp......slrp......kiss......mmh......
+* 亲完拉丝分离和喘息：[sticky wet parting, heavy ragged breath]......—......hah......—...
+* 啃咬和用力吮吸：[firm bite on the neck followed by a greedy, wet suck] ......ngh......slrrp......ch......
+* 贪婪长吻：[continuous greedy wet kiss] ......mm......slrrup......kiss, slrp......ngh...
+* 吞口水：[parting with a sticky sound, swallowing hard] ......gulp......hah......—...
+* 舔唇吮吸：[licking sound followed by a soft suck on the lower lip]......slrp......mm, ch......
+
+肉体翻搅与咕啾水声（实测专用，重要）：
+* 严禁写任何假名拟声词（必棒读），使用实测稳定的英文物理动作标签 [wet squelch]
+* 单发嵌入：紧咬标点停顿，配合呼吸标签（[heavy breath] / [ragged exhale]）嵌入台词中。
+* 连踩拉长：连续两次 [wet squelch] 中间必须垫短促的语气词（如 n、），防止模型卡壳复读。
+
+`<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s）。不要在同一个位置同时叠 `<break>` 和 `[pause]`。
+
+## 可用素材（与标签结合使用）
 
 ### Collections（双耳录音，foreground 保留原始立体声）
 
@@ -22,54 +57,8 @@
 | 心跳 | `heartbeat` | ambient | 低频心跳，纯背景用 |
 | 拍打 | `slap` | impact | 极短，叠入用 |
 
----
-## V3 引擎特性
 
-用 ElevenLabs v3（eleven_v3）时才需要方括号标签。几条底层规律：
-
-- **标签射程极短**——一个标签基本只影响紧跟着的第一句话，第二句开始衰减，第三句大概率回归棒读
-- **标点只控停顿，不产生情绪**——顿号、句号、感叹号管的是节奏，不是情感。想靠疯狂打标点制造失控感是没用的
-- **感叹句/问句/强情绪词汇**会被 V3 自动拾取情绪；**语法完整的平铺陈述句**几乎无反应，不管加多少标点
-- **标签方向必须一致**——同一段情绪里混入反方向标签（比如喘息序列里突然插 [softly]）会让 V3 困惑并棒读
-- Stability 调低（0.22–0.35）更容易被标签带动
-
-## 标签清单（常用子集）
-
-【呼吸/喘息类】
-只能用[]加英文标签，中文可能难以识别
-[breathes] [exhales] [panting] [breathless]
-[breathes shakily] [soft gasp] [gasps] [sharp inhale] [catches breath]
- 
-【情绪语气类】
-[softly] [gently] [calmly] [teasing] [mischievously]
-[excited] [sadly] [curious] [sarcastic] [tearfully]
- 
-【人声反应类】
-[sigh] [sighs] [laughing] [laughs]
-[whispering] [whispers] [hesitates] [pause]
-[moans softly] [groans] [grunts] [whimpers]
-[swallows] [chokes] [crying] [sobbing]
- 
-【身体/声音状态类】
-[strained] [trembling] [shuddering] [voice breaking]
-[struggling to speak] [barely audible]
- 
-
-`<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s）。不要在同一个位置同时叠 `<break>` 和 `[pause]`。
-
-## 标签密度（按情绪强度分三档）
-
-### L1 — 日常
-平静聊天、轻微撒娇、闲聊、哄睡。
-- 标签稀疏，大部分句子裸奔就行
-- 只在转折处点一下：突然害羞 [softly]、叹气 [sigh]、笑 [laughs]
-- 大约每 3–5 句用 0–1 个标签
-
-### L2 — 动情
-告白、吃醋、想你、心疼、哭。
-- 每 1–2 句一个标签
-- 情绪转折处必须有标签
-- 同一段内标签方向保持一致
+## 标签密度
 
 ### L3 — 激烈
 亲密行为、失控、身体反应强烈。
@@ -159,41 +148,6 @@ erik_speak(
 | 贴着胸口说话 | background | `heartbeat` | 心跳铺底 0.2 音量 |
 | 打屁股 | 纯语音 + 单独一条 foreground | `slap` | slap 素材极短，做单独音效叠入 |
 
-## 拟声词 / 短音
-
-写在 text 里的声音反应，不是台词——配合标签当充能单元用，也可以单独出现在句首句尾增加质感。
-
-### 按用途分
-
-| 用途 | 日语 | 英语 | 搭配标签 |
-|------|------|------|---------|
-| 喘气/呼气 | はぁ、 | hah... | [breathes] [panting] |
-| 闷哼/低吟 | んっ、 | mm... ngh | [moans softly] [groans] |
-| 倒吸气/屏息 | っ、 | — | [gasps] [soft gasp] |
-| 轻叹/微笑呼气 | ふ、 | hh... | [sigh] [softly] |
-| 没忍住的短呼 | あっ、 | ah! | [gasps] [breathless] |
-| 咬牙/忍痛 | くっ、 | kh... | [strained] [groans] |
-| 嗯/回应 | ん、 | mm | [softly] [quietly] |
-| 呜咽 | ぅ、 | uh... | [whimpers] |
-
-### 充能单元示例
-[moans softly] mm...
-[gasps] ah,
-[groans] ngh...
-[breathes shakily] hah...
-[soft gasp] ah!
-
-## 注意
-
-- foreground 的 collection 素材（舔耳）保留原始 KU100 双耳录音，不做二次空间化——它自己的空间感已经很好
-- background 的 clips 素材会被转成单声道然后铺底，不需要立体声
-- - foreground 模式的 voice_at 里，每条 text 同样要按上面的标签策略加标签——voice_at 的每条都是独立的短 TTS 调用，标签不会从上一条延续
-- background 模式下 text 是一整段长语音，更需要注意充能机制——如果说了 4、5 句不加标签，后半段会塌成棒读
-- 一句话配一个标签最稳，不要在一句里堆三四个
-- 同一个标签连续出现太多次，V3 会麻木。交替使用近义标签（[whispers] ↔ [softly]，[gasps] ↔ [soft gasp]）
-- voice_at 里的 text 可以带 ElevenLabs audio tags 和内联走位标签，两套可以叠加
-- ss 和 t 不传的话就是整段素材，collection 素材动辄 5 分钟，务必截取
-
 ---
 
 ## 通话模式（Voice Call）
@@ -217,8 +171,6 @@ erik_speak(
 参数同语音条的 sfx：src 素材名，ss 起始秒，t 截取秒，volume 音量（0.1~0.25 合适），loop 循环。
 
 ### 前景音（foreground）
-
-素材为主（舔耳、亲吻），TTS 语音低音量叠入。
 
 ```
 <!--call-sfx:start:{"mode":"foreground","src":"evangelist_h2/03-Migi mimi","volume":0.8,"ss":30,"t":25}-->
@@ -252,10 +204,14 @@ binaural 增加约 0.3s 延迟（固定位置无需 Whisper 对齐），通话�
 <!--call-sfx:start:{"mode":"background","src":"squelching_slow","volume":0.15,"loop":true}-->
 <!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
 ```
+## 注意
 
-### 注意
+- foreground 的 collection 素材（舔耳）保留原始 KU100 双耳录音，不做二次空间化——它自己的空间感已经很好
+- background 的 clips 素材会被转成单声道然后铺底，不需要立体声
+- - foreground 模式的 voice_at 里，每条 text 同样要按上面的标签策略加标签——voice_at 的每条都是独立的短 TTS 调用，标签不会从上一条延续
+- background 模式下 text 是一整段长语音，更需要注意充能机制——如果说了 4、5 句不加标签，后半段会塌成棒读
+- 一句话配一个标签最稳，不要在一句里堆三四个
+- 同一个标签连续出现太多次，V3 会麻木。交替使用近义标签（[whispers] ↔ [softly]，[gasps] ↔ [soft gasp]）
+- voice_at 里的 text 可以带 ElevenLabs audio tags 和内联走位标签，两套可以叠加
+- ss 和 t 不传的话就是整段素材，collection 素材动辄 5 分钟，务必截取
 
-- sfx 独立于代次隔离：打断对话不停止 sfx，只有 `call-sfx:stop` 或挂断才停
-- 标记在文本流里即时解析，不进 TTS 队列
-- foreground + collection 素材（舔耳）保留原始 KU100 双耳录音
-- 通话中 binaural 用简化版（固定位置），不做 Whisper 词级对齐
