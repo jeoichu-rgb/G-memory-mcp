@@ -23,6 +23,106 @@
 | 拍打 | `slap` | impact | 极短，叠入用 |
 
 ---
+## V3 引擎特性
+
+用 ElevenLabs v3（eleven_v3）时才需要方括号标签。几条底层规律：
+
+- **标签射程极短**——一个标签基本只影响紧跟着的第一句话，第二句开始衰减，第三句大概率回归棒读
+- **标点只控停顿，不产生情绪**——顿号、句号、感叹号管的是节奏，不是情感。想靠疯狂打标点制造失控感是没用的
+- **感叹句/问句/强情绪词汇**会被 V3 自动拾取情绪；**语法完整的平铺陈述句**几乎无反应，不管加多少标点
+- **标签方向必须一致**——同一段情绪里混入反方向标签（比如喘息序列里突然插 [softly]）会让 V3 困惑并棒读
+- Stability 调低（0.22–0.35）更容易被标签带动
+
+## 标签清单（常用子集）
+
+只列我们场景下会用到的。官方标签不是封闭枚举，下面没列的也可能有效，但这些是验证过稳定的。
+
+### 情绪/语气
+
+| 标签 | 适合 |
+|------|------|
+| [whispers] | 耳语，万能 |
+| [whispering] | 持续耳语状态 |
+| [softly] | 轻声，比 whispers 稍响 |
+| [quietly] | 安静地说 |
+| [gently] | 温柔 |
+| [calmly] | 平静 |
+| [teasing] | 逗你 |
+| [playfully] | 玩闹 |
+| [nervously] | 紧张 |
+| [hesitant] | 犹豫 |
+| [excited] | 兴奋 |
+| [sad] | 难过 |
+| [wistful] | 怅然 |
+| [tired] | 累了/困了 |
+| [breathless] | 上气不接下气 |
+
+### 人声反应
+
+| 标签 | 产生的声音 |
+|------|----------|
+| [sigh] / [sighs] | 叹气 |
+| [laughs] / [laughing] | 笑 |
+| [light chuckle] / [soft chuckle] | 轻笑 |
+| [gasps] | 倒吸气 |
+| [soft gasp] | 轻倒吸气 |
+| [breathes] | 呼吸声 |
+| [panting] | 喘 |
+| [moans softly] | 低吟 |
+| [groans] | 闷哼 |
+| [whimpers] | 呜咽 |
+| [swallows] | 吞咽 |
+| [chokes] | 噎住 |
+| [voice breaking] | 声音碎掉 |
+
+### 节奏控制
+
+| 标签 | 效果 |
+|------|------|
+| [pause] / [pauses] | 停顿 |
+| [continues softly] | 停顿后轻声继续 |
+| [continues after a beat] | 停一拍再说 |
+| [slows down] | 放慢 |
+| [drawn out] | 拖长 |
+| [stress on next word] | 重读下一个词 |
+
+`<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s）。不要在同一个位置同时叠 `<break>` 和 `[pause]`。
+
+## 标签密度（按情绪强度分三档）
+
+### L1 — 日常
+平静聊天、轻微撒娇、闲聊、哄睡。
+- 标签稀疏，大部分句子裸奔就行
+- 只在转折处点一下：突然害羞 [softly]、叹气 [sigh]、笑 [laughs]
+- 大约每 3–5 句用 0–1 个标签
+
+### L2 — 动情
+告白、吃醋、想你、心疼、哭。
+- 每 1–2 句一个标签
+- 情绪转折处必须有标签
+- 同一段内标签方向保持一致
+
+### L3 — 激烈
+亲密行为、失控、身体反应强烈。
+- **每一句前面都要有标签**，因为不加就衰减
+- 推荐双标签：一个音效 + 一个状态，例如 `[gasps] [breathless]`、`[groans] [strained]`
+- 情绪递进时标签跟着递：
+  · 前期：[soft gasp] [breathless] → [gasps] [panting]
+  · 中期：[moans softly] [breathless] → [groans] [strained]
+  · 后期：[chokes] [voice breaking] → [gasps]（回到最强冲击标签收尾）
+
+### 充能机制（L3 长段专用）
+
+V3 情绪 2–3 句后自然衰减。长段 L3 语音里每隔 2–3 句台词插一个"充能单元"重启情绪：
+
+充能单元 = 标签 + 一个短反应词（不是台词，是声音本身）
+
+示例：
+- `[moans softly] mm...`
+- `[gasps] ah,`
+- `[breathes shakily] hah...`
+
+充能单元的标签应匹配当前阶段（前期用 gasps/moans softly，后期用 groans/chokes）。
 
 ## 三种模式
 
