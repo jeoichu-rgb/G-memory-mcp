@@ -328,6 +328,180 @@ def _binaural_postprocess(
                     pass
 
 
+def _tts_generate(text: str, backend: str, emotion: str, speed: float, pitch: int) -> dict:
+    """TTS 生成，返回 {filename, duration_ms, size_bytes}。"""
+    if backend == "local":
+        return _call_gsvi_tts(text, emotion or "默认", speed)
+    elif backend == "elevenlabs":
+        return _call_elevenlabs_tts(text, speed)
+    else:
+        return _call_minimax_tts(text, emotion, speed, pitch)
+
+
+def _make_binaural_clip(text: str, backend: str, emotion: str,
+                        speed: float, pitch: int) -> str:
+    """
+    生成一句 binaural 空间化的语音片段，返回临时 wav 路径。
+    text 可含内联标签 [右耳] 等。调用者负责删除临时文件。
+    """
+    from binaural import parse_inline_tags, process_binaural
+
+    clean, tags = parse_inline_tags(text)
+    tts_text = clean if tags else text
+    result = _tts_generate(tts_text, backend, emotion, speed, pitch)
+    mono_path = str(TTS_AUDIO_DIR / result["filename"])
+
+    # mono → wav
+    tmp_wav_in = None
+    if mono_path.endswith(".mp3"):
+        tmp_wav_in = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}.wav")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-i", mono_path, "-ac", "1", tmp_wav_in],
+            capture_output=True, check=True,
+        )
+        wav_in = tmp_wav_in
+    else:
+        wav_in = mono_path
+
+    out_wav = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}_clip.wav")
+    try:
+        process_binaural(
+            wav_in, out_wav, text=clean,
+            inline_tags=tags if tags else None,
+        )
+    finally:
+        if tmp_wav_in and os.path.exists(tmp_wav_in):
+            try:
+                os.remove(tmp_wav_in)
+            except OSError:
+                pass
+    return out_wav
+
+
+def _sfx_foreground(
+    sfx_str: str, voice_at_str: str,
+    backend: str, emotion: str, speed: float, pitch: int,
+) -> dict:
+    """
+    前景模式：素材为主音轨 + TTS 短句按时间点叠入。
+    返回 {filename, duration_ms, size_bytes}。
+    """
+    from sfx_mixer import load_sfx, load_voice_wav, mix_foreground, finalize_wav
+
+    sfx_cfg = json.loads(sfx_str)
+    voice_at = json.loads(voice_at_str) if voice_at_str else []
+
+    # 1. 加载素材
+    sfx_audio, sfx_is_stereo = load_sfx(
+        sfx_cfg["src"],
+        ss=sfx_cfg.get("ss", 0),
+        t=sfx_cfg.get("t", 0),
+    )
+
+    # 2. 对每个 voice_at 条目生成 TTS + binaural
+    clips = []
+    tmp_wavs = []
+    for entry in voice_at:
+        wav_path = _make_binaural_clip(
+            entry["text"], backend, emotion, speed, pitch,
+        )
+        tmp_wavs.append(wav_path)
+        voice_data = load_voice_wav(wav_path)
+        clips.append({"t": entry["t"], "audio": voice_data})
+
+    # 3. 混合
+    mixed = mix_foreground(
+        sfx_audio, sfx_is_stereo, clips,
+        sfx_volume=sfx_cfg.get("volume", 1.0),
+        voice_volume=sfx_cfg.get("voice_volume", 0.85),
+    )
+
+    # 4. 输出
+    tmp_wav = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}_fg.wav")
+    finalize_wav(mixed, tmp_wav)
+
+    out_filename = f"{uuid.uuid4().hex[:12]}_sfx.mp3"
+    out_path = str(TTS_AUDIO_DIR / out_filename)
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error",
+         "-i", tmp_wav, "-b:a", "192k", "-ac", "2", out_path],
+        capture_output=True, check=True,
+    )
+    out_size = os.path.getsize(out_path)
+    duration_ms = int(len(mixed) / 44100 * 1000)
+
+    # 清理
+    for f in tmp_wavs + [tmp_wav]:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+    return {"filename": out_filename, "duration_ms": duration_ms, "size_bytes": out_size}
+
+
+def _sfx_background(
+    text: str, sfx_str: str,
+    backend: str, emotion: str, speed: float, pitch: int,
+    spatial_cues: str,
+) -> dict:
+    """
+    背景模式：TTS 语音为主 + 素材铺底。
+    返回 {filename, duration_ms, size_bytes}。
+    """
+    from sfx_mixer import load_sfx, load_voice_wav, mix_background, finalize_wav
+
+    sfx_cfg = json.loads(sfx_str)
+
+    # 1. 生成 TTS + binaural
+    voice_wav = _make_binaural_clip(text, backend, emotion, speed, pitch)
+
+    try:
+        voice_audio = load_voice_wav(voice_wav)
+
+        # 2. 加载素材
+        sfx_audio, sfx_is_stereo = load_sfx(
+            sfx_cfg["src"],
+            ss=sfx_cfg.get("ss", 0),
+            t=sfx_cfg.get("t", 0),
+        )
+
+        # 3. 混合
+        mixed = mix_background(
+            voice_audio, sfx_audio, sfx_is_stereo,
+            sfx_volume=sfx_cfg.get("volume", 0.2),
+            voice_volume=sfx_cfg.get("voice_volume", 1.0),
+            loop=sfx_cfg.get("loop", True),
+        )
+
+        # 4. 输出
+        tmp_wav = str(TTS_AUDIO_DIR / f"_tmp_{uuid.uuid4().hex[:8]}_bg.wav")
+        finalize_wav(mixed, tmp_wav)
+
+        out_filename = f"{uuid.uuid4().hex[:12]}_sfx.mp3"
+        out_path = str(TTS_AUDIO_DIR / out_filename)
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-i", tmp_wav, "-b:a", "192k", "-ac", "2", out_path],
+            capture_output=True, check=True,
+        )
+        out_size = os.path.getsize(out_path)
+        duration_ms = int(len(mixed) / 44100 * 1000)
+
+        if os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
+
+        return {"filename": out_filename, "duration_ms": duration_ms, "size_bytes": out_size}
+    finally:
+        if os.path.exists(voice_wav):
+            try:
+                os.remove(voice_wav)
+            except OSError:
+                pass
+
+
 @tts_mcp.tool()
 def erik_speak(
     text: str,
@@ -337,22 +511,48 @@ def erik_speak(
     backend: str = "elevenlabs",
     binaural: bool = False,
     spatial_cues: str = "",
+    sfx_mode: str = "",
+    sfx: str = "",
+    voice_at: str = "",
 ) -> str:
     """
     把文字转成 Erik 的语音。
-    text: 要说的话。binaural 模式下可用内联标签：[右耳]别动[脑后]我在后面
+    text: 要说的话。binaural 模式下可用内联标签：[右耳]别动[脑后]我在后面。ElevenLabs v4 还支持 audio tags: [whispers][sighs][exhales] 等。
     emotion: 情绪。minimax后端: happy/sad/angry/fearful/disgusted/surprised/calm/fluent/whisper；local后端: 默认/温柔。留空自动。elevenlabs后端不支持emotion。
     speed: 语速 0.5~2.0，默认 1.0
     pitch: 音高 -12~12，默认 0（仅minimax）
     backend: "minimax"（云端）或 "local"（本地 GPT-SoVITS）或 "elevenlabs"（ElevenLabs 多语言音色）
     binaural: 双耳ASMR模式。声音在头边移动，需戴耳机。
-    spatial_cues: 空间走位（仅 binaural=True 时有效）。JSON 格式，两种写法：
-      文本锚点: [{"text":"别动","tag":"右耳"},{"text":"后面","tag":"脑后"}]
-      不传则用 text 里的内联标签 [右耳][左耳][脑后][面前][贴近][退开]，都没有就随机走位。
+    spatial_cues: 空间走位（仅 binaural=True 时有效）。JSON 格式：[{"text":"别动","tag":"右耳"}]
+    sfx_mode: 音效模式。"foreground"=素材为主+TTS短句叠入；"background"=TTS为主+素材铺底循环。留空不用音效。
+    sfx: 音效素材 JSON。{"src":"collection/track","ss":起始秒,"t":时长秒,"volume":音量0~1,"loop":true,"voice_volume":语音音量0~1}
+    voice_at: (仅foreground) TTS短句时间点 JSON。[{"t":5,"text":"[右耳][whispers] 别动"},{"t":20,"text":"乖"}]
     返回格式化的语音标记，直接贴到回复末尾即可。
     """
     try:
-        # ── 内联标签预处理 ──
+        # ── 音效模式 ──
+        if sfx_mode == "foreground" and sfx:
+            result = _sfx_foreground(sfx, voice_at, backend, emotion, speed, pitch)
+            url = f"/tts-audio/{result['filename']}"
+            duration = round(result["duration_ms"] / 1000, 1)
+            label = text or (voice_at if voice_at else "sfx")
+            return (
+                f"语音已生成 🎧双耳+音效 ({duration}s, {result['size_bytes']//1024}KB)\n"
+                f"<!--voice:{url}|{duration}|{label}-->"
+            )
+
+        if sfx_mode == "background" and sfx:
+            result = _sfx_background(
+                text, sfx, backend, emotion, speed, pitch, spatial_cues,
+            )
+            url = f"/tts-audio/{result['filename']}"
+            duration = round(result["duration_ms"] / 1000, 1)
+            return (
+                f"语音已生成 🎧双耳+背景音 ({duration}s, {result['size_bytes']//1024}KB)\n"
+                f"<!--voice:{url}|{duration}|{text}-->"
+            )
+
+        # ── 原有流程（无 sfx）──
         tts_text = text
         inline_tags = None
         had_inline_tags = False
@@ -364,16 +564,8 @@ def erik_speak(
                 inline_tags = tags
                 had_inline_tags = True
 
-        # ── TTS 生成 ──
-        if backend == "local":
-            gsvi_emotion = emotion if emotion else "默认"
-            result = _call_gsvi_tts(tts_text, gsvi_emotion, speed)
-        elif backend == "elevenlabs":
-            result = _call_elevenlabs_tts(tts_text, speed)
-        else:
-            result = _call_minimax_tts(tts_text, emotion, speed, pitch)
+        result = _tts_generate(tts_text, backend, emotion, speed, pitch)
 
-        # ── 双耳后处理 ──
         if binaural:
             mono_path = str(TTS_AUDIO_DIR / result["filename"])
             result = _binaural_postprocess(
