@@ -762,6 +762,7 @@ async def api_tts(request: Request):
         duration = round(result["duration_ms"] / 1000, 1)
         return JSONResponse({"audio_url": audio_url, "duration": duration, "text": text})
     except Exception as e:
+        import traceback; traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
