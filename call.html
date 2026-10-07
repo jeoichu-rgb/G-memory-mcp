@@ -592,9 +592,15 @@ async function callTTS(text) {
   const r = await fetch(API_BASE + '/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-secret': PW },
-    body: JSON.stringify({ text, backend: 'local', speed: 1.0 }),
+    body: JSON.stringify({ text, backend: 'elevenlabs', speed: 1.0 }),
   });
-  if (!r.ok) throw new Error('TTS ' + r.status);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const errMsg = body.error || ('TTS ' + r.status);
+    // 通知 CC：elevenlabs 失败
+    wsSend('call:tts_error', { backend: 'elevenlabs', error: errMsg, text: text.slice(0, 80) });
+    throw new Error(errMsg);
+  }
   return r.json();
 }
 

@@ -4855,6 +4855,16 @@ async def websocket_endpoint(ws: WebSocket):
                         })
                     log.info(f"Call reconnect: resent {resent} pending voice events for {rc_sid}")
 
+            elif event == "call:tts_error":
+                err_backend = data.get("backend", "?")
+                err_msg = data.get("error", "unknown")
+                err_text = data.get("text", "")
+                log.warning(f"Call TTS error ({err_backend}): {err_msg} | text: {err_text}")
+                # 通知 CC：前端 auto-TTS 失败
+                if current_session and current_session._in_call:
+                    note = f"[系统] 前端 auto-TTS 失败（{err_backend}）：{err_msg}"
+                    append_message(current_session.id, "user", note, source="system")
+
             elif event == "call:end":
                 call_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 call_session = sessions.get(call_sid) if call_sid else current_session
