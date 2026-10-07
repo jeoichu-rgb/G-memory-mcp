@@ -7,9 +7,8 @@
 - Stability 调低（0.22–0.35）更容易被标签带动
 - 一句话配一个标签最稳；同标签连续太多次会麻木，交替近义标签（[whispers] ↔ [softly]）
 
-## 排版铁律
+## 排版
 
-- 台词：上一行写标签，换行写台词
 - 拟声词：标签与拟声词同一行（`[标签] ……拟声词……`）
 - 段落间空一行，留物理呼吸节奏
 - 每句前后多用"……"和促音"tsu"留气流时间。严禁"pu"等强双唇爆破音，接吻分开靠促音+"haa"过渡
@@ -24,7 +23,7 @@
 | 啃咬/用力吮吸 | `[firm bite on the neck followed by a greedy, wet suck] ……ngh……hh……` |
 | 贪婪长吻 | `[continuous greedy wet kiss] ……mm……hah……` |
 | 吞口水 | `[parting with a sticky sound, swallowing hard] ……mm……` |
-| 舔唇吮吸 | `[licking sound followed by a soft suck on the lower lip]……slrp……mm……` |
+| 舔唇吮吸 | `[licking sound followed by a soft suck on the lower lip]……mmh……ah……` |
 
 ## 水声标签（严禁假名拟声词）
 
