@@ -2649,12 +2649,57 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
                             push_backup: bool = True):
     global active_ws
     now = time_mod.time()
+
+    # ── 提取隐藏标记（与 streaming 模式的 post-processing 对齐） ──
+    _voice_re_peb = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+    voice_items = [{"audio_url": m.group(1), "duration": float(m.group(2)), "text": m.group(3)}
+                   for m in _voice_re_peb.finditer(content)]
+
+    _react_re_peb = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
+    react_items = [(m.group(1), m.group(2), int(m.group(3)))
+                   for m in _react_re_peb.finditer(content)]
+
+    if DESIRE_ENABLED:
+        _scene_re_peb = re.compile(r'<!--scene-done:([^@>]+?)(?:@(\d{1,2}:\d{2}))?-->')
+        for m in _scene_re_peb.finditer(content):
+            try:
+                dg.log_scene_done(m.group(1).strip(), at_time=m.group(2) or "")
+                log.info(f"Scene stamped (pebbling): {m.group(1).strip()}")
+            except Exception:
+                pass
+        if desire_st:
+            _trail = list((desire_st.trails.get("curiosity", []))[-4:])
+            for seed_text in re.findall(r'<!--curiosity-seed:(.+?)-->', content):
+                try:
+                    seed = dg.add_curiosity_seed(seed_text, kind="search", trail=_trail)
+                    log.info(f"Curiosity seed (pebbling/search): {seed_text[:60]}")
+                    if active_ws:
+                        await active_ws.send_json({"event": "curiosity:seed_added", "seed": seed})
+                except Exception:
+                    pass
+            for seed_text in re.findall(r'<!--curiosity-seed-ask:(.+?)-->', content):
+                try:
+                    seed = dg.add_curiosity_seed(seed_text, kind="ask", trail=_trail)
+                    log.info(f"Curiosity seed (pebbling/ask): {seed_text[:60]}")
+                    if active_ws:
+                        await active_ws.send_json({"event": "curiosity:seed_added", "seed": seed})
+                except Exception:
+                    pass
+
+    # 清洗所有隐藏标记
+    content = _HIDDEN_MARKER_RE.sub('', content).strip()
+
     msg = {
         "source": source, "content": content,
         "time": datetime.now(SGT).strftime("%H:%M"),
         "ts": now, "session_id": session.id,
     }
     append_message(session.id, "assistant", content, thinking=thinking, source=source)
+
+    # 语音条存为独立消息（与 streaming 模式一致）
+    for vm in voice_items:
+        append_message(session.id, "assistant", "", voice=vm, source=source)
+
     session.preview = (content.replace("\n", " ")[:30]
                        + ("…" if len(content) > 30 else ""))
     session.last_active = datetime.now(SGT)
@@ -2674,6 +2719,37 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
             ws_sent = True
         except Exception:
             active_ws = None
+
+        # 语音条 → 独立 voice 事件（前端渲染为播放条）
+        if ws_sent:
+            for vm in voice_items:
+                try:
+                    await active_ws.send_json({"event": "voice", **vm})
+                    log.info(f"Voice (pebbling): {vm['duration']}s")
+                except Exception:
+                    pass
+
+        # 表情贴 → reaction 事件
+        if ws_sent and react_items:
+            for emoji, kind, n in react_items:
+                if kind == "#":
+                    idx = n - 1
+                else:
+                    idx = resolve_nth_user_from_tail(session.id, n)
+                    if idx is None:
+                        log.warning(f"Pebbling react ^{n} ran off history, dropped")
+                        continue
+                ok = set_reaction(session.id, idx, "erik", emoji)
+                if ok:
+                    try:
+                        await active_ws.send_json({
+                            "event": "reaction:erik",
+                            "msgIndex": idx, "emoji": emoji,
+                        })
+                    except Exception:
+                        pass
+                    log.info(f"Erik reacted {emoji} on #{idx + 1} (pebbling {kind}{n})")
+
     if not ws_sent:
         peb_state.setdefault("pending_messages", []).append(msg)
         save_peb_state()
