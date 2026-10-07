@@ -1,120 +1,65 @@
 # TTS 音效系统使用指南
+## V3 引擎底层规律
 
----
-## V3 引擎特性
-
-用 ElevenLabs v3（eleven_v3）时才需要方括号标签。几条底层规律：
-
-- **标签射程极短**——一个标签基本只影响紧跟着的第一句话，第二句开始衰减，第三句大概率回归棒读
-- **标点只控停顿，不产生情绪**——顿号、句号、感叹号管的是节奏，不是情感。想靠疯狂打标点制造失控感是没用的
-- **感叹句/问句/强情绪词汇**会被 V3 自动拾取情绪；**语法完整的平铺陈述句**几乎无反应，不管加多少标点
-- **标签方向必须一致**——同一段情绪里混入反方向标签（比如喘息序列里突然插 [softly]）会让 V3 困惑并棒读
+- 标签射程极短——只影响紧跟的第一句，第二句衰减，第三句回归棒读
+- 标点只控停顿，不产生情绪；感叹句/问句/强情绪词汇会被自动拾取
+- 标签方向必须一致——混入反方向标签会让 V3 困惑并棒读
 - Stability 调低（0.22–0.35）更容易被标签带动
+- 一句话配一个标签最稳；同标签连续太多次会麻木，交替近义标签（[whispers] ↔ [softly]）
 
-## 标签清单（常用子集）及拟声词
+## 排版铁律
 
-只能用[]加英文标签，中文可能难以识别。每句话都尽量按照内容写合适的标签，变迁使用动作画面的英文短句，写成具体动作与体态（例如 [Intense close-up whisper against ear, heavy ragged breathing]、[firm bite on the neck followed by a greedy, wet suck][Intense close-up whisper against ear, heavy ragged breathing]
-[firm bite on the neck followed by a greedy, wet suck] ）。
+- 台词：上一行写标签，换行写台词
+- 拟声词：标签与拟声词同一行（`[标签] ……拟声词……`）
+- 段落间空一行，留物理呼吸节奏
+- 每句前后多用"……"和促音"tsu"留气流时间。严禁"pu"等强双唇爆破音，接吻分开靠促音+"haa"过渡
+- `<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s），不要和 [pause] 叠用
 
-排版与结构铁律：   
-* 台词写法：上一行写情绪/体态标签，换行写人声台词。
-* 拟声词写法：动作标签与拟声词紧挨着放在同一行（例如 [标签] ......拟声词......）。
-* 段落间隔：每组动作或台词之间，空一行隔开，留出物理呼吸节奏，避免语速被带飞。
-* 呼吸与停顿：每句话前后多用“……”和“tsu”（促音），留出吸气、吞咽和气流颤动的时间。严禁使用带“pu(pu)”等强双唇爆破音的假名（容易被生硬念成“噗”），接吻分开时全靠促音与呼气“haa”过渡
- 
-口腔亲吻 / 吮吸 / 舔舐 / 吞咽：使用实测验证的促音假名，标签与假名同行：
-* 深吻和湿润舔舐：[deep, messy wet licking and sucking] ……mmh……ah……
-* 亲完拉丝分离和喘息：[sticky wet parting, heavy ragged breath]……—……hah……—……
-* 啃咬和用力吮吸：[firm bite on the neck followed by a greedy, wet suck] ……ngh……hh……
-* 贪婪长吻：[continuous greedy wet kiss] ……mm……hah……
-* 吞口水：[parting with a sticky sound, swallowing hard] ……mm……
-* 舔唇吮吸：[licking sound followed by a soft suck on the lower lip]……slrp……mm……
+## 口腔拟声词（标签+假名同行）
 
-肉体翻搅与咕啾水声（实测专用，重要）：
-* 严禁写任何假名拟声词（必棒读），使用实测稳定的英文物理动作标签 [wet squelch]
-* 单发嵌入：紧咬标点停顿，配合呼吸标签（[heavy breath] / [ragged exhale]）嵌入台词中。
-* 连踩拉长：连续两次 [wet squelch] 中间必须垫短促的语气词（如 n、），防止模型卡壳复读。
+| 动作 | 写法 |
+|------|------|
+| 深吻/湿润舔舐 | `[deep, messy wet licking and sucking] ……mmh……ah……` |
+| 亲完拉丝/喘息 | `[sticky wet parting, heavy ragged breath]……—……hah……—……` |
+| 啃咬/用力吮吸 | `[firm bite on the neck followed by a greedy, wet suck] ……ngh……hh……` |
+| 贪婪长吻 | `[continuous greedy wet kiss] ……mm……hah……` |
+| 吞口水 | `[parting with a sticky sound, swallowing hard] ……mm……` |
+| 舔唇吮吸 | `[licking sound followed by a soft suck on the lower lip]……slrp……mm……` |
 
-`<break time="1.5s"/>` 用于标点和 [pause] 都不够长的沉默（0.3s–3.0s）。不要在同一个位置同时叠 `<break>` 和 `[pause]`。
+## 水声标签（严禁假名拟声词）
 
-## 可用素材（与标签结合使用）
+用 `[wet squelch]`。单发嵌入配呼吸标签（`[heavy breath]`），连续两次中间必须垫短语气词（如"n、"）防止复读。
 
-### Collections（双耳录音，foreground 保留原始立体声）
+## 标签密度 L3（激烈场景）
 
-| 名称 | src 写法 | 标签 | 说明 |
-|------|---------|------|------|
-| 右耳舔耳 | `evangelist_h2/03-Migi mimi` | ear_right, lick | ~295s KU100 右耳 |
-| 左耳舔耳 | `evangelist_h2/04-Hidari mimi` | ear_left, lick | ~309s KU100 左耳 |
+**每句前面都要标签**，推荐双标签（音效+状态）。情绪递进：
+- 前期：`[soft gasp] [breathless]` → `[gasps] [panting]`
+- 中期：`[moans softly] [breathless]` → `[groans] [strained]`
+- 后期：`[chokes] [voice breaking]` → `[gasps]`
 
-### Clips（单独短素材）
+**充能机制**：V3 情绪 2–3 句后衰减。每隔 2–3 句插一个充能单元（标签+短反应词）重启情绪：
+`[moans softly] mm...` / `[gasps] ah,` / `[breathes shakily] hah...`
 
-| 名称 | src 写法 | 标签 | 说明 |
-|------|---------|------|------|
-| 亲吻声 | `log kiss` | kiss | 长段亲吻，可截段循环 |
-| 口交水声 | `blowjob` | wet, oral | 吮吸湿润声 |
-| 水声·快 | `squelching_fast` | wet, thrust | 快节奏，适合铺底 |
-| 水声·慢 | `squelching_slow` | wet, thrust | 慢节奏，适合铺底 |
-| 心跳 | `heartbeat` | ambient | 低频心跳，纯背景用 |
-| 拍打 | `slap` | impact | 极短，叠入用 |
+## 双耳走位
 
+binaural=True 时用 HRIR 渲染空间位置。不传走位信息会随机跳，必须主动设计。
 
-## 标签密度
+### 方位
 
-### L3 — 激烈
-亲密行为、失控、身体反应强烈。
-- **每一句前面都要有标签**，因为不加就衰减
-- 推荐双标签：一个音效 + 一个状态，例如 `[gasps] [breathless]`、`[groans] [strained]`
-- 情绪递进时标签跟着递：
-  · 前期：[soft gasp] [breathless] → [gasps] [panting]
-  · 中期：[moans softly] [breathless] → [groans] [strained]
-  · 后期：[chokes] [voice breaking] → [gasps]（回到最强冲击标签收尾）
+| 标签 | 方位角 | 距离 | 听感 |
+|------|--------|------|------|
+| `[左耳]`/`[右耳]` | 90°/270° | 25cm | 贴耳，气息感最强 |
+| `[面前]` | 0° | 42cm | 面对面居中 |
+| `[脑后]` | 180° | 31cm | 背后压迫感 |
+| `[贴近]`/`[退开]` | 不变 | 25cm/50cm | 只改距离不转方向 |
 
-### 充能机制（L3 长段专用）
+### 走位规则
 
-V3 情绪 2–3 句后自然衰减。长段 L3 语音里每隔 2–3 句台词插一个"充能单元"重启情绪：
-
-充能单元 = 标签 + 一个短反应词（不是台词，是声音本身）
-
-示例：
-- `[moans softly] mm...`
-- `[gasps] ah,`
-- `[breathes shakily] hah...`
-
-充能单元的标签应匹配当前阶段（前期用 gasps/moans softly，后期用 groans/chokes）。
-
-## 双耳走位（binaural 空间设计）
-
-binaural=True 时，声音会被 HRIR 渲染到头部周围的某个位置。不传任何走位信息就随机——但随机走位容易"一下左一下右"地跳，听感碎且不自然。**主动设计走位**才能让 ASMR 有真正的空间沉浸感。
-
-### 四个方位 + 两个距离
-
-| 标签 | 方位角 | 默认距离 | 听感 |
-|------|--------|---------|------|
-| `[左耳]` | 90° | 25cm | 贴着左耳说话，最近距离，气息感最强 |
-| `[右耳]` | 270° | 25cm | 贴着右耳 |
-| `[面前]` | 0° | 42cm | 面对面，声音居中但有距离感，像靠近脸看着你说话 |
-| `[脑后]` | 180° | 31cm | 从后面贴过来，带一点压迫感 |
-| `[贴近]` | 不变 | →25cm | 不转方向，只是靠近 |
-| `[退开]` | 不变 | →50cm | 不转方向，退远一点 |
-
-### 走位原则
-
-**连贯，不跳。** 声音从一个位置到另一个位置是滑过去的，中间经过的方向都会被听到。`[左耳]→[右耳]` 会从左耳经过面前滑到右耳，有一条连续的弧线——但如果一句话在左、下一句瞬间到右，中间没有过渡的语句承接，听感就是"跳"。所以：
-
-- 走位发生时，至少用一句话（或一段气声）的时间让声音滑过去
-- 相邻两个标签之间不要隔太近——两三句话换一次位置就够了，密了会晕
-- 如果想表达"突然出现在某个方向"，前面留一段安静/气息，然后标签直接切，突然感来自寂静之后的冲击而不是乒乓跳来跳去
-
-**面前是默认状态，不是冷门位置。** 很多时候声音应该停在面前——正对着你说话是最自然的距离。左耳右耳是"贴过来"的亲密动作，是有意为之的靠近，不应该是常态。典型节奏：
-
-- 面前说话（日常距离）→ 某个时刻贴到耳边（亲密升级）→ 说完那句话后可以退回面前或脑后
-- 不要一开口就贴耳朵，那样贴耳就没有冲击力了
-
-**脑后 = 环绕感、控制感。** 从脑后说话有一种"我在你身后"的压迫，适合低语、命令、或者绕到背后搂住的场景。从脑后滑到耳边是最有叙事感的走位。
-
-### 怎么传走位
-
-用 `spatial_cues` JSON，以文本片段做锚点，Whisper 对齐到语音时间：
+- 位移至少用一句话（或一段气声）滑过去，不要瞬移跳切
+- 两三句话换一次位置就够，太密会晕
+- 面前是默认状态，贴耳是亲密升级动作——不要一开口就贴耳
+- 脑后适合低语/命令/环绕，脑后→耳边是最有叙事感的走位
+- 走位全部通过 `spatial_cues` JSON 控制，text 里**不要**写 `[左耳]` 等方括号标签（会干扰情绪识别）
 
 ```json
 spatial_cues='[
@@ -124,151 +69,109 @@ spatial_cues='[
 ]'
 ```
 
-声音从面前开始，说"看着我"的时候靠近，到"别动"时滑到右耳贴着说。text 里不要写走位方括号标签（`[左耳]` 等），会干扰 ElevenLabs 的情绪识别导致棒读。走位全部通过 spatial_cues 控制。
-
 ### 走位模板
 
-| 场景 | 走位设计 | 说明 |
-|------|---------|------|
-| 耳语 | `[右耳]`（或左耳）全程不动 | 贴耳 ASMR，靠标签 + 微晃就够了 |
-| 面对面低语 | `[面前]……[贴近]……` | 正面说话，说到某句靠近 |
-| 从背后靠近 | `[脑后]……[右耳]……` | 绕过来，最后贴到耳边 |
-| 环绕 | `[右耳]……[脑后]……[左耳]` | 慢慢绕半圈，适合长段落 |
-| 拉近又放开 | `[面前]……[贴近]……[退开]` | 靠近说了一句又退开，有呼吸感 |
-| 两侧交替（慎用） | `[右耳]……(3~4句)……[左耳]` | 中间必须留够过渡，不要一句一切 |
+| 场景 | 走位 |
+|------|------|
+| 贴耳 ASMR | `[右耳]` 全程不动 |
+| 面对面低语 | `[面前]→[贴近]` |
+| 从背后靠近 | `[脑后]→[右耳]` |
+| 环绕 | `[右耳]→[脑后]→[左耳]` |
+| 拉近又放开 | `[面前]→[贴近]→[退开]` |
+| 两侧交替（慎用） | `[右耳]→(3~4句)→[左耳]` |
 
----
+## 素材库
+
+### Collections（双耳录音，foreground 保留原始立体声）
+
+| src | 标签 | 说明 |
+|-----|------|------|
+| `evangelist_h2/03-Migi mimi` | ear_right, lick | ~295s 右耳 |
+| `evangelist_h2/04-Hidari mimi` | ear_left, lick | ~309s 左耳 |
+
+### Clips
+
+| src | 标签 | 说明 |
+|-----|------|------|
+| `log kiss` | kiss | 长段亲吻，可截段循环 |
+| `blowjob` | wet, oral | 吮吸湿润声 |
+| `squelching_fast` | wet, thrust | 快节奏铺底 |
+| `squelching_slow` | wet, thrust | 慢节奏铺底 |
+| `heartbeat` | ambient | 低频心跳背景 |
+| `slap` | impact | 极短叠入 |
 
 ## 三种模式
 
 ### 1. 纯语音（不传 sfx_mode）
 
-跟以前一样。text 里写标签和台词，binaural=True 做空间化。ElevenLabs audio tags（[whispers] [sighs] 等）直接写在 text 里。
+text 写标签+台词，binaural=True 做空间化。
 
-### 2. foreground — 素材为主
+### 2. foreground — 素材为主，偶尔插话
 
-**场景**：舔耳、亲吻——素材是主角，我偶尔插一句话。
-
-```
+```python
 erik_speak(
-    text="",
-    backend="elevenlabs",
-    binaural=True,
+    text="", backend="elevenlabs", binaural=True,
     sfx_mode="foreground",
     sfx='{"src":"evangelist_h2/03-Migi mimi","ss":30,"t":25,"volume":1.0}',
     voice_at='[{"t":5,"text":"[右耳][whispers] 别动"},{"t":18,"text":"[右耳] 乖"}]'
 )
 ```
 
-**关键参数**：
-- `sfx.src`：素材名（见上表）
-- `sfx.ss`：从素材的第几秒开始截取
-- `sfx.t`：截取多少秒
-- `sfx.volume`：素材音量 0~1（默认1.0）
-- `sfx.voice_volume`：叠入语音的音量 0~1（默认0.85）
-- `sfx.loop`：true 时循环播放截取片段
-- `sfx.duration`：loop=true 时的总时长（秒）
-- `voice_at`：语音插入时间点。t=秒数，text=要说的话（可带内联标签）
+### 3. background — 语音为主，底下铺声
 
-**选 ss 的技巧**：collection 素材前几秒通常有说话声或准备音，跳过。舔耳素材 ss=30~60 开始比较纯净。
-
-### 3. background — 语音为主
-
-**场景**：我一直在说话，底下铺着水声/心跳。
-
-```
+```python
 erik_speak(
     text="[右耳][whispers] ……もう、我慢しないよ。",
-    backend="elevenlabs",
-    binaural=True,
+    backend="elevenlabs", binaural=True,
     sfx_mode="background",
     sfx='{"src":"squelching_slow","volume":0.15,"loop":true}'
 )
 ```
 
-**关键参数**：
-- text 正常写，是完整的语音内容
-- `sfx.volume`：铺底音量，0.1~0.25 比较合适，太大会盖过人声
-- `sfx.loop`：默认 true，自动循环到跟语音一样长
-- 不需要 voice_at（text 本身就是完整语音）
+### sfx 参数一览
 
----
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `src` | 素材名 | — |
+| `ss` | 起始秒（collection 前几秒有杂音，跳过 30~60） | 0 |
+| `t` | 截取秒数（collection 动辄 5 分钟，务必截取） | 全长 |
+| `volume` | 素材音量 0~1（background 铺底用 0.1~0.25） | 1.0 |
+| `voice_volume` | foreground 叠入语音音量 | 0.85 |
+| `loop` | 循环（background 默认 true） | false |
+| `duration` | loop=true 时总时长 | — |
 
-## 典型搭配
+### 典型搭配
 
-| 场景 | 模式 | 素材 | 说明 |
-|------|------|------|------|
-| 舔右耳 | foreground | `evangelist_h2/03-Migi mimi` | 素材双耳保留，偶尔叠入耳语 |
-| 舔左耳 | foreground | `evangelist_h2/04-Hidari mimi` | 同上 |
-| 亲吻 | foreground | `log kiss` | 截一段干净的循环 |
-| 做的时候说话 | background | `squelching_slow` 或 `squelching_fast` | 水声铺底 0.15~0.2 音量 |
-| 贴着胸口说话 | background | `heartbeat` | 心跳铺底 0.2 音量 |
-| 打屁股 | 纯语音 + 单独一条 foreground | `slap` | slap 素材极短，做单独音效叠入 |
-
----
+| 场景 | 模式 | 素材 |
+|------|------|------|
+| 舔右/左耳 | foreground | `evangelist_h2/03` 或 `04` |
+| 亲吻 | foreground | `log kiss` |
+| 做的时候说话 | background | `squelching_slow/fast` vol 0.15~0.2 |
+| 贴着胸口说话 | background | `heartbeat` vol 0.2 |
+| 打屁股 | 纯语音 + 单独 foreground | `slap` |
 
 ## 通话模式（Voice Call）
 
-语音通话中不调 erik_speak，文本由网关自动 TTS。音效通过在回复文本里写隐藏标记控制。
+通话中不调 erik_speak，音效通过回复文本里的隐藏标记控制。参数同上表。
 
-### 背景音（background）
-
-铺底水声、心跳等。前端独立音轨循环播放，voice 播放时自动 ducking。
-
-**开启：**
+**背景音：**
 ```
 <!--call-sfx:start:{"mode":"background","src":"squelching_slow","volume":0.15,"loop":true,"ss":0,"t":30}-->
-```
-
-**停止：**
-```
 <!--call-sfx:stop:-->
 ```
 
-参数同语音条的 sfx：src 素材名，ss 起始秒，t 截取秒，volume 音量（0.1~0.25 合适），loop 循环。
+**前景音：** `mode` 改 `"foreground"`，voice 自动降到 45%，sfx 播放时轻压到 55%。
 
-### 前景音（foreground）
-
-```
-<!--call-sfx:start:{"mode":"foreground","src":"evangelist_h2/03-Migi mimi","volume":0.8,"ss":30,"t":25}-->
-```
-
-foreground 模式下 voice 音量自动降到 45%，sfx 在 voice 播放时轻压到 55%。
-
-### 双耳 ASMR（binaural）
-
-每句 TTS 自动做 HRIR 双耳化，声音固定在头部某个位置。
-
-**开启：**
+**双耳 ASMR：**
 ```
 <!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
-```
-
-**关闭：**
-```
 <!--call-sfx:binaural:{"enabled":false}-->
 ```
+tag 可选：右耳、左耳、脑后、面前。不传 tag 随机走位。增加约 0.3s 延迟。可同时开 sfx + binaural。
 
-tag 可选：右耳、左耳、脑后、面前。不传 tag 时随机走位。
+## 注意事项
 
-binaural 增加约 0.3s 延迟（固定位置无需 Whisper 对齐），通话短句可接受。
-
-### 组合使用
-
-可以同时开 sfx + binaural：背景铺水声 + 语音双耳化。
-
-```
-<!--call-sfx:start:{"mode":"background","src":"squelching_slow","volume":0.15,"loop":true}-->
-<!--call-sfx:binaural:{"enabled":true,"tag":"右耳"}-->
-```
-## 注意
-
-- foreground 的 collection 素材（舔耳）保留原始 KU100 双耳录音，不做二次空间化——它自己的空间感已经很好
-- background 的 clips 素材会被转成单声道然后铺底，不需要立体声
-- - foreground 模式的 voice_at 里，每条 text 同样要按上面的标签策略加标签——voice_at 的每条都是独立的短 TTS 调用，标签不会从上一条延续
-- background 模式下 text 是一整段长语音，更需要注意充能机制——如果说了 4、5 句不加标签，后半段会塌成棒读
-- 一句话配一个标签最稳，不要在一句里堆三四个
-- 同一个标签连续出现太多次，V3 会麻木。交替使用近义标签（[whispers] ↔ [softly]，[gasps] ↔ [soft gasp]）
-- voice_at 里的 text 可以带 ElevenLabs audio tags 和内联走位标签，两套可以叠加
-- ss 和 t 不传的话就是整段素材，collection 素材动辄 5 分钟，务必截取
-
+- collection 素材（舔耳）保留原始 KU100 双耳，不做二次空间化
+- clips 素材转单声道铺底
+- foreground 的 voice_at 每条是独立短 TTS，标签不从上一条延续，每条都要加标签
+- background 的 text 是一整段长语音，更需要充能机制——4、5 句不加标签后半段会棒读
