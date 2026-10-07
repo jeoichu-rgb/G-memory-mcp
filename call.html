@@ -265,6 +265,15 @@ let firstSend = true;
 let isIncoming = false;
 let incomingTimeout = null;
 
+/* ── 前端 TTS 管线（通话模式：前端切句→调 /api/tts→播放）── */
+let callConfig = { backend: 'elevenlabs', binaural: false, spatial_tag: '' };
+let sentenceBuf = '';
+let ttsQueue = [];          // [{text, subtitle}, ...]
+let ttsFlying = 0;          // 当前代次正在飞行的 TTS 请求数
+let ttsGenCounter = 0;      // 代次计数器（每次 sendMsg/startCall 递增）
+const TTS_PREFETCH_LIMIT = 2;
+const TTS_BATCH_MAX = 100;
+
 const audio = new Audio();
 audio.setAttribute('playsinline', '');
 
@@ -438,6 +447,7 @@ function acceptCall() {
   timerIv = setInterval(tickTimer, 1000);
   setStatus('通话中');
   showThinking(true);
+  resetTtsPipeline();
 
   wsSend('call:accept', { sessionId });
 }
@@ -454,6 +464,7 @@ function startCall() {
   callStart = Date.now();
   timerIv = setInterval(tickTimer, 1000);
   setStatus('通话中');
+  resetTtsPipeline();
 
   wsSend('chat:send', {
     message: '📞',
@@ -476,10 +487,11 @@ function sendMsg() {
   if (!txt) return;
   inp.value = '';
 
-  // 新一轮对话：清空旧代次，接受新 generation
+  // 新一轮对话：清空旧代次
   currentGenId = '';
   audio.pause();
   audioQ = [];
+  resetTtsPipeline();
 
   wsSend('chat:send', { message: txt, sessionId, call_mode: true });
   showThinking(true);
@@ -491,6 +503,7 @@ function handleWS(d) {
   switch (d.event || d.type || '') {
     case 'stream:text':
       accumText += d.text || '';
+      if (callActive) enqueueSentences(d.text || '');
       break;
     case 'stream:thinking':
       break;
@@ -533,8 +546,17 @@ function handleWS(d) {
         }
       }
       break;
+    case 'call:config':
+      callConfig.backend = d.backend || 'elevenlabs';
+      callConfig.binaural = !!d.binaural;
+      callConfig.spatial_tag = d.spatial_tag || '';
+      console.log('[call:config]', callConfig);
+      break;
     case 'call:binaural':
-      // 仅通知，实际 binaural 处理在服务端
+      // 时序保护：先 flush 旧配置的待发文本，再更新配置
+      if (callActive) flushSentenceBuf();
+      callConfig.binaural = !!d.enabled;
+      callConfig.spatial_tag = d.tag || '';
       console.log('[binaural]', d.enabled ? 'on' : 'off', d.tag || '');
       break;
     case 'message:complete':
@@ -552,34 +574,28 @@ function handleWS(d) {
 async function onReplyDone() {
   showThinking(false);
 
-  // parse voice markers from text (fallback for erik_speak MCP calls)
+  // parse voice markers (erik_speak MCP calls — non-call mode fallback)
   const vRe = /<!--voice:(.+?)\|(.+?)\|(.+?)-->/g;
   let m;
   while ((m = vRe.exec(accumText)) !== null) {
     const url = m[1];
     if (!voiceEvents.some(v => v.audio_url === url)) {
       voiceEvents.push({ audio_url: url, duration: parseFloat(m[2]), text: m[3] });
-      enqueueAudio(API_BASE + url, m[3], '');
+      if (!callActive) enqueueAudio(API_BASE + url, m[3], '');
     }
   }
   let cleanText = accumText.replace(vRe, '').replace(/<!--(?:react|curiosity)[^>]*-->/g, '').trim();
 
-  if (voiceEvents.length > 0) {
+  if (callActive) {
+    // 通话模式：flush 剩余句子进前端 TTS 管线
+    console.log('[tts-pipe] replyDone → flush remaining');
+    flushSentenceBuf();
+  } else if (voiceEvents.length > 0) {
+    // 非通话：voice 事件（erik_speak）走旧路径
     for (const v of voiceEvents) {
       if (!utterances.some(u => u.audio_url === v.audio_url)) {
         utterances.push({ text: v.text, translation: cleanText, audio_url: v.audio_url, duration: v.duration });
       }
-    }
-  } else if (cleanText) {
-    // no streaming voice events — auto-TTS fallback
-    setStatus('说话中……');
-    setSub(cleanText, '');
-    try {
-      const r = await callTTS(cleanText);
-      utterances.push({ text: cleanText, translation: '', audio_url: r.audio_url, duration: r.duration });
-      enqueueAudio(API_BASE + r.audio_url, cleanText, '');
-    } catch(err) {
-      console.error('Auto-TTS failed:', err);
     }
   }
 
@@ -587,18 +603,144 @@ async function onReplyDone() {
   voiceEvents = [];
 }
 
+/* ── 前端句子切分（移植自 gateway._split_sentences_skip_parens）── */
+function splitSentences(text) {
+  const sents = [];
+  let cur = '';
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    cur += ch;
+    if (ch === '（' || ch === '(') {
+      depth++;
+    } else if (ch === '）' || ch === ')') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) { sents.push(cur); cur = ''; }
+    } else if (depth === 0 && '。！？.!?\n'.includes(ch)) {
+      let j = i + 1;
+      while (j < text.length && ' \t'.includes(text[j])) j++;
+      if (j < text.length && (text[j] === '（' || text[j] === '(')) {
+        /* 句末标点后紧跟括号 → 不切，等括号闭合 */
+      } else {
+        sents.push(cur); cur = '';
+      }
+    }
+  }
+  if (cur) sents.push(cur);
+  return sents;
+}
+
+const _PAREN_RE = /[（(][^)）]*[)）]/g;
+function extractTtsAndSubtitle(text) {
+  const parens = text.match(_PAREN_RE) || [];
+  const ttsText = text.replace(_PAREN_RE, '').trim();
+  const subtitle = parens.map(p => p.slice(1, -1)).join(' ');
+  return [ttsText, subtitle];
+}
+
+function splitLong(text, limit) {
+  limit = limit || TTS_BATCH_MAX;
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  let buf = '';
+  for (const ch of text) {
+    buf += ch;
+    if ('，,；;、'.includes(ch) && buf.length >= 20) { chunks.push(buf); buf = ''; }
+  }
+  if (buf) {
+    if (chunks.length && buf.length < 10) chunks[chunks.length - 1] += buf;
+    else chunks.push(buf);
+  }
+  return chunks;
+}
+
+/* ── 前端 TTS 管线 ── */
+function resetTtsPipeline() {
+  sentenceBuf = '';
+  ttsQueue = [];
+  ttsGenCounter++;
+  ttsFlying = 0;
+  console.log('[tts-pipe] reset, gen=' + ttsGenCounter);
+}
+
+function enqueueSentences(text) {
+  sentenceBuf += text;
+  const parts = splitSentences(sentenceBuf);
+  if (parts.length > 1) {
+    for (let i = 0; i < parts.length - 1; i++) {
+      const sent = parts[i].trim();
+      if (!sent) continue;
+      for (const chunk of splitLong(sent)) {
+        const [ttsText, subtitle] = extractTtsAndSubtitle(chunk);
+        if (ttsText) {
+          ttsQueue.push({ text: ttsText, subtitle });
+          console.log('[tts-pipe] enqueue: ' + ttsText.slice(0, 40) + (subtitle ? ' (' + subtitle.slice(0, 20) + ')' : ''));
+        }
+      }
+    }
+    sentenceBuf = parts[parts.length - 1];
+  }
+  pumpTtsQueue();
+}
+
+function flushSentenceBuf() {
+  const buf = sentenceBuf.trim();
+  sentenceBuf = '';
+  if (!buf) { console.log('[tts-pipe] flush: empty'); return; }
+  console.log('[tts-pipe] flush: ' + buf.slice(0, 50));
+  for (const chunk of splitLong(buf)) {
+    const [ttsText, subtitle] = extractTtsAndSubtitle(chunk);
+    if (ttsText) ttsQueue.push({ text: ttsText, subtitle });
+  }
+  pumpTtsQueue();
+}
+
+function pumpTtsQueue() {
+  while (ttsQueue.length > 0 && ttsFlying < TTS_PREFETCH_LIMIT) {
+    const item = ttsQueue.shift();
+    const myGen = ttsGenCounter;
+    ttsFlying++;
+    console.log('[tts-pipe] → /api/tts gen=' + myGen + ' flying=' + ttsFlying + ' q=' + ttsQueue.length + ' | ' + item.text.slice(0, 30));
+    callTTS(item.text).then(r => {
+      if (myGen !== ttsGenCounter) { console.log('[tts-pipe] discard stale gen=' + myGen); return; }
+      ttsFlying--;
+      console.log('[tts-pipe] ✓ ' + r.audio_url + ' (' + r.duration + 's) flying=' + ttsFlying);
+      utterances.push({ text: item.text, translation: item.subtitle,
+                         audio_url: r.audio_url, duration: r.duration });
+      enqueueAudio(API_BASE + r.audio_url, item.text, item.subtitle);
+      pumpTtsQueue();
+    }).catch(err => {
+      if (myGen !== ttsGenCounter) return;
+      ttsFlying--;
+      console.error('[tts-pipe] ✗ flying=' + ttsFlying, err);
+      pumpTtsQueue();
+    });
+  }
+}
+
 /* ── TTS API ── */
 async function callTTS(text) {
+  const payload = { text, backend: callConfig.backend, speed: 1.0 };
+  if (callConfig.binaural) {
+    payload.binaural = true;
+    if (callConfig.spatial_tag) payload.spatial_tag = callConfig.spatial_tag;
+  }
   const r = await fetch(API_BASE + '/api/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-secret': PW },
-    body: JSON.stringify({ text, backend: 'elevenlabs', speed: 1.0 }),
+    body: JSON.stringify(payload),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const errMsg = body.error || ('TTS ' + r.status);
-    // 通知 CC：elevenlabs 失败
-    wsSend('call:tts_error', { backend: 'elevenlabs', error: errMsg, text: text.slice(0, 80) });
+    // fallback: elevenlabs/local → minimax
+    if (callConfig.backend !== 'minimax') {
+      const oldBackend = callConfig.backend;
+      callConfig.backend = 'minimax';
+      console.warn('[tts] ' + oldBackend + ' failed (' + errMsg + '), fallback → minimax');
+      wsSend('call:tts_error', { backend: oldBackend, error: errMsg, text: text.slice(0, 80) });
+      return callTTS(text);
+    }
     throw new Error(errMsg);
   }
   return r.json();

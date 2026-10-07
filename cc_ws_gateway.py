@@ -348,8 +348,6 @@ class TranscriptTailer:
         self._reply_done = asyncio.Event()
         self._dbg = 0
         self._start_offset = 0
-        self._tts_queue: asyncio.Queue | None = None
-        self._tts_worker: asyncio.Task | None = None
         # Events stamped before this moment are history, not this turn's reply.
         # When CC CLI resumes it forks old events into a NEW transcript; the
         # tailer switches to that file at offset 0 and would otherwise replay
@@ -385,9 +383,6 @@ class TranscriptTailer:
             self._start_offset = self._offset
             self._task = asyncio.create_task(self._run())
             log.info(f"tailer started: {self._path.name} @{self._offset}")
-        if self.session._in_call:
-            self._tts_queue = asyncio.Queue()
-            self._tts_worker = asyncio.create_task(self._tts_worker_loop())
 
     async def wait_done(self, timeout=300):
         deadline = time_mod.monotonic() + timeout
@@ -428,8 +423,6 @@ class TranscriptTailer:
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 if self._task and not self._task.done():
                     self._task.cancel()
-        if self._tts_worker and not self._tts_worker.done():
-            self._tts_worker.cancel()
 
     async def _run(self):
         _ticks = 0
@@ -610,11 +603,6 @@ class TranscriptTailer:
                     display = _HIDDEN_MARKER_RE.sub('', text)
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
-                    if self.session._in_call and self._tts_queue:
-                        # 剥离 sfx 标记后再送 TTS
-                        tts_text = _CALL_SFX_RE.sub('', text)
-                        if tts_text.strip():
-                            self._enqueue_call_sentences(tts_text)
                     # 流式阶段即时推送语音条，不等回复完成
                     _voice_re = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
                     for vm in _voice_re.finditer(text):
@@ -634,168 +622,7 @@ class TranscriptTailer:
         if stop_reason == "end_turn":
             self._reply_done.set()
 
-    # ── Call-mode streaming TTS ──
-
-    _PAREN_RE = re.compile(r'[（(][^)）]*[)）]')
-
-    @staticmethod
-    def _split_sentences_skip_parens(text: str) -> list[str]:
-        sentences = []
-        current: list[str] = []
-        depth = 0
-        i = 0
-        while i < len(text):
-            ch = text[i]
-            current.append(ch)
-            if ch in ('（', '('):
-                depth += 1
-            elif ch in ('）', ')'):
-                depth = max(0, depth - 1)
-                if depth == 0:
-                    sentences.append(''.join(current))
-                    current = []
-            elif depth == 0 and ch in '。！？.!?\n':
-                j = i + 1
-                while j < len(text) and text[j] in ' \t':
-                    j += 1
-                if j < len(text) and text[j] in ('（', '('):
-                    pass
-                else:
-                    sentences.append(''.join(current))
-                    current = []
-            i += 1
-        if current:
-            sentences.append(''.join(current))
-        return sentences
-
-    def _extract_tts_and_subtitle(self, text: str) -> tuple[str, str]:
-        parens = self._PAREN_RE.findall(text)
-        tts_text = self._PAREN_RE.sub('', text).strip()
-        subtitle = ' '.join(p[1:-1] for p in parens) if parens else ''
-        return tts_text, subtitle
-
-    _TTS_BATCH_MAX = 100  # 单句最大字数，超过按逗号/分号切
-
-    @staticmethod
-    def _split_long(text: str, limit: int = 100) -> list[str]:
-        """超长句按逗号/分号二次切分，保证每段 ≤ limit 字。"""
-        if len(text) <= limit:
-            return [text]
-        chunks = []
-        buf = ""
-        for ch in text:
-            buf += ch
-            if ch in '，,；;、' and len(buf) >= 20:
-                chunks.append(buf)
-                buf = ""
-        if buf:
-            if chunks and len(buf) < 10:
-                chunks[-1] += buf
-            else:
-                chunks.append(buf)
-        return chunks
-
-    def _enqueue_call_sentences(self, text: str):
-        buf = self.session._call_sentence_buf + text
-        parts = self._split_sentences_skip_parens(buf)
-        if len(parts) > 1:
-            for sent in parts[:-1]:
-                sent = sent.strip()
-                if not sent:
-                    continue
-                for chunk in self._split_long(sent, self._TTS_BATCH_MAX):
-                    tts_text, subtitle = self._extract_tts_and_subtitle(chunk)
-                    if tts_text:
-                        self._tts_queue.put_nowait((tts_text, subtitle))
-            self.session._call_sentence_buf = parts[-1]
-        else:
-            self.session._call_sentence_buf = buf
-
-    _TTS_PREFETCH_LIMIT = 2  # 最多同时飞行的 TTS API 请求
-
-    async def _tts_worker_loop(self):
-        slots = asyncio.Queue()
-        sem = asyncio.Semaphore(self._TTS_PREFETCH_LIMIT)
-
-        async def _tts_with_sem(text, seq):
-            async with sem:
-                return await self._call_tts_api(text, seq)
-
-        async def feeder():
-            seq = 0
-            while True:
-                item = await self._tts_queue.get()
-                if item is None or self.session._call_stop.is_set():
-                    await slots.put(None)
-                    break
-                text, subtitle = item
-                seq += 1
-                gen_id = self.session._call_generation_id
-                log.info(f"TTS feeder: #{seq} gen={gen_id} started → {text[:30]}")
-                task = asyncio.create_task(_tts_with_sem(text, seq))
-                await slots.put((task, text, subtitle, seq, gen_id))
-
-        async def sender():
-            while True:
-                entry = await slots.get()
-                if entry is None or self.session._call_stop.is_set():
-                    break
-                task, text, subtitle, seq, gen_id = entry
-                result = await task
-                # 代次隔离：如果 generation 已经变了，丢弃旧代次的音频
-                if gen_id != self.session._call_generation_id:
-                    log.info(f"TTS sender: #{seq} discarded (stale gen={gen_id})")
-                    continue
-                if result and not self.session._call_stop.is_set():
-                    voice_evt = {
-                        "event": "voice",
-                        "audio_url": result["audio_url"],
-                        "duration": result["duration"],
-                        "text": text,
-                        "subtitle": subtitle,
-                        "generation_id": gen_id,
-                    }
-                    log.info(f"TTS sender: #{seq} gen={gen_id} sending voice → {text[:30]}")
-                    self.session._call_pending_voice.append(voice_evt)
-                    await self._ws(voice_evt)
-
-        feeder_task = asyncio.create_task(feeder())
-        try:
-            await sender()
-        finally:
-            if not feeder_task.done():
-                feeder_task.cancel()
-
-    async def _call_tts_api(self, text: str, seq: int = 0) -> dict | None:
-        backend = self.session._call_tts_backend
-        binaural = self.session._call_binaural
-        spatial_tag = self.session._call_spatial_tag
-        payload = {"text": text, "backend": backend, "speed": 1.0}
-        if binaural:
-            payload["binaural"] = True
-            if spatial_tag:
-                payload["spatial_tag"] = spatial_tag
-        timeout = 18 if binaural else 12
-        t0 = time_mod.time()
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.post(
-                    f"{ADMIN_API}/api/tts",
-                    json=payload,
-                    headers={"x-secret": PALACE_SECRET},
-                )
-                if r.status_code == 200:
-                    mode = " 🎧" if binaural else ""
-                    log.info(f"TTS API #{seq}: {time_mod.time()-t0:.2f}s ({backend}{mode}) → {text[:30]}")
-                    return r.json()
-        except Exception as e:
-            log.warning(f"TTS API #{seq} ({backend}) failed: {e}")
-        if backend in ("local", "elevenlabs"):
-            self.session._call_tts_backend = "minimax"
-            log.info(f"Call TTS: {backend}→minimax (failed mid-call)")
-            await self._ws({"event": "call:backend_switch", "from": backend, "to": "minimax"})
-            return await self._call_tts_api(text, seq)
-        return None
+    # ── Call-mode SFX (TTS moved to frontend) ──
 
     async def _handle_call_sfx(self, action: str, payload_str: str):
         """处理通话中的 <!--call-sfx:action:payload--> 标记。"""
@@ -860,23 +687,6 @@ class TranscriptTailer:
             await self._ws({"event": "call:binaural", "enabled": s._call_binaural,
                             "tag": s._call_spatial_tag})
             log.info(f"call-binaural: {mode_str}")
-
-    async def flush_call_tts(self):
-        if not self._tts_queue:
-            return
-        if not self.session._call_stop.is_set():
-            buf = self.session._call_sentence_buf.strip()
-            self.session._call_sentence_buf = ""
-            if buf:
-                tts_text, subtitle = self._extract_tts_and_subtitle(buf)
-                if tts_text:
-                    self._tts_queue.put_nowait((tts_text, subtitle))
-        self._tts_queue.put_nowait(None)
-        if self._tts_worker:
-            try:
-                await asyncio.wait_for(self._tts_worker, timeout=30)
-            except asyncio.TimeoutError:
-                log.warning("TTS worker timeout on flush")
 
     async def _ws(self, data):
         if self.ws:
@@ -3693,7 +3503,6 @@ class Session:
         self._in_call = False
         self._call_injected = False
         self._call_tts_backend = "elevenlabs"
-        self._call_sentence_buf = ""
         self._call_stop = asyncio.Event()
         self._call_ended_notify = False
         self._call_generation_id = ""  # 代次 ID，隔离打断/挂断前的旧事件
@@ -3726,7 +3535,6 @@ class Session:
         self._result_sent = False
         self._streamed_voice_urls = set()
         self._stop_requested = False
-        self._call_sentence_buf = ""
 
 
 sessions: dict[str, Session] = {}
@@ -4222,6 +4030,13 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception:
                         current_session._call_tts_backend = "elevenlabs"
                     log.info(f"Call TTS backend: {current_session._call_tts_backend}")
+                    # 推送 call:config 给前端，前端管 TTS
+                    await ws.send_json({
+                        "event": "call:config",
+                        "backend": current_session._call_tts_backend,
+                        "binaural": current_session._call_binaural,
+                        "spatial_tag": current_session._call_spatial_tag,
+                    })
                     call_inject = (
                         "[voice-call] Jeoi正在跟你语音通话。\n"
                         "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
@@ -4773,6 +4588,12 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception:
                         call_session._call_tts_backend = "elevenlabs"
                     log.info(f"Incoming call accepted: session={call_sid}, tts={call_session._call_tts_backend}")
+                    await ws.send_json({
+                        "event": "call:config",
+                        "backend": call_session._call_tts_backend,
+                        "binaural": call_session._call_binaural,
+                        "spatial_tag": call_session._call_spatial_tag,
+                    })
                     now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
                     call_inject = (
                         "[voice-call] Jeoi接听了你的来电，你们现在在语音通话中。\n"
@@ -4946,8 +4767,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             await tmux_send_message(message)
 
         await tailer.wait_done(timeout=300)
-        if session._in_call:
-            await tailer.flush_call_tts()
         await asyncio.sleep(1)
         await tailer.stop()
 
