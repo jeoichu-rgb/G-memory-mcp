@@ -752,6 +752,30 @@ async function callTTS(text) {
   return r.json();
 }
 
+/* ── Audio crossfade ── */
+let _fadeTimer = null;
+function fadeOutThen(cb) {
+  // 0.4s 线性淡出当前语音，完成后执行 cb
+  if (_fadeTimer) { clearInterval(_fadeTimer); _fadeTimer = null; }
+  const dur = 400, steps = 20, iv = dur / steps;
+  const startVol = audio.volume;
+  let step = 0;
+  _fadeTimer = setInterval(() => {
+    step++;
+    audio.volume = startVol * (1 - step / steps);
+    if (step >= steps) {
+      clearInterval(_fadeTimer);
+      _fadeTimer = null;
+      audio.pause();
+      audio.volume = 1.0;
+      playing = false;
+      loopingCurrent = false;
+      duckSfx(false);
+      cb();
+    }
+  }, iv);
+}
+
 /* ── Audio queue ── */
 function enqueueAudio(url, text, subtitle) {
   const item = {url, text: text || '', subtitle: subtitle || '', blobUrl: null, ready: false, error: false};
@@ -764,12 +788,8 @@ function enqueueAudio(url, text, subtitle) {
     blobCache.push(item.blobUrl);
     item.ready = true;
     if (loopingCurrent) {
-      // 新的 ready 了 → 中断循环播新的
-      loopingCurrent = false;
-      audio.pause();
-      playing = false;
-      duckSfx(false);
-      playNext();
+      // 新的 ready 了 → 淡出当前 → 播新的
+      fadeOutThen(() => playNext());
     } else if (!playing) {
       playNext();
     }
@@ -850,8 +870,10 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 function hangup() {
   callActive = false;
   loopingCurrent = false;
+  if (_fadeTimer) { clearInterval(_fadeTimer); _fadeTimer = null; }
   clearInterval(timerIv);
   audio.pause();
+  audio.volume = 1.0;
   audioQ = [];
   stopSfx();  // 停止背景/前景音效
   // 释放所有缓存的 blob URL
