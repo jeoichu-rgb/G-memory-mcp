@@ -258,8 +258,13 @@ let utterances = [];   // {text, translation, audio_url, duration}
 let audioQ = [];
 let blobCache = [];  // 缓存所有 blobUrl，挂断时统一释放
 let playing = false;
-let loopingCurrent = false;  // 循环播放当前语音（等下一条 ready）
 let callActive = false;
+let playedItems = [];    // 已播完的项 {blobUrl, text, subtitle}，用于整段循环
+let replayMode = false;  // 正在循环重播
+let replayIdx = 0;       // 循环时播到第几个
+let gapTimer = null;     // 轮间停顿定时器
+let draining = false;    // 新消息来了，播完当前轮就停
+const REPLAY_GAP = 3000; // 停顿 3 秒
 let currentGenId = '';  // 代次隔离：只接受当前 generation 的 voice 事件
 let currentPlayingText = '';  // 当前正在播放的文本，用于上报
 let firstSend = true;
@@ -493,10 +498,16 @@ function sendMsg() {
   audioQ = [];
   resetTtsPipeline();
 
-  if (playing) {
-    // 不立刻停止，循环当前语音直到新 TTS ready
-    loopingCurrent = true;
+  if (gapTimer) {
+    // 在轮间停顿 → 取消停顿，直接切
+    clearTimeout(gapTimer); gapTimer = null;
+    endReplay();
+  } else if (playing || replayMode) {
+    // 正在播放（第一轮或循环） → 播完当前轮再停
+    draining = true;
   } else {
+    // 完全空闲
+    playedItems = [];
     setSub('', '');
   }
 
@@ -752,28 +763,61 @@ async function callTTS(text) {
   return r.json();
 }
 
-/* ── Audio crossfade ── */
-let _fadeTimer = null;
-function fadeOutThen(cb) {
-  // 0.4s 线性淡出当前语音，完成后执行 cb
-  if (_fadeTimer) { clearInterval(_fadeTimer); _fadeTimer = null; }
-  const dur = 400, steps = 20, iv = dur / steps;
-  const startVol = audio.volume;
-  let step = 0;
-  _fadeTimer = setInterval(() => {
-    step++;
-    audio.volume = startVol * (1 - step / steps);
-    if (step >= steps) {
-      clearInterval(_fadeTimer);
-      _fadeTimer = null;
-      audio.pause();
-      audio.volume = 1.0;
-      playing = false;
-      loopingCurrent = false;
-      duckSfx(false);
-      cb();
-    }
-  }, iv);
+/* ── Replay (整段循环) ── */
+function startGap(cb) {
+  playing = false;
+  showWave(false);
+  setStatus('通话中');
+  duckSfx(false);
+  gapTimer = setTimeout(() => { gapTimer = null; cb(); }, REPLAY_GAP);
+}
+
+function startReplay() {
+  if (!playedItems.length || !callActive) return;
+  replayMode = true;
+  replayIdx = 0;
+  playReplayItem();
+}
+
+function playReplayItem() {
+  if (replayIdx >= playedItems.length) {
+    // 一轮结束 → 停顿
+    startGap(() => {
+      if (draining) endReplay();
+      else { replayIdx = 0; playReplayItem(); }
+    });
+    return;
+  }
+  const item = playedItems[replayIdx];
+  playing = true;
+  currentPlayingText = '';  // replay 不发 call:heard
+  showWave(true);
+  setStatus('说话中……');
+  setSub(item.text, item.subtitle);
+  duckSfx(true);
+  audio.src = item.blobUrl;
+  audio.oncanplaythrough = () => {
+    audio.oncanplaythrough = null;
+    audio.play().catch(() => { replayIdx++; playReplayItem(); });
+  };
+  audio.onerror = () => { replayIdx++; playReplayItem(); };
+  audio.load();
+}
+
+function endReplay() {
+  replayMode = false;
+  replayIdx = 0;
+  draining = false;
+  playedItems = [];
+  playing = false;
+  showWave(false);
+  duckSfx(false);
+  if (audioQ.length) {
+    playNext();
+  } else {
+    setStatus('通话中');
+    setSub('', '');
+  }
 }
 
 /* ── Audio queue ── */
@@ -787,12 +831,7 @@ function enqueueAudio(url, text, subtitle) {
     item.blobUrl = URL.createObjectURL(blob);
     blobCache.push(item.blobUrl);
     item.ready = true;
-    if (loopingCurrent) {
-      // 新的 ready 了 → 淡出当前 → 播新的
-      fadeOutThen(() => playNext());
-    } else if (!playing) {
-      playNext();
-    }
+    if (!playing && !gapTimer && !replayMode) playNext();
   }).catch(err => {
     console.error('preload error:', url, err);
     item.error = true;
@@ -803,12 +842,27 @@ function enqueueAudio(url, text, subtitle) {
 
 function playNext() {
   while (audioQ.length && audioQ[0].error) audioQ.shift();
-  if (!audioQ.length) { playing = false; showWave(false); setStatus('通话中'); duckSfx(false); return; }
+  if (!audioQ.length) {
+    playing = false; showWave(false); duckSfx(false);
+    if (playedItems.length && callActive) {
+      if (draining) {
+        // 第一轮播完，新消息来了 → 停顿后切新TTS
+        startGap(() => endReplay());
+      } else {
+        // 正常播完 → 停顿后整段循环
+        startGap(() => startReplay());
+      }
+    } else {
+      setStatus('通话中');
+    }
+    return;
+  }
   const item = audioQ[0];
   if (!item.ready) { playing = false; duckSfx(false); return; }
   audioQ.shift();
+  // 存到已播列表，循环时用
+  playedItems.push({blobUrl: item.blobUrl, text: item.text, subtitle: item.subtitle});
   playing = true;
-  loopingCurrent = false;
   currentPlayingText = item.text;
   showWave(true);
   setStatus('说话中……');
@@ -826,30 +880,38 @@ function playNext() {
   audio.load();
 }
 audio.addEventListener('ended', () => {
-  if (loopingCurrent) {
-    // 循环模式：继续重播当前语音
-    audio.currentTime = 0;
-    audio.play().catch(() => { loopingCurrent = false; duckSfx(false); playNext(); });
+  if (replayMode) {
+    // 循环重播 → 下一条
+    replayIdx++;
+    if (replayIdx >= playedItems.length) {
+      // 一轮结束 → 停顿
+      startGap(() => {
+        if (draining) endReplay();
+        else { replayIdx = 0; playReplayItem(); }
+      });
+    } else {
+      playReplayItem();
+    }
     return;
   }
+  // 正常播放
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'completed' });
-  // 检查下一条是否 ready
-  while (audioQ.length && audioQ[0].error) audioQ.shift();
-  if (audioQ.length && audioQ[0].ready) {
-    duckSfx(false);
-    playNext();
-  } else if (callActive) {
-    // 下一条还没 ready → 循环当前语音
-    loopingCurrent = true;
-    audio.currentTime = 0;
-    audio.play().catch(() => { loopingCurrent = false; duckSfx(false); playNext(); });
-  } else {
-    duckSfx(false);
-    playNext();
-  }
+  duckSfx(false);
+  playNext();
 });
 audio.addEventListener('error', () => {
-  loopingCurrent = false;
+  if (replayMode) {
+    replayIdx++;
+    if (replayIdx >= playedItems.length) {
+      startGap(() => {
+        if (draining) endReplay();
+        else { replayIdx = 0; playReplayItem(); }
+      });
+    } else {
+      playReplayItem();
+    }
+    return;
+  }
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'error', position: audio.currentTime || 0 });
   duckSfx(false);
   playNext();
@@ -869,11 +931,13 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 /* ── Hangup ── */
 function hangup() {
   callActive = false;
-  loopingCurrent = false;
-  if (_fadeTimer) { clearInterval(_fadeTimer); _fadeTimer = null; }
+  draining = false;
+  replayMode = false;
+  replayIdx = 0;
+  playedItems = [];
+  if (gapTimer) { clearTimeout(gapTimer); gapTimer = null; }
   clearInterval(timerIv);
   audio.pause();
-  audio.volume = 1.0;
   audioQ = [];
   stopSfx();  // 停止背景/前景音效
   // 释放所有缓存的 blob URL
