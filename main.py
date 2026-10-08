@@ -1101,9 +1101,7 @@ async def location_update(request: Request):
     entry = {
         "lat": float(lat),
         "lng": float(lng),
-        "accuracy": data.get("accuracy"),
-        "street": data.get("street"),
-        "city": data.get("city"),
+        "address": data.get("address"),
         "name": data.get("name"),
         "timestamp": data.get("timestamp", datetime.now(SGT).isoformat()),
         "synced_at": datetime.now(SGT).isoformat(),
