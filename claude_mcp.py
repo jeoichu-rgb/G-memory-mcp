@@ -666,11 +666,12 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         entries = records[:n]
         lines = []
         for r in entries:
+            addr_parts = [r.get("name", ""), r.get("street", ""), r.get("city", "")]
+            addr = " ".join(p for p in addr_parts if p) or "未知地址"
             lines.append(
-                f"📍 ({r['lat']}, {r['lng']}) "
+                f"📍 {addr} ({r['lat']}, {r['lng']}) "
                 f"精度±{r.get('accuracy', '?')}m | "
-                f"上报时间 {r.get('timestamp', '?')} | "
-                f"同步 {r.get('synced_at', '?')}"
+                f"上报时间 {r.get('timestamp', '?')}"
             )
         return "\n".join(lines)
 
