@@ -258,6 +258,7 @@ let utterances = [];   // {text, translation, audio_url, duration}
 let audioQ = [];
 let blobCache = [];  // 缓存所有 blobUrl，挂断时统一释放
 let playing = false;
+let loopingCurrent = false;  // 循环播放当前语音（等下一条 ready）
 let callActive = false;
 let currentGenId = '';  // 代次隔离：只接受当前 generation 的 voice 事件
 let currentPlayingText = '';  // 当前正在播放的文本，用于上报
@@ -489,13 +490,18 @@ function sendMsg() {
 
   // 新一轮对话：清空旧代次
   currentGenId = '';
-  audio.pause();
   audioQ = [];
   resetTtsPipeline();
 
+  if (playing) {
+    // 不立刻停止，循环当前语音直到新 TTS ready
+    loopingCurrent = true;
+  } else {
+    setSub('', '');
+  }
+
   wsSend('chat:send', { message: txt, sessionId, call_mode: true });
   showThinking(true);
-  setSub('', '');
 }
 
 /* ── Receive ── */
@@ -757,7 +763,16 @@ function enqueueAudio(url, text, subtitle) {
     item.blobUrl = URL.createObjectURL(blob);
     blobCache.push(item.blobUrl);
     item.ready = true;
-    if (!playing) playNext();
+    if (loopingCurrent) {
+      // 新的 ready 了 → 中断循环播新的
+      loopingCurrent = false;
+      audio.pause();
+      playing = false;
+      duckSfx(false);
+      playNext();
+    } else if (!playing) {
+      playNext();
+    }
   }).catch(err => {
     console.error('preload error:', url, err);
     item.error = true;
@@ -773,6 +788,7 @@ function playNext() {
   if (!item.ready) { playing = false; duckSfx(false); return; }
   audioQ.shift();
   playing = true;
+  loopingCurrent = false;
   currentPlayingText = item.text;
   showWave(true);
   setStatus('说话中……');
@@ -790,11 +806,30 @@ function playNext() {
   audio.load();
 }
 audio.addEventListener('ended', () => {
+  if (loopingCurrent) {
+    // 循环模式：继续重播当前语音
+    audio.currentTime = 0;
+    audio.play().catch(() => { loopingCurrent = false; duckSfx(false); playNext(); });
+    return;
+  }
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'completed' });
-  duckSfx(false);
-  playNext();
+  // 检查下一条是否 ready
+  while (audioQ.length && audioQ[0].error) audioQ.shift();
+  if (audioQ.length && audioQ[0].ready) {
+    duckSfx(false);
+    playNext();
+  } else if (callActive) {
+    // 下一条还没 ready → 循环当前语音
+    loopingCurrent = true;
+    audio.currentTime = 0;
+    audio.play().catch(() => { loopingCurrent = false; duckSfx(false); playNext(); });
+  } else {
+    duckSfx(false);
+    playNext();
+  }
 });
 audio.addEventListener('error', () => {
+  loopingCurrent = false;
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'error', position: audio.currentTime || 0 });
   duckSfx(false);
   playNext();
@@ -814,6 +849,7 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 /* ── Hangup ── */
 function hangup() {
   callActive = false;
+  loopingCurrent = false;
   clearInterval(timerIv);
   audio.pause();
   audioQ = [];

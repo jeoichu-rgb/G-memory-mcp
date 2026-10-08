@@ -209,23 +209,46 @@ def mix_background(
     sfx_volume: float = 0.2,
     voice_volume: float = 1.0,
     loop: bool = True,
+    bgm_tail: float = 1.0,
+    bgm_fade: float = 1.4,
 ) -> np.ndarray:
     """
     背景模式：语音为主，素材铺底。
+    bgm_tail: 人声结束后 BGM 继续播放秒数
+    bgm_fade: BGM 淡出秒数（线性淡出到静音）
     返回 (samples, 2)。
     """
     voice = _to_stereo(voice_audio) * voice_volume
-    total = len(voice)
+    voice_len = len(voice)
     sfx = _to_stereo(sfx_audio)
 
+    # 总长度 = 人声 + 尾巴 + 淡出
+    tail_n = int(bgm_tail * MIX_FS)
+    fade_n = int(bgm_fade * MIX_FS)
+    total = voice_len + tail_n + fade_n
+
+    # 循环/截取 sfx 到 total（自己控制淡出，不走 loop_to_length 的 50ms）
     if loop:
-        sfx = loop_to_length(sfx, total)
+        if len(sfx) >= total:
+            sfx = sfx[:total].copy()
+        else:
+            reps = (total // len(sfx)) + 1
+            sfx = (np.tile(sfx, (reps, 1)) if sfx.ndim > 1
+                   else np.tile(sfx, reps))[:total].copy()
     elif len(sfx) < total:
         sfx = np.pad(sfx, ((0, total - len(sfx)), (0, 0)))
     else:
-        sfx = sfx[:total]
+        sfx = sfx[:total].copy()
 
-    return voice + sfx * sfx_volume
+    # voice_len + tail_n 之后开始 1.4s 线性淡出
+    fade_start = voice_len + tail_n
+    ramp = np.linspace(1, 0, fade_n)
+    sfx[fade_start:] *= ramp[:, None]
+
+    # voice 补零到 total 长度
+    voice_pad = np.pad(voice, ((0, tail_n + fade_n), (0, 0)))
+
+    return voice_pad + sfx * sfx_volume
 
 
 # ━━━━━━━━━━━━━━━━━━━ 输出 ━━━━━━━━━━━━━━━━━━━
