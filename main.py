@@ -116,6 +116,7 @@ class CheckSecretMiddleware:
             or path.startswith("/icon-")
             or path == "/api/push/vapid-key"
             or path == "/health/update"
+            or path == "/location/update"
             or path == "/music"
             or path.startswith("/api/music/")
             or path == "/api/ears"
@@ -1076,6 +1077,67 @@ async def health_data():
     if not HEALTH_DATA_FILE.exists():
         return []
     return _json.loads(HEALTH_DATA_FILE.read_text())
+
+# ── Location ─────────────────────────────────────────────────────────────
+
+LOCATION_FILE = Path(os.getenv("LOCATION_FILE", "/app/palace-data/location.json"))
+
+@app.post("/location/update")
+async def location_update(request: Request):
+    try:
+        body_str = (await request.body()).decode("utf-8").strip()
+        last_brace = body_str.rfind('}')
+        if last_brace >= 0:
+            body_str = body_str[:last_brace + 1]
+        data = _json.loads(body_str, strict=False)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    lat = data.get("lat")
+    lng = data.get("lng")
+    if lat is None or lng is None:
+        return JSONResponse(status_code=400, content={"error": "需要 lat 和 lng"})
+
+    entry = {
+        "lat": float(lat),
+        "lng": float(lng),
+        "accuracy": data.get("accuracy"),
+        "timestamp": data.get("timestamp", datetime.now(SGT).isoformat()),
+        "synced_at": datetime.now(SGT).isoformat(),
+    }
+
+    try:
+        LOCATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        records = []
+        if LOCATION_FILE.exists():
+            try:
+                records = _json.loads(LOCATION_FILE.read_text())
+            except:
+                records = []
+        records.insert(0, entry)
+        records = records[:20]  # 保留最近20条
+        LOCATION_FILE.write_text(_json.dumps(records, ensure_ascii=False, indent=2))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"写入失败: {e}"})
+
+    return {"status": "ok", "lat": entry["lat"], "lng": entry["lng"], "synced_at": entry["synced_at"]}
+
+@app.get("/location/latest")
+async def location_latest():
+    if not LOCATION_FILE.exists():
+        return {"error": "暂无位置数据"}
+    records = _json.loads(LOCATION_FILE.read_text())
+    if not records:
+        return {"error": "暂无位置数据"}
+    return records[0]
+
+@app.get("/location/history")
+async def location_history(n: int = 20):
+    if not LOCATION_FILE.exists():
+        return []
+    records = _json.loads(LOCATION_FILE.read_text())
+    return records[:n]
+
 
 @app.post("/gateway/compress")
 async def manual_compress():

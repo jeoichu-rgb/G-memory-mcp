@@ -652,6 +652,28 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         except Exception as e:
             return f"读取失败：{e}"
 
+# ── read_location ─────────────────────────────────────────────
+    elif cmd == "read_location":
+        from pathlib import Path
+        import json as _json
+        f = Path("/app/palace-data/location.json")
+        if not f.exists():
+            return "暂无位置数据，Jeoi还没有用快捷指令上报过位置。"
+        records = _json.loads(f.read_text())
+        if not records:
+            return "暂无位置数据。"
+        n = data.get("n", 1)
+        entries = records[:n]
+        lines = []
+        for r in entries:
+            lines.append(
+                f"📍 ({r['lat']}, {r['lng']}) "
+                f"精度±{r.get('accuracy', '?')}m | "
+                f"上报时间 {r.get('timestamp', '?')} | "
+                f"同步 {r.get('synced_at', '?')}"
+            )
+        return "\n".join(lines)
+
 # ── read_health ───────────────────────────────────────────────
     elif cmd == "read_health":
         from pathlib import Path
@@ -839,7 +861,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "bunny_status / bunny_play / bunny_deflate / "
             "ak_status / ak_play / "
             "browser_open / browser_js / browser_click / "
-            "read_health / "
+            "read_location / read_health / "
             "send_email / read_email / "
             "event_create / event_post / event_edit / event_rm / "
             "event_list / event_drop / event_ls"
