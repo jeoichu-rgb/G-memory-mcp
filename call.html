@@ -521,12 +521,12 @@ function sendMsg() {
   resetTtsPipeline();
 
   if (gapTimer) {
+    // 在轮间停顿 → 取消停顿，直接切
     clearTimeout(gapTimer); gapTimer = null;
-  }
-  if (replayMode || playing) {
-    // 新消息来了 → 立刻停掉 replay/当前播放，让新 TTS 马上接上
-    audio.pause();
     endReplay();
+  } else if (playing || replayMode) {
+    // 正在播当前这句 → 让它自然播完，播完后立刻切新 TTS（不等 gap）
+    draining = true;
   } else {
     playedItems = [];
     setSub('', '');
