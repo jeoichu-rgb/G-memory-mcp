@@ -4066,7 +4066,13 @@ async def websocket_endpoint(ws: WebSocket):
                         "binaural": current_session._call_binaural,
                         "spatial_tag": current_session._call_spatial_tag,
                     })
-                    cli_message = "[voice-call] Jeoi拨通了语音通话。\n\n" + cli_message
+                    cli_message = (
+                        "[voice-call] Jeoi拨通了语音通话。"
+                        "\n⚠️ 通话模式：直接输出文本即可，前端会自动将文本转为语音播放。"
+                        "不要调用 erik_speak 工具——MCP 调用延迟太高会导致通话卡住。"
+                        "说话风格简短、口语化、自然，像打电话一样。"
+                        "\n\n" + cli_message
+                    )
                     current_session._call_injected = True
                     log.info(f"Voice call started for session {current_session.id}, tts=elevenlabs")
                 # 通话连续性：上一轮播放失败时注入提示
