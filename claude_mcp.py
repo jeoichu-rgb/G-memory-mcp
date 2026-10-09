@@ -480,7 +480,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if pattern:
             body["pattern"] = pattern
         try:
-            r = httpx.post(f"{TOY_BRIDGE_URL}/play", json=body, timeout=duration + 30)
+            r = httpx.post(f"{TOY_BRIDGE_URL}/play", json=body, timeout=8)
             return r.text
         except Exception as e:
             return f"播放失败：{e}"
@@ -504,7 +504,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if pattern:
             body["pattern"] = pattern
         try:
-            r = httpx.post(f"{BUNNY_BRIDGE_URL}/play", json=body, timeout=duration + 30)
+            r = httpx.post(f"{BUNNY_BRIDGE_URL}/play", json=body, timeout=8)
             return r.text
         except Exception as e:
             return f"Bunny播放失败：{e}"
@@ -536,7 +536,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if pattern:
             body["pattern"] = pattern
         try:
-            r = httpx.post(f"{AK_BRIDGE_URL}/play", json=body, timeout=duration + 30)
+            r = httpx.post(f"{AK_BRIDGE_URL}/play", json=body, timeout=8)
             return r.text
         except Exception as e:
             return f"AK-G2播放失败：{e}"
