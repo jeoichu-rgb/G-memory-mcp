@@ -288,7 +288,8 @@ let sfxAudio = null;
 let sfxBlobUrl = null;
 let sfxMode = '';       // 'background' | 'foreground' | ''
 let sfxVolume = 0.2;    // sfx 层音量设定值
-let sfxFading = null;   // ducking 动画 requestAnimationFrame id
+let sfxFading = null;   // ducking 渐变定时器
+let _sfxDuckTarget = null; // 渐变目标音量
 let _sfxUnlocked = false;
 
 /** 在用户手势中调用——预创建 sfxAudio 并做静音 play 解锁 iOS 自动播放 */
@@ -343,7 +344,8 @@ function startSfx(url, mode, volume, doLoop) {
 }
 
 function stopSfx(keepElement) {
-  if (sfxFading) { cancelAnimationFrame(sfxFading); sfxFading = null; }
+  if (sfxFading) { clearInterval(sfxFading); sfxFading = null; }
+  _sfxDuckTarget = null;
   if (sfxAudio) {
     sfxAudio.pause();
     sfxAudio.src = '';
@@ -357,14 +359,34 @@ function stopSfx(keepElement) {
 
 function duckSfx(voicePlaying) {
   if (!sfxAudio || !sfxMode) return;
+  let targetVol, targetVoice = 1.0;
   if (sfxMode === 'background') {
-    // 语音为主，背景音铺底：voice 播放时压低 sfx 到设定值 × 0.35
-    sfxAudio.volume = voicePlaying ? sfxVolume * 0.35 : sfxVolume;
+    targetVol = voicePlaying ? sfxVolume * 0.35 : sfxVolume;
   } else if (sfxMode === 'foreground') {
-    // 素材为主：voice 播放时 sfx 稍压，voice 音量降低
-    sfxAudio.volume = voicePlaying ? sfxVolume * 0.55 : sfxVolume;
-    audio.volume = voicePlaying ? 0.45 : 1.0;
-  }
+    targetVol = voicePlaying ? sfxVolume * 0.55 : sfxVolume;
+    targetVoice = voicePlaying ? 0.45 : 1.0;
+  } else return;
+  _sfxDuckTarget = targetVol;
+  // 平滑渐变：~200ms 过渡，每 16ms 一步
+  if (sfxFading) { clearInterval(sfxFading); sfxFading = null; }
+  const steps = 12;  // 12 × 16ms ≈ 200ms
+  const startVol = sfxAudio.volume;
+  const startVoice = audio.volume;
+  const dVol = (targetVol - startVol) / steps;
+  const dVoice = (targetVoice - startVoice) / steps;
+  let step = 0;
+  if (Math.abs(dVol) < 0.001 && Math.abs(dVoice) < 0.001) return;
+  sfxFading = setInterval(() => {
+    step++;
+    if (step >= steps) {
+      sfxAudio.volume = targetVol;
+      audio.volume = targetVoice;
+      clearInterval(sfxFading); sfxFading = null;
+    } else {
+      sfxAudio.volume = startVol + dVol * step;
+      if (sfxMode === 'foreground') audio.volume = startVoice + dVoice * step;
+    }
+  }, 16);
 }
 
 /* ── Init ── */
@@ -499,14 +521,13 @@ function sendMsg() {
   resetTtsPipeline();
 
   if (gapTimer) {
-    // 在轮间停顿 → 取消停顿，直接切
     clearTimeout(gapTimer); gapTimer = null;
+  }
+  if (replayMode || playing) {
+    // 新消息来了 → 立刻停掉 replay/当前播放，让新 TTS 马上接上
+    audio.pause();
     endReplay();
-  } else if (playing || replayMode) {
-    // 正在播放（第一轮或循环） → 播完当前轮再停
-    draining = true;
   } else {
-    // 完全空闲
     playedItems = [];
     setSub('', '');
   }
@@ -768,8 +789,15 @@ function startGap(cb) {
   playing = false;
   showWave(false);
   setStatus('通话中');
+  // BGM 平滑恢复（duckSfx 内部会做 200ms 渐变）
   duckSfx(false);
   gapTimer = setTimeout(() => { gapTimer = null; cb(); }, REPLAY_GAP);
+}
+
+/** draining 时跳过 gap，立刻结束 replay */
+function immediateEndReplay() {
+  if (gapTimer) { clearTimeout(gapTimer); gapTimer = null; }
+  endReplay();
 }
 
 function startReplay() {
@@ -780,12 +808,11 @@ function startReplay() {
 }
 
 function playReplayItem() {
+  // draining 立刻停，不继续播 replay
+  if (draining) { immediateEndReplay(); return; }
   if (replayIdx >= playedItems.length) {
-    // 一轮结束 → 停顿
-    startGap(() => {
-      if (draining) endReplay();
-      else { replayIdx = 0; playReplayItem(); }
-    });
+    // 一轮结束 → 停顿后重头
+    startGap(() => { replayIdx = 0; playReplayItem(); });
     return;
   }
   const item = playedItems[replayIdx];
@@ -846,8 +873,8 @@ function playNext() {
     playing = false; showWave(false); duckSfx(false);
     if (playedItems.length && callActive) {
       if (draining) {
-        // 第一轮播完，新消息来了 → 停顿后切新TTS
-        startGap(() => endReplay());
+        // 第一轮播完，新消息来了 → 立刻切，不等 gap
+        immediateEndReplay();
       } else {
         // 正常播完 → 停顿后整段循环
         startGap(() => startReplay());
@@ -881,17 +908,10 @@ function playNext() {
 }
 audio.addEventListener('ended', () => {
   if (replayMode) {
-    // 循环重播 → 下一条
     replayIdx++;
-    if (replayIdx >= playedItems.length) {
-      // 一轮结束 → 停顿
-      startGap(() => {
-        if (draining) endReplay();
-        else { replayIdx = 0; playReplayItem(); }
-      });
-    } else {
-      playReplayItem();
-    }
+    // draining 立刻停；否则继续下一条
+    if (draining) { immediateEndReplay(); }
+    else { playReplayItem(); }  // playReplayItem 内部处理轮结束
     return;
   }
   // 正常播放
@@ -902,14 +922,8 @@ audio.addEventListener('ended', () => {
 audio.addEventListener('error', () => {
   if (replayMode) {
     replayIdx++;
-    if (replayIdx >= playedItems.length) {
-      startGap(() => {
-        if (draining) endReplay();
-        else { replayIdx = 0; playReplayItem(); }
-      });
-    } else {
-      playReplayItem();
-    }
+    if (draining) { immediateEndReplay(); }
+    else { playReplayItem(); }
     return;
   }
   if (currentPlayingText) wsSend('call:heard', { sessionId, text: currentPlayingText, status: 'error', position: audio.currentTime || 0 });
