@@ -494,7 +494,7 @@ function acceptCall() {
 function rejectCall(reason) {
   if (incomingTimeout) { clearTimeout(incomingTimeout); incomingTimeout = null; }
   wsSend('call:reject', { sessionId, reason: reason || 'rejected' });
-  location.href = '/';
+  location.href = '/chat.html';
 }
 
 /* ── Call lifecycle ── */
@@ -1039,7 +1039,7 @@ function playUtt(btn) {
 }
 
 function goBack() {
-  location.href = '/';
+  location.href = '/chat.html';
 }
 </script>
 </body>
