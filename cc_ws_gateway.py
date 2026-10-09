@@ -24,7 +24,7 @@ if _env_file.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -5579,7 +5579,7 @@ async def get_avatar():
 
 
 @app.post("/api/avatar")
-async def upload_avatar(file: UploadFile):
+async def upload_avatar(file: UploadFile = File(...)):
     """保存头像到 static/erik-avatar.png，所有客户端统一引用。"""
     data = await file.read()
     if len(data) > 5 * 1024 * 1024:
