@@ -402,8 +402,9 @@ function duckSfx(voicePlaying) {
     document.getElementById('avatar').innerHTML = '<img src="' + url + '">';
     document.getElementById('avatarRef').innerHTML = '<img src="' + url + '">';
   }
-  fetch('/api/avatar').then(r => r.json()).then(j => {
-    if (j.ok) setCallAvatar(j.url);
+  const GW = 'https://chat.erikssheep.uk';
+  fetch(GW + '/api/avatar').then(r => r.json()).then(j => {
+    if (j.ok) setCallAvatar(GW + j.url);
     else {
       const av = localStorage.getItem('erik-avatar');
       if (av) setCallAvatar(av);

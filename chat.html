@@ -2624,7 +2624,7 @@ async function handleAvatarUpload(e) {
   const form = new FormData();
   form.append('file', file);
   try {
-    const r = await fetch('/api/avatar', { method: 'POST', body: form });
+    const r = await fetch(GW_API + '/api/avatar', { method: 'POST', body: form });
     console.log('[avatar] response status:', r.status);
     if (!r.ok) {
       const txt = await r.text();
@@ -2638,7 +2638,7 @@ async function handleAvatarUpload(e) {
     console.log('[avatar] response:', j);
     if (j.ok) {
       localStorage.removeItem('erik-avatar');
-      const url = j.url + '?t=' + Date.now();
+      const url = GW_API + j.url + '?t=' + Date.now();
       applyAvatar(url);
       document.getElementById('avatarPreview').src = url;
       st.textContent = '✓ 已保存';
@@ -2720,8 +2720,8 @@ function handleBgUpload(e) {
 // Apply saved settings on load
 (function() {
   // 头像：服务器端统一存储 → fallback localStorage（旧数据兼容）
-  fetch('/api/avatar').then(r => r.json()).then(j => {
-    if (j.ok) applyAvatar(j.url);
+  fetch(GW_API + '/api/avatar').then(r => r.json()).then(j => {
+    if (j.ok) applyAvatar(GW_API + j.url);
     else {
       const legacy = localStorage.getItem('erik-avatar');
       if (legacy) applyAvatar(legacy);
