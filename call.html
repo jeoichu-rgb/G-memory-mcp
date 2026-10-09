@@ -269,6 +269,7 @@ let currentGenId = '';  // 代次隔离：只接受当前 generation 的 voice �
 let currentPlayingText = '';  // 当前正在播放的文本，用于上报
 let firstSend = true;
 let isIncoming = false;
+let autoAccept = false;
 let incomingTimeout = null;
 
 /* ── 前端 TTS 管线（通话模式：前端切句→调 /api/tts→播放）── */
@@ -418,13 +419,17 @@ function duckSfx(voicePlaying) {
     if (e.key === 'Enter' && !e.isComposing) sendMsg();
   });
 
-  if (isIncoming) {
+  autoAccept = p.get('accepted') === 'true';
+  if (isIncoming && !autoAccept) {
     setStatus('来电');
     document.getElementById('dialBtn').style.display = 'none';
     document.getElementById('incomingControls').style.display = 'flex';
     document.querySelector('.controls').style.display = 'none';
     document.querySelector('.input-area').style.display = 'none';
     incomingTimeout = setTimeout(() => rejectCall('timeout'), 180000);
+  } else if (isIncoming && autoAccept) {
+    // 从chat.html浮窗已经接听，直接进入通话
+    document.getElementById('dialBtn').style.display = 'none';
   }
 
   connectWS();
@@ -440,6 +445,9 @@ function connectWS() {
       wsSend('call:reconnect', { sessionId, generation_id: currentGenId });
       setStatus('重连中……');
       setTimeout(() => { if (callActive && !playing) setStatus('通话中'); }, 3000);
+    } else if (isIncoming && autoAccept) {
+      // WS就绪，自动接听（从chat.html浮窗来的）
+      acceptCall();
     } else if (!isIncoming) {
       setStatus('等待拨号');
       document.getElementById('dialBtn').style.display = '';
