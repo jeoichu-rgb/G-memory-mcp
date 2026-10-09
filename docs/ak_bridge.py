@@ -45,10 +45,11 @@ battery_level: Optional[int] = None
 
 # ─── 协议帧构造 ─────────────────────────────────────────
 def make_motor_frame(thrust: int, suction: int, vibrate: int) -> bytes:
+    """物理帧 byte[4]=vibrate, byte[5]=suction（设备实测，文档标反了）"""
     thrust  = max(0, min(100, thrust))
     suction = max(0, min(100, suction))
     vibrate = max(0, min(100, vibrate))
-    return bytes([0xA0, 0xA0, 0x03, thrust, suction, vibrate])
+    return bytes([0xA0, 0xA0, 0x03, thrust, vibrate, suction])
 
 
 def parse_notify(data: bytes) -> dict:
@@ -252,6 +253,17 @@ async def status():
     }
 
 
+async def _play_background(req: PlayRequest):
+    """后台执行播放，不阻塞 HTTP 响应"""
+    async with ble_lock:
+        try:
+            await execute_play(req)
+        except Exception as e:
+            global is_playing
+            is_playing = False
+            log.error(f"播放出错: {e}")
+
+
 @app.post("/play")
 async def play(req: PlayRequest):
     global is_playing
@@ -259,17 +271,11 @@ async def play(req: PlayRequest):
     if is_playing:
         raise HTTPException(status_code=409, detail="设备正在播放中，请等待结束")
 
-    async with ble_lock:
-        is_playing = True
-        try:
-            await execute_play(req)
-        except Exception as e:
-            is_playing = False
-            log.error(f"播放出错: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+    is_playing = True
+    asyncio.create_task(_play_background(req))
 
     return {
-        "status": "done",
+        "status": "started",
         "thrust": req.thrust, "suction": req.suction, "vibrate": req.vibrate,
         "duration": req.duration,
     }
