@@ -24,7 +24,7 @@ if _env_file.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -83,6 +83,11 @@ try:
     logging.getLogger("cc-gw").info("NetEase MCP mounted")
 except Exception as _e:
     logging.getLogger("cc-gw").warning(f"NetEase MCP mount failed: {_e}")
+# ── 静态资源（头像等）──
+_STATIC_DIR = Path(CC_CWD) / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
 TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "6830267835")
 HISTORY_DIR = Path(CC_CWD) / "chat_history"
@@ -2850,7 +2855,8 @@ async def pebbling_worker():
                         _dp_session = sessions.get(_dp_sid) if _dp_sid else None
                         if (_dp_session and _dp_session.cc_session_id
                                 and not _tmux_send_lock.locked()
-                                and not _user_msg_active):
+                                and not _user_msg_active
+                                and not _dp_session._in_call):
                             _dp_dk = _dp_intent["drive_key"]
                             desire_st.intent = _dp_intent
                             _jeoi_away_secs = now - peb_state.get("t_jeoi", now)
@@ -2956,6 +2962,10 @@ async def pebbling_worker():
             elapsed_jeoi = now - peb_state.get("t_jeoi", now)
 
             if _user_msg_active:
+                continue
+
+            # 通话中不跑 patrol/pebbling（番茄钟在上面，不受影响）
+            if session._in_call:
                 continue
 
             # ── L1: Patrol (max 3 checks per Jeoi-silence period) ──
@@ -4056,6 +4066,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "binaural": current_session._call_binaural,
                         "spatial_tag": current_session._call_spatial_tag,
                     })
+                    cli_message = "[voice-call] Jeoi拨通了语音通话。\n\n" + cli_message
                     current_session._call_injected = True
                     log.info(f"Voice call started for session {current_session.id}, tts=elevenlabs")
                 # 通话连续性：上一轮播放失败时注入提示
@@ -4152,7 +4163,8 @@ async def websocket_endpoint(ws: WebSocket):
                 save_peb_state()
 
                 # Desire engine: classify + pulse + inject intent
-                if DESIRE_ENABLED and desire_st:
+                # 通话中不注入 desire（避免打断通话节奏）
+                if DESIRE_ENABLED and desire_st and not call_mode:
                     _msg_tags = dc.classify(message)
                     _msg_is_libido = bool(_msg_tags and _msg_tags[0]["drive"] == "libido")
                     try:
@@ -5555,6 +5567,35 @@ async def usage_limits(force: int = 0):
 # no-cache = 可以缓存但每次必须回源校验（没变就 304，极便宜）。不设这个
 # 头，iOS PWA 走启发式缓存，改完前端要靠杀进程/删图标才能拿到新版。
 _HTML_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+@app.get("/api/avatar")
+async def get_avatar():
+    """返回当前头像URL（服务器端查找，前端不用猜扩展名）。"""
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        if (_STATIC_DIR / f"erik-avatar{ext}").exists():
+            return {"ok": True, "url": f"/static/erik-avatar{ext}"}
+    return {"ok": False}
+
+
+@app.post("/api/avatar")
+async def upload_avatar(file: UploadFile):
+    """保存头像到 static/erik-avatar.png，所有客户端统一引用。"""
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "文件太大（>5MB）"}, 400)
+    # 统一存为 erik-avatar.png（无论上传什么格式，浏览器都能渲染）
+    ext = Path(file.filename or "avatar.png").suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        ext = ".png"
+    dest = _STATIC_DIR / f"erik-avatar{ext}"
+    # 删掉旧的不同扩展名的头像
+    for old in _STATIC_DIR.glob("erik-avatar.*"):
+        if old.suffix != ext:
+            old.unlink(missing_ok=True)
+    dest.write_bytes(data)
+    log.info(f"Avatar saved: {dest} ({len(data)} bytes)")
+    return {"ok": True, "url": f"/static/erik-avatar{ext}"}
 
 
 @app.get("/chat")

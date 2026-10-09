@@ -892,6 +892,58 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   background:var(--context-red);
 }
 
+/* ── Incoming call banner ── */
+.incoming-call-banner {
+  position:fixed; top:0; left:0; right:0; z-index:9999;
+  padding:12px 16px; display:flex; align-items:center; gap:12px;
+  background:rgba(30,30,30,.92);
+  backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+  box-shadow:0 4px 24px rgba(0,0,0,.35);
+  transform:translateY(-100%); opacity:0;
+  transition:transform .35s cubic-bezier(.4,0,.2,1), opacity .35s;
+}
+.incoming-call-banner.show {
+  transform:translateY(0); opacity:1;
+}
+.incoming-call-banner .ic-avatar {
+  width:48px; height:48px; border-radius:50%; background:var(--accent);
+  display:flex; align-items:center; justify-content:center;
+  font-family:var(--serif); font-size:20px; color:#fff; flex-shrink:0;
+  overflow:hidden;
+}
+.incoming-call-banner .ic-avatar img {
+  width:100%; height:100%; object-fit:cover;
+}
+.incoming-call-banner .ic-info {
+  flex:1; min-width:0; color:#fff;
+}
+.incoming-call-banner .ic-name {
+  font-family:var(--serif); font-size:16px; font-weight:500;
+}
+.incoming-call-banner .ic-label {
+  font-size:13px; color:rgba(255,255,255,.7); margin-top:2px;
+}
+.incoming-call-banner .ic-actions {
+  display:flex; gap:16px; flex-shrink:0;
+}
+.incoming-call-banner .ic-btn {
+  width:44px; height:44px; border-radius:50%; border:none;
+  display:flex; align-items:center; justify-content:center;
+  font-size:20px; cursor:pointer; transition:transform .15s;
+  color:#fff;
+}
+.incoming-call-banner .ic-btn:active { transform:scale(.9); }
+.incoming-call-banner .ic-reject { background:#e53935; }
+.incoming-call-banner .ic-accept { background:#4caf50; }
+
+@keyframes ic-pulse {
+  0%, 100% { box-shadow:0 0 0 0 rgba(76,175,80,.5); }
+  50% { box-shadow:0 0 0 10px rgba(76,175,80,0); }
+}
+.incoming-call-banner.show .ic-accept {
+  animation:ic-pulse 1.5s ease-in-out infinite;
+}
+
 @media (max-width: 768px) {
   .session-delete { opacity:0.3; }
   .msg-edit { opacity:0.3; }
@@ -899,6 +951,20 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 </style>
 </head>
 <body>
+
+<!-- ═══ INCOMING CALL BANNER ═══ -->
+<div class="incoming-call-banner" id="incomingCallBanner">
+  <div class="ic-avatar" id="icAvatar">E</div>
+  <div class="ic-info">
+    <div class="ic-name">Erik</div>
+    <div class="ic-label">来电…</div>
+  </div>
+  <div class="ic-actions">
+    <button class="ic-btn ic-reject" onclick="rejectIncomingCall()" title="拒绝">✕</button>
+    <button class="ic-btn ic-accept" onclick="acceptIncomingCall()" title="接听">📞</button>
+  </div>
+</div>
+
 <div class="app" id="app">
 
   <!-- ═══ SIDEBAR ═══ -->
@@ -1495,7 +1561,7 @@ function handleWSMessage(data) {
       break;
 
     case 'call:incoming':
-      location.href = '/call.html?session=' + (data.sessionId || currentSessionId) + '&incoming=true';
+      showIncomingCall(data.sessionId || currentSessionId);
       break;
 
     case 'ping':
@@ -2159,6 +2225,38 @@ function startCall() {
   location.href = '/call.html?session=' + currentSessionId;
 }
 
+/* ── Incoming call banner ── */
+let _incomingCallSid = null;
+let _incomingCallTimeout = null;
+
+function showIncomingCall(sid) {
+  _incomingCallSid = sid;
+  const banner = document.getElementById('incomingCallBanner');
+  // 同步头像
+  const ic = document.getElementById('icAvatar');
+  if (_avatarUrl) ic.innerHTML = `<img src="${_avatarUrl}">`;
+  banner.classList.add('show');
+  // 震动（移动端）
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+  // 3分钟超时自动消失
+  _incomingCallTimeout = setTimeout(() => {
+    rejectIncomingCall('timeout');
+  }, 180000);
+}
+
+function acceptIncomingCall() {
+  if (_incomingCallTimeout) { clearTimeout(_incomingCallTimeout); _incomingCallTimeout = null; }
+  document.getElementById('incomingCallBanner').classList.remove('show');
+  location.href = '/call.html?session=' + (_incomingCallSid || currentSessionId) + '&incoming=true';
+}
+
+function rejectIncomingCall(reason) {
+  if (_incomingCallTimeout) { clearTimeout(_incomingCallTimeout); _incomingCallTimeout = null; }
+  document.getElementById('incomingCallBanner').classList.remove('show');
+  wsSend('call:reject', { sessionId: _incomingCallSid || currentSessionId, reason: reason || 'rejected' });
+  _incomingCallSid = null;
+}
+
 function switchSession(id) {
   currentSessionId = id;
   localStorage.setItem('last-session-id', id);
@@ -2496,9 +2594,8 @@ function openLightbox(src) {
 ══════════════════════════════════════ */
 function openSettings() {
   document.getElementById('settingsOverlay').classList.add('open');
-  // Load saved avatar
-  const saved = localStorage.getItem('erik-avatar');
-  if (saved) document.getElementById('avatarPreview').src = saved;
+  // Load current avatar
+  if (_avatarUrl) document.getElementById('avatarPreview').src = _avatarUrl;
   // Highlight active bg
   const savedBg = localStorage.getItem('chat-bg-color');
   document.querySelectorAll('.bg-option').forEach(el => {
@@ -2510,43 +2607,60 @@ function closeSettings() {
   document.getElementById('settingsOverlay').classList.remove('open');
 }
 
-function handleAvatarUpload(e) {
+async function handleAvatarUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    const dataUrl = ev.target.result;
-    localStorage.setItem('erik-avatar', dataUrl);
-    applyAvatar(dataUrl);
-    document.getElementById('avatarPreview').src = dataUrl;
-  };
-  reader.readAsDataURL(file);
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const r = await fetch('/api/avatar', { method: 'POST', body: form });
+    const j = await r.json();
+    if (j.ok) {
+      // 清掉旧的 localStorage 头像，统一走服务器
+      localStorage.removeItem('erik-avatar');
+      applyAvatar(j.url + '?t=' + Date.now());
+      document.getElementById('avatarPreview').src = j.url + '?t=' + Date.now();
+    } else {
+      alert(j.error || '上传失败');
+    }
+  } catch (err) {
+    alert('上传失败: ' + err.message);
+  }
   e.target.value = '';
 }
 
 function resetAvatar() {
   localStorage.removeItem('erik-avatar');
-  const defaultSvg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect fill='%23008069' width='56' height='56' rx='28'/%3E%3Ctext x='28' y='36' text-anchor='middle' fill='white' font-family='Lora' font-size='24'%3EE%3C/text%3E%3C/svg%3E";
-  document.getElementById('avatarPreview').src = defaultSvg;
   applyAvatar(null);
+  document.getElementById('avatarPreview').src = _AVATAR_DEFAULT_SVG;
 }
 
-function applyAvatar(dataUrl) {
+const _AVATAR_DEFAULT_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect fill='%23008069' width='56' height='56' rx='28'/%3E%3Ctext x='28' y='36' text-anchor='middle' fill='white' font-family='Lora' font-size='24'%3EE%3C/text%3E%3C/svg%3E";
+
+let _avatarUrl = null;  // 当前生效的头像URL（全局，来电浮窗也用）
+
+function applyAvatar(url) {
+  _avatarUrl = url;
   // Update header avatar
   const headerAvatar = document.querySelector('.chat-header-avatar');
-  if (dataUrl) {
-    headerAvatar.innerHTML = `<img src="${dataUrl}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">`;
+  if (url) {
+    headerAvatar.innerHTML = `<img src="${url}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;">`;
   } else {
     headerAvatar.innerHTML = 'E';
   }
   // Update session list avatars
   document.querySelectorAll('.session-avatar').forEach(el => {
-    if (dataUrl) {
-      el.innerHTML = `<img src="${dataUrl}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">`;
+    if (url) {
+      el.innerHTML = `<img src="${url}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">`;
     } else {
       el.innerHTML = 'E';
     }
   });
+  // Update incoming call banner avatar
+  const icAvatar = document.getElementById('icAvatar');
+  if (icAvatar) {
+    icAvatar.innerHTML = url ? `<img src="${url}">` : 'E';
+  }
 }
 
 function setBg(color) {
@@ -2579,8 +2693,17 @@ function handleBgUpload(e) {
 
 // Apply saved settings on load
 (function() {
-  const avatar = localStorage.getItem('erik-avatar');
-  if (avatar) applyAvatar(avatar);
+  // 头像：服务器端统一存储 → fallback localStorage（旧数据兼容）
+  fetch('/api/avatar').then(r => r.json()).then(j => {
+    if (j.ok) applyAvatar(j.url);
+    else {
+      const legacy = localStorage.getItem('erik-avatar');
+      if (legacy) applyAvatar(legacy);
+    }
+  }).catch(() => {
+    const legacy = localStorage.getItem('erik-avatar');
+    if (legacy) applyAvatar(legacy);
+  });
 
   const bgColor = localStorage.getItem('chat-bg-color');
   const bgImage = localStorage.getItem('chat-bg-image');

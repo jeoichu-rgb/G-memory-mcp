@@ -397,11 +397,21 @@ function duckSfx(voicePlaying) {
   if (!sessionId) { location.href = '/chat.html'; return; }
   isIncoming = p.get('incoming') === 'true';
 
-  const av = localStorage.getItem('erik-avatar');
-  if (av) {
-    document.getElementById('avatar').innerHTML = '<img src="' + av + '">';
-    document.getElementById('avatarRef').innerHTML = '<img src="' + av + '">';
+  // 头像：服务器端统一存储
+  function setCallAvatar(url) {
+    document.getElementById('avatar').innerHTML = '<img src="' + url + '">';
+    document.getElementById('avatarRef').innerHTML = '<img src="' + url + '">';
   }
+  fetch('/api/avatar').then(r => r.json()).then(j => {
+    if (j.ok) setCallAvatar(j.url);
+    else {
+      const av = localStorage.getItem('erik-avatar');
+      if (av) setCallAvatar(av);
+    }
+  }).catch(() => {
+    const av = localStorage.getItem('erik-avatar');
+    if (av) setCallAvatar(av);
+  });
 
   document.getElementById('msgInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.isComposing) sendMsg();
