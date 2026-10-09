@@ -566,8 +566,9 @@ function handleWS(d) {
       break;
     case 'call:backend_switch':
       if (callActive) {
-        setStatus('TTS已切换到 ' + (d.to === 'minimax' ? 'MiniMax（云端）' : 'Local'));
-        setTimeout(() => { if (callActive) setStatus('通话中'); }, 4000);
+        const backendLabel = d.to === 'minimax' ? 'MiniMax' : d.to === 'local' ? 'GSVI' : 'ElevenLabs';
+        setStatus('TTS → ' + backendLabel);
+        setTimeout(() => { if (callActive) setStatus('通话中'); }, 3000);
       }
       break;
     case 'call:sfx':

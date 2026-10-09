@@ -1815,10 +1815,27 @@ function renderHistory(messages) {
   clearMessages();
   if (!messages || messages.length === 0) return;
   hideEmpty();
+
+  // 标记有对应 call_record 的 voice_call 消息（从后往前扫）
+  // 连续的 voice_call 后面紧跟 call_record → 这组 voice_call 被 covered（隐藏）
+  // 连续的 voice_call 后面没有 call_record → 通话异常结束，这组消息应该显示
+  const covered = new Set();
+  let hasRecord = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.call_record) {
+      hasRecord = true;
+    } else if (m.source === 'voice_call') {
+      if (hasRecord) covered.add(i);
+    } else {
+      hasRecord = false;
+    }
+  }
+
   const msgArea = document.getElementById('messages');
-  messages.forEach(msg => {
-    // Hide individual voice_call messages (shown as call record instead)
-    if (msg.source === 'voice_call') return;
+  messages.forEach((msg, idx) => {
+    // 只跳过有对应 call_record 的通话消息；异常结束的通话消息照常显示
+    if (msg.source === 'voice_call' && covered.has(idx)) return;
 
     const row = document.createElement('div');
     const time = msg.time || '';

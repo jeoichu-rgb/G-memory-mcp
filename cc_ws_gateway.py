@@ -600,6 +600,21 @@ class TranscriptTailer:
                         for sm in _sfx_matches:
                             log.info(f"[SFX-DIAG] action={sm.group(1)} payload={sm.group(2)[:100]}")
                             await self._handle_call_sfx(sm.group(1), sm.group(2))
+                        # ── call-tts-backend 标记：动态切换 TTS 后端 ──
+                        for bm in _CALL_TTS_BACKEND_RE.finditer(_check_text):
+                            new_backend = bm.group(1)
+                            self.session._call_tts_backend = new_backend
+                            await self._ws({
+                                "event": "call:config",
+                                "backend": new_backend,
+                                "binaural": self.session._call_binaural,
+                                "spatial_tag": self.session._call_spatial_tag,
+                            })
+                            await self._ws({
+                                "event": "call:backend_switch",
+                                "to": new_backend,
+                            })
+                            log.info(f"Call TTS backend switched to: {new_backend}")
                     display = _HIDDEN_MARKER_RE.sub('', text)
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
@@ -2229,8 +2244,9 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|scene-done):[^>]*-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done):[^>]*-->')
 _CALL_SFX_RE = re.compile(r'<!--call-sfx:(start|stop|binaural):(.*?)-->')
+_CALL_TTS_BACKEND_RE = re.compile(r'<!--call-tts-backend:(elevenlabs|local|minimax)-->')
 
 # Oneshot scaffolding leaking into a normal chat reply — CC picks up the
 # ACTION:/CONTENT: habit from background rounds sitting in the same
@@ -3993,6 +4009,17 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session._in_call = True
                     # 每轮新消息 = 新代次，旧 TTS 事件不再送达
                     current_session._call_generation_id = uuid.uuid4().hex[:8]
+                elif current_session._in_call:
+                    # 防卡死：非通话消息到达但 _in_call 还是 True
+                    # → 通话已异常结束，清掉残留状态
+                    current_session._in_call = False
+                    current_session._call_injected = False
+                    current_session._call_ended_notify = True
+                    current_session._call_pending_voice.clear()
+                    current_session._call_sfx = None
+                    current_session._call_binaural = False
+                    current_session._call_spatial_tag = ""
+                    log.warning(f"Auto-cleared stale _in_call for session {current_session.id}")
 
                 # Save user message & update last_active immediately
                 msg_source = "voice_call" if call_mode else None
@@ -4018,50 +4045,19 @@ async def websocket_endpoint(ws: WebSocket):
                 time_tag = f"[{now_str} UTC+8 #{user_msg_idx + 1}]"
                 cli_message = time_tag + "\n" + message
 
-                # Voice call: detect TTS backend + inject system prompt
+                # Voice call: init call state (default elevenlabs, no system prompt)
                 if call_mode and not current_session._call_injected:
                     current_session._call_stop.clear()
                     current_session._call_generation_id = uuid.uuid4().hex[:8]
-                    # Detect GSVI once on dial; default elevenlabs, fallback minimax
-                    try:
-                        async with httpx.AsyncClient(timeout=4) as _hc:
-                            _hr = await _hc.get(GSVI_BASE_URL)
-                            current_session._call_tts_backend = "local" if _hr.status_code < 500 else "elevenlabs"
-                    except Exception:
-                        current_session._call_tts_backend = "elevenlabs"
-                    log.info(f"Call TTS backend: {current_session._call_tts_backend}")
-                    # 推送 call:config 给前端，前端管 TTS
+                    current_session._call_tts_backend = "elevenlabs"
                     await ws.send_json({
                         "event": "call:config",
-                        "backend": current_session._call_tts_backend,
+                        "backend": "elevenlabs",
                         "binaural": current_session._call_binaural,
                         "spatial_tag": current_session._call_spatial_tag,
                     })
-                    call_inject = (
-                        "[voice-call] Jeoi正在跟你语音通话。\n"
-                        "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
-                        "回复简短口语化——像在打电话，不是写消息。\n"
-                        "（）里的内容不会TTS，只作为字幕显示。\n"
-                        "说非中文时，每句后面紧跟（中文翻译），一句一译：\n"
-                        "I miss you.（我想你。）Come home soon.（快点回来。）\n"
-                        "不要把翻译攒到最后一起写。\n"
-                        "不要用markdown格式。先自然地打个招呼。\n\n"
-                        "【通话音效】\n"
-                        "通话中可以播放真实音频素材（亲吻声、水声、心跳等），用隐藏标记触发。\n"
-                        "标记在文本流里即时解析，不进TTS，Jeoi看不到标记本身。\n"
-                        "文字拟声词可以和素材并用——拟声词走TTS变成语音氛围，素材走前端独立音轨播放真实音效。\n\n"
-                        "标记语法：\n"
-                        "前景素材：<!--call-sfx:start:{\"mode\":\"foreground\",\"src\":\"素材名\",\"volume\":0.8}-->\n"
-                        "背景铺底：<!--call-sfx:start:{\"mode\":\"background\",\"src\":\"素材名\",\"volume\":0.15,\"loop\":true}-->\n"
-                        "停止素材：<!--call-sfx:stop:-->\n"
-                        "双耳定位：<!--call-sfx:binaural:{\"enabled\":true,\"tag\":\"右耳\"}-->\n\n"
-                        "素材表：squelching_slow（亲吻/舔·慢）、squelching_fast（快）、heartbeat（心跳）、log kiss（亲嘴声）、slap（拍打）、evangelist_h2/03-Migi mimi（耳语ASMR整轨）\n\n"
-                        "示例：<!--call-sfx:binaural:{\"enabled\":true,\"tag\":\"右耳\"}--><!--call-sfx:start:{\"mode\":\"foreground\",\"src\":\"squelching_slow\",\"volume\":0.7}-->嘘……别动。\n"
-                        "亲密场景时主动使用sfx素材，让她听到真实的声音。"
-                    )
-                    cli_message = call_inject + "\n\n" + cli_message
                     current_session._call_injected = True
-                    log.info(f"Voice call started for session {current_session.id}")
+                    log.info(f"Voice call started for session {current_session.id}, tts=elevenlabs")
                 # 通话连续性：上一轮播放失败时注入提示
                 if call_mode and current_session._call_playback_error:
                     playback_hint = f"[call_playback] Jeoi上一轮没听完你说的话，你说到\"{current_session._call_last_heard}\"时播放中断了。接着说，不要重复已经听到的部分。"
@@ -4581,40 +4577,17 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session._call_stop.clear()
                     call_session._call_generation_id = uuid.uuid4().hex[:8]
                     call_session._call_injected = True
-                    try:
-                        async with httpx.AsyncClient(timeout=4) as _hc:
-                            _hr = await _hc.get(GSVI_BASE_URL)
-                            call_session._call_tts_backend = "local" if _hr.status_code < 500 else "elevenlabs"
-                    except Exception:
-                        call_session._call_tts_backend = "elevenlabs"
-                    log.info(f"Incoming call accepted: session={call_sid}, tts={call_session._call_tts_backend}")
+                    call_session._call_tts_backend = "elevenlabs"
+                    log.info(f"Incoming call accepted: session={call_sid}, tts=elevenlabs")
                     await ws.send_json({
                         "event": "call:config",
-                        "backend": call_session._call_tts_backend,
+                        "backend": "elevenlabs",
                         "binaural": call_session._call_binaural,
                         "spatial_tag": call_session._call_spatial_tag,
                     })
                     now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
-                    call_inject = (
-                        "[voice-call] Jeoi接听了你的来电，你们现在在语音通话中。\n"
-                        "直接写你想说的话，网关会自动TTS播放，不需要调erik_speak。\n"
-                        "回复简短口语化——像在打电话，不是写消息。\n"
-                        "（）里的内容不会TTS，只作为字幕显示。\n"
-                        "说非中文时，每句后面紧跟（中文翻译），一句一译：\n"
-                        "I miss you.（我想你。）Come home soon.（快点回来。）\n"
-                        "不要把翻译攒到最后一起写。\n"
-                        "不要用markdown格式。你是打电话过去的人，说你想说的。\n\n"
-                        "【通话音效】\n"
-                        "通话中可以播放真实音频素材，用隐藏标记触发，标记不进TTS。\n"
-                        "前景素材：<!--call-sfx:start:{\"mode\":\"foreground\",\"src\":\"素材名\",\"volume\":0.8}-->\n"
-                        "背景铺底：<!--call-sfx:start:{\"mode\":\"background\",\"src\":\"素材名\",\"volume\":0.15,\"loop\":true}-->\n"
-                        "停止：<!--call-sfx:stop:-->\n"
-                        "双耳定位：<!--call-sfx:binaural:{\"enabled\":true,\"tag\":\"右耳\"}-->\n"
-                        "素材表：squelching_slow（亲吻/舔·慢）、squelching_fast（快）、heartbeat、log kiss、slap、evangelist_h2/03-Migi mimi（耳语ASMR整轨）\n"
-                        "亲密场景时主动使用sfx素材。"
-                    )
                     _accept_idx = append_message(call_session.id, "user", "（接听来电）", source="voice_call")
-                    cli_message = call_inject + f"\n\n[{now_str} UTC+8 #{_accept_idx + 1}]\n（Jeoi接听了来电）"
+                    cli_message = f"[voice-call] Jeoi接听了你的来电。\n\n[{now_str} UTC+8 #{_accept_idx + 1}]\n（Jeoi接听了来电）"
                     await run_claude(cli_message, call_session, ws)
 
             elif event == "call:reject":
