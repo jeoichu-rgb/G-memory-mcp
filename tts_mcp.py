@@ -143,7 +143,7 @@ def _call_minimax_tts(
 def _call_elevenlabs_tts(
     text: str,
     speed: float = 1.0,
-    stability: float = 0.5,
+    stability: float = 0.28,
     similarity_boost: float = 0.75,
     style: float = 0.0,
 ) -> dict:
