@@ -1094,6 +1094,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <button class="settings-upload-btn" style="background:var(--border);color:var(--text-primary);"
           onclick="resetAvatar()">重置</button>
       </div>
+      <div id="avatarStatus" style="font-size:12px;margin-top:4px;color:var(--text-secondary);"></div>
     </div>
 
     <!-- Chat background -->
@@ -2610,23 +2611,41 @@ function closeSettings() {
 }
 
 async function handleAvatarUpload(e) {
+  const st = document.getElementById('avatarStatus');
   const file = e.target.files[0];
   if (!file) return;
+  st.textContent = `上传中… (${(file.size / 1024).toFixed(0)}KB)`;
+  st.style.color = 'var(--text-secondary)';
   const form = new FormData();
   form.append('file', file);
   try {
     const r = await fetch('/api/avatar', { method: 'POST', body: form });
+    console.log('[avatar] response status:', r.status);
+    if (!r.ok) {
+      const txt = await r.text();
+      console.log('[avatar] error body:', txt);
+      st.textContent = `上传失败 (${r.status})`;
+      st.style.color = '#e53935';
+      e.target.value = '';
+      return;
+    }
     const j = await r.json();
+    console.log('[avatar] response:', j);
     if (j.ok) {
-      // 清掉旧的 localStorage 头像，统一走服务器
       localStorage.removeItem('erik-avatar');
-      applyAvatar(j.url + '?t=' + Date.now());
-      document.getElementById('avatarPreview').src = j.url + '?t=' + Date.now();
+      const url = j.url + '?t=' + Date.now();
+      applyAvatar(url);
+      document.getElementById('avatarPreview').src = url;
+      st.textContent = '✓ 已保存';
+      st.style.color = '#4caf50';
     } else {
-      alert(j.error || '上传失败');
+      st.textContent = j.error || '上传失败';
+      st.style.color = '#e53935';
     }
   } catch (err) {
-    alert('上传失败: ' + err.message);
+    console.error('[avatar] upload error:', err);
+    st.textContent = '网络错误: ' + err.message;
+    st.style.color = '#e53935';
   }
   e.target.value = '';
 }
