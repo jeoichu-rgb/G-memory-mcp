@@ -278,7 +278,8 @@ let ttsQueue = [];          // [{text, subtitle}, ...]
 let ttsFlying = 0;          // 当前代次正在飞行的 TTS 请求数
 let ttsGenCounter = 0;      // 代次计数器（每次 sendMsg/startCall 递增）
 const TTS_PREFETCH_LIMIT = 2;
-const TTS_BATCH_MAX = 100;
+const TTS_BATCH_MAX_DEFAULT = 100;
+const TTS_BATCH_MAX_ELEVENLABS = 140; // ElevenLabs 用更大批次换取句间韵律连贯
 
 const audio = new Audio();
 audio.setAttribute('playsinline', '');
@@ -669,15 +670,34 @@ function splitSentences(text) {
 }
 
 const _PAREN_RE = /[（(][^)）]*[)）]/g;
+function cleanTtsText(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, '')         // 代码块
+    .replace(/`[^`]+`/g, '')                // 行内代码
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')   // 图片
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // 链接 → 保留文字
+    .replace(/^#{1,6}\s+/gm, '')            // 标题符号
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1') // **加粗** *斜体*
+    .replace(/_{1,3}([^_]+)_{1,3}/g, '$1')  // __加粗__ _斜体_
+    .replace(/^[\s]*[-*+]\s+/gm, '')        // 列表符号
+    .replace(/^[\s]*\d+\.\s+/gm, '')        // 有序列表
+    .replace(/\*([^*]+)\*/g, '$1')          // 残余星号动作 *叹气*
+    .replace(/[✅❌⚠️🔥💡📌🎯🚀⭐️📝💬🔗📎🗂️📊📈📉🛠️⚙️🔧📚🎓🏆🎪🎨🎭]/g, '') // 工具/装饰 emoji
+    .trim();
+}
 function extractTtsAndSubtitle(text) {
   const parens = text.match(_PAREN_RE) || [];
-  const ttsText = text.replace(_PAREN_RE, '').trim();
+  const ttsText = cleanTtsText(text.replace(_PAREN_RE, '')).trim();
   const subtitle = parens.map(p => p.slice(1, -1)).join(' ');
   return [ttsText, subtitle];
 }
 
+function getTtsBatchMax() {
+  return callConfig.backend === 'elevenlabs' ? TTS_BATCH_MAX_ELEVENLABS : TTS_BATCH_MAX_DEFAULT;
+}
+
 function splitLong(text, limit) {
-  limit = limit || TTS_BATCH_MAX;
+  limit = limit || getTtsBatchMax();
   if (text.length <= limit) return [text];
   const chunks = [];
   let buf = '';

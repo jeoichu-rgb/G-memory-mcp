@@ -27,14 +27,42 @@ from fastapi.responses import JSONResponse, StreamingResponse
 os.makedirs("logs", exist_ok=True)
 
 
+async def _cleanup_tts_audio():
+    """每 5 分钟清理超过 10 分钟的 TTS 音频文件（前端已缓存 blob，磁盘文件不再需要）。"""
+    import asyncio, logging
+    _log = logging.getLogger("tts-cleanup")
+    tts_dir = os.getenv("TTS_AUDIO_DIR", "/app/tts_audio")
+    max_age = 600  # 10 分钟
+    while True:
+        await asyncio.sleep(300)  # 每 5 分钟
+        try:
+            now = time.time()
+            removed = 0
+            for f in os.listdir(tts_dir):
+                if f.startswith("_tmp_"):
+                    continue  # 跳过正在处理的临时文件
+                fp = os.path.join(tts_dir, f)
+                if os.path.isfile(fp) and (now - os.path.getmtime(fp)) > max_age:
+                    os.remove(fp)
+                    removed += 1
+            if removed:
+                _log.info(f"cleaned {removed} stale TTS files")
+        except Exception as e:
+            _log.warning(f"TTS cleanup error: {e}")
+
+
 @asynccontextmanager
 async def _lifespan(app_instance):
+    import asyncio
+    # 后台 TTS 清理任务
+    cleanup_task = asyncio.create_task(_cleanup_tts_audio())
     # FastAPI.mount() 不传递 lifespan 给子应用，
     # 手动启动 MCP Streamable HTTP 的 task group
     async with mcp_http_app.router.lifespan_context(mcp_http_app):
         async with tts_mcp_http_app.router.lifespan_context(tts_mcp_http_app):
             async with netease_mcp_http_app.router.lifespan_context(netease_mcp_http_app):
                 yield
+    cleanup_task.cancel()
 
 
 app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
