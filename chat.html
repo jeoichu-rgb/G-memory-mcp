@@ -1352,6 +1352,7 @@ function toggleTheme() {
    WEBSOCKET
 ══════════════════════════════════════ */
 let reconnectDelay = 1000;
+let _wsHeartbeat = null;
 
 function connectWS() {
   updateStatus('connecting...');
@@ -1361,6 +1362,9 @@ function connectWS() {
     console.log('[ws] connected to', WS_URL);
     reconnectDelay = 1000;
     updateStatus('online');
+    // 前端心跳：每30s主动ping，防止中间反代层判定空闲断连
+    if (_wsHeartbeat) clearInterval(_wsHeartbeat);
+    _wsHeartbeat = setInterval(() => wsSend('ping', {}), 30000);
     wsSend('session:list', {});
     // Restore last active session on reconnect
     const lastSid = localStorage.getItem('last-session-id');
@@ -1381,6 +1385,7 @@ function connectWS() {
   };
 
   ws.onclose = () => {
+    if (_wsHeartbeat) { clearInterval(_wsHeartbeat); _wsHeartbeat = null; }
     updateStatus('reconnecting...');
     setTimeout(connectWS, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);

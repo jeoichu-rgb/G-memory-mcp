@@ -4707,7 +4707,10 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session._call_sfx = None
                     call_session._call_binaural = False
                     call_session._call_spatial_tag = ""
-                    call_dur = data.get("duration", 0)
+                    call_dur = data.get("duration") or 0
+                    if not isinstance(call_dur, (int, float)):
+                        call_dur = 0
+                    call_dur = int(call_dur)
                     call_utts = data.get("utterances", [])
                     dur_mm = call_dur // 60
                     dur_ss = call_dur % 60
@@ -5649,4 +5652,5 @@ if __name__ == "__main__":
     import uvicorn
 
     os.makedirs("/opt/G-memory-mcp/logs", exist_ok=True)
-    uvicorn.run(app, host="0.0.0.0", port=3000)
+    uvicorn.run(app, host="0.0.0.0", port=3000,
+                ws_ping_interval=60, ws_ping_timeout=30)

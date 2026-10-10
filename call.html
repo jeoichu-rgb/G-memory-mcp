@@ -500,9 +500,13 @@ function duckSfx(voicePlaying) {
 })();
 
 /* ── WS ── */
+let _wsHeartbeat = null;
 function connectWS() {
   ws = new WebSocket(WS_URL);
   ws.onopen = () => {
+    // 前端心跳：每30s主动ping，防止中间反代层判定空闲断连
+    if (_wsHeartbeat) clearInterval(_wsHeartbeat);
+    _wsHeartbeat = setInterval(() => wsSend('ping', {}), 30000);
     wsSend('session:switch', { sessionId });
     if (callActive) {
       // 断线重连：请求恢复未送达的音频
@@ -520,7 +524,10 @@ function connectWS() {
   ws.onmessage = e => {
     try { handleWS(JSON.parse(e.data)); } catch(err) { console.warn('[ws]', err); }
   };
-  ws.onclose = () => { if (callActive) setTimeout(connectWS, 2000); };
+  ws.onclose = () => {
+    if (_wsHeartbeat) { clearInterval(_wsHeartbeat); _wsHeartbeat = null; }
+    if (callActive) setTimeout(connectWS, 2000);
+  };
 }
 
 function wsSend(ev, data) {
@@ -1127,7 +1134,7 @@ function hangup() {
     body: JSON.stringify({ sessionId }),
   }).catch(() => {});
 
-  const dur = Math.floor((Date.now() - callStart) / 1000);
+  const dur = callStart ? Math.floor((Date.now() - callStart) / 1000) : 0;
 
   // save call record to chat history
   wsSend('call:end', { sessionId, duration: dur, utterances });
