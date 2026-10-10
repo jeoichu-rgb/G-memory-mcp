@@ -1767,7 +1767,7 @@ function ensureAssistantBubble() {
   initLongPress(currentBubble);
 }
 
-var _hiddenMarkerRe = /<!--(?:voice|react|curiosity-seed|curiosity-seed-ask):[^>]*?-->/g;
+var _hiddenMarkerRe = /<!--(?:voice|react|curiosity-seed|curiosity-seed-ask):[\s\S]*?-->/g;
 function appendStreamText(text) {
   ensureAssistantBubble();
   streamedText += text;

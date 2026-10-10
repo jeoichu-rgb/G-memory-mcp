@@ -624,7 +624,7 @@ class TranscriptTailer:
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
                     # 流式阶段即时推送语音条，不等回复完成
-                    _voice_re = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+                    _voice_re = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL)
                     for vm in _voice_re.finditer(text):
                         _vm_data = {
                             "audio_url": vm.group(1),
@@ -2249,7 +2249,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done):[^>]*-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done):[\s\S]*?-->')
 _CALL_SFX_RE = re.compile(r'<!--call-sfx:(start|stop|binaural):(.*?)-->')
 _CALL_TTS_BACKEND_RE = re.compile(r'<!--call-tts-backend:(elevenlabs|local|minimax)-->')
 
@@ -2482,7 +2482,7 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
     now = time_mod.time()
 
     # ── 提取隐藏标记（与 streaming 模式的 post-processing 对齐） ──
-    _voice_re_peb = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+    _voice_re_peb = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL)
     voice_items = [{"audio_url": m.group(1), "duration": float(m.group(2)), "text": m.group(3)}
                    for m in _voice_re_peb.finditer(content)]
 
@@ -4783,12 +4783,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         # Post-processing: parse voice markers
         voice_messages = []
         if session._current_text:
-            voice_pattern = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+            voice_pattern = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL)
             for m in voice_pattern.finditer(session._current_text):
                 voice_messages.append({
                     "audio_url": m.group(1),
                     "duration": float(m.group(2)),
-                    "text": m.group(3),
+                    "text": m.group(3).replace('\n', ' '),
                 })
             session._current_text = voice_pattern.sub('', session._current_text).rstrip()
 
@@ -4959,7 +4959,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             pass
         log.warning(f"run_claude error: {type(e).__name__}: {e}")
         if session._current_text:
-            voice_pat = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->')
+            voice_pat = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL)
             cleaned = voice_pat.sub('', session._current_text).rstrip()
             react_pat = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
             cleaned = react_pat.sub('', cleaned).rstrip()
