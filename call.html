@@ -678,6 +678,27 @@ function handleWS(d) {
     case 'message:complete':
       onReplyDone();
       break;
+    case 'call:active':
+      // WS重连后gateway通知通话还在——恢复状态并补做TTS
+      console.log('[call:active] 通话恢复', d);
+      callConfig.backend = d.backend || callConfig.backend;
+      callConfig.binaural = d.binaural != null ? !!d.binaural : callConfig.binaural;
+      callConfig.spatial_tag = d.spatial_tag || callConfig.spatial_tag;
+      if (d.generation_id) currentGenId = d.generation_id;
+      if (!callActive) {
+        // 通话页面刷新/重连后callActive被重置了——恢复通话
+        callActive = true;
+        if (!callStart) callStart = Date.now();
+        if (!timerIv) timerIv = setInterval(tickTimer, 1000);
+        setStatus('通话中');
+        document.getElementById('dialBtn').style.display = 'none';
+      }
+      // 补发WS断期间未送达的文本→TTS
+      if (d.unsent_text) {
+        console.log('[call:active] 补发未送达文本:', d.unsent_text.length, 'chars');
+        enqueueSentences(d.unsent_text);
+      }
+      break;
     case 'session:created':
       sessionId = d.sessionId;
       break;

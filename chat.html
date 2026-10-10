@@ -1572,6 +1572,12 @@ function handleWSMessage(data) {
       showIncomingCall(data.sessionId || currentSessionId);
       break;
 
+    case 'call:active':
+      // WS重连后gateway通知通话还在——跳回通话页面
+      console.log('[call:active] 通话还在进行中，跳转恢复');
+      window.location.href = '/call.html?session=' + (data.sessionId || currentSessionId);
+      break;
+
     case 'ping':
       wsSend('pong', {});
       break;

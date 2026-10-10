@@ -3535,6 +3535,7 @@ class Session:
         self._call_last_heard = ""  # 最后播放完成的文本
         self._call_playback_error = ""  # 播放失败的文本
         self._call_pending_voice: list[dict] = []  # 已发但未确认的 voice 事件
+        self._call_unsent_text = ""  # WS断期间未送达的通话文本，重连后补发
         # Call SFX state (独立于代次，只有显式 stop / 挂断才停)
         self._call_sfx: dict | None = None  # {"mode","src","volume",...} or None
         self._call_binaural = False  # 通话中是否启用 binaural
@@ -3869,7 +3870,23 @@ async def websocket_endpoint(ws: WebSocket):
                         peb_state["pending_messages"] = []
                         save_peb_state()
                     log.info(f"Switched to session: {sid}")
-                    
+                    # 重连后如果session还在通话中，推状态给前端恢复通话
+                    if current_session._in_call:
+                        recover = {
+                            "event": "call:active",
+                            "sessionId": sid,
+                            "backend": current_session._call_tts_backend,
+                            "binaural": current_session._call_binaural,
+                            "spatial_tag": current_session._call_spatial_tag,
+                            "generation_id": current_session._call_generation_id,
+                        }
+                        # 附带WS断期间没送出去的文本，前端补做TTS
+                        if current_session._call_unsent_text:
+                            recover["unsent_text"] = current_session._call_unsent_text
+                            current_session._call_unsent_text = ""
+                        await ws.send_json(recover)
+                        log.info(f"Pushed call:active to reconnected frontend for session {sid}")
+
 
             elif event == "session:delete":
                 sid = data.get("sessionId", "")
@@ -4026,6 +4043,7 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session._call_injected = False
                     current_session._call_ended_notify = True
                     current_session._call_pending_voice.clear()
+                    current_session._call_unsent_text = ""
                     current_session._call_sfx = None
                     current_session._call_binaural = False
                     current_session._call_spatial_tag = ""
@@ -4685,6 +4703,7 @@ async def websocket_endpoint(ws: WebSocket):
                     call_session._call_injected = False
                     call_session._call_ended_notify = True
                     call_session._call_pending_voice.clear()
+                    call_session._call_unsent_text = ""
                     call_session._call_sfx = None
                     call_session._call_binaural = False
                     call_session._call_spatial_tag = ""
@@ -4980,6 +4999,11 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             preview = session._current_text.replace(chr(10), " ")[:100]
             await send_web_push("Erik", preview, url="/chat.html")
             await send_telegram(preview)
+        # WS断连时缓存未送达的通话文本——前端重连后通过
+        # call:active 事件补发，让前端恢复通话并补做TTS
+        if session._in_call and not ws_err_ok and session._current_text:
+            session._call_unsent_text = session._current_text
+            log.warning(f"WS disconnected during call, cached {len(session._current_text)} chars for {session.id}")
 
 
 # ══════════════════════════════════════════════
