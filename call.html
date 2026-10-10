@@ -264,6 +264,8 @@ let replayMode = false;  // 正在循环重播
 let replayIdx = 0;       // 循环时播到第几个
 let gapTimer = null;     // 轮间停顿定时器
 let draining = false;    // 新消息来了，播完当前轮就停
+let awaitingNewVoice = false;      // sendMsg 后等新语音 ready 再停循环
+let transitionAfterCurrent = false; // 新语音 ready 时正在播 replay 句，播完后切
 const REPLAY_GAP = 3000; // 停顿 3 秒
 let currentGenId = '';  // 代次隔离：只接受当前 generation 的 voice 事件
 let currentPlayingText = '';  // 当前正在播放的文本，用于上报
@@ -289,6 +291,7 @@ audio.setAttribute('playsinline', '');
 let sfxAudio = null;
 let sfxBlobUrl = null;
 let sfxMode = '';       // 'background' | 'foreground' | ''
+let sfxCurrentUrl = ''; // 当前 BGM 的原始 URL，用于同款检测
 let sfxVolume = 0.2;    // sfx 层音量设定值
 let sfxFading = null;   // ducking 渐变定时器
 let _sfxDuckTarget = null; // 渐变目标音量
@@ -323,26 +326,86 @@ function unlockSfxAudio() {
 }
 
 function startSfx(url, mode, volume, doLoop) {
-  stopSfx(true);  // 清理旧状态但保留已解锁的元素
-  sfxMode = mode || 'background';
-  sfxVolume = (typeof volume === 'number') ? volume : (sfxMode === 'foreground' ? 0.8 : 0.2);
-  // 复用已解锁的元素，iOS 不允许在非手势链里 new Audio().play()
+  const newMode = mode || 'background';
+  const newVol = (typeof volume === 'number') ? volume : (newMode === 'foreground' ? 0.8 : 0.2);
+
+  // 同款 BGM：继续循环不中断，只更新参数
+  if (sfxAudio && sfxCurrentUrl === url && sfxMode) {
+    sfxMode = newMode;
+    sfxVolume = newVol;
+    sfxAudio.loop = doLoop !== false;
+    duckSfx(playing);
+    console.log('[sfx] same BGM, continuing:', url);
+    return;
+  }
+
+  // 不同款：淡出旧 → 播新
+  if (sfxAudio && sfxMode && sfxCurrentUrl) {
+    _sfxFadeOutAndStart(url, newMode, newVol, doLoop);
+  } else {
+    _sfxStartImmediate(url, newMode, newVol, doLoop);
+  }
+}
+
+function _sfxFadeOutAndStart(url, mode, vol, doLoop) {
+  if (sfxFading) { clearInterval(sfxFading); sfxFading = null; }
+  const steps = 18;  // ~290ms
+  const startVol = sfxAudio ? sfxAudio.volume : 0;
+  let step = 0;
+  sfxFading = setInterval(() => {
+    step++;
+    if (step >= steps) {
+      clearInterval(sfxFading); sfxFading = null;
+      if (sfxAudio) { sfxAudio.pause(); sfxAudio.src = ''; }
+      if (sfxBlobUrl) { URL.revokeObjectURL(sfxBlobUrl); sfxBlobUrl = null; }
+      _sfxStartImmediate(url, mode, vol, doLoop);
+    } else if (sfxAudio) {
+      sfxAudio.volume = startVol * (1 - step / steps);
+    }
+  }, 16);
+}
+
+function _sfxStartImmediate(url, mode, vol, doLoop) {
+  sfxMode = mode;
+  sfxVolume = vol;
+  sfxCurrentUrl = url;
   if (!sfxAudio) {
     sfxAudio = new Audio();
     sfxAudio.setAttribute('playsinline', '');
   }
   sfxAudio.loop = doLoop !== false;
-  sfxAudio.volume = sfxVolume;
+  sfxAudio.volume = 0;  // 从 0 淡入
   fetch(API_BASE + url).then(r => {
     if (!r.ok) throw new Error(r.status);
     return r.blob();
   }).then(blob => {
-    if (!sfxAudio) return;  // 已被 stopSfx 清理
+    if (!sfxAudio) return;
+    if (sfxBlobUrl) URL.revokeObjectURL(sfxBlobUrl);
     sfxBlobUrl = URL.createObjectURL(blob);
     sfxAudio.src = sfxBlobUrl;
     sfxAudio.play().catch(e => console.warn('SFX play:', e));
+    _sfxFadeIn();
     console.log('[sfx] started:', sfxMode, url);
   }).catch(e => console.error('[sfx] load error:', e));
+}
+
+function _sfxFadeIn() {
+  if (!sfxAudio) return;
+  if (sfxFading) { clearInterval(sfxFading); sfxFading = null; }
+  const targetVol = playing
+    ? sfxVolume * (sfxMode === 'foreground' ? 0.55 : 0.35)
+    : sfxVolume;
+  const steps = 18;
+  let step = 0;
+  sfxFading = setInterval(() => {
+    step++;
+    if (step >= steps) {
+      sfxAudio.volume = targetVol;
+      clearInterval(sfxFading); sfxFading = null;
+    } else {
+      sfxAudio.volume = targetVol * (step / steps);
+    }
+  }, 16);
 }
 
 function stopSfx(keepElement) {
@@ -355,6 +418,7 @@ function stopSfx(keepElement) {
   }
   if (sfxBlobUrl) { URL.revokeObjectURL(sfxBlobUrl); sfxBlobUrl = null; }
   sfxMode = '';
+  sfxCurrentUrl = '';
   // foreground 模式下 voice 音量可能被降低，恢复
   audio.volume = 1.0;
 }
@@ -540,17 +604,10 @@ function sendMsg() {
   audioQ = [];
   resetTtsPipeline();
 
-  if (gapTimer) {
-    // 在轮间停顿 → 取消停顿，直接切
-    clearTimeout(gapTimer); gapTimer = null;
-    endReplay();
-  } else if (playing || replayMode) {
-    // 正在播当前这句 → 让它自然播完，播完后立刻切新 TTS（不等 gap）
-    draining = true;
-  } else {
-    playedItems = [];
-    setSub('', '');
-  }
+  // 不急着停循环 —— 等新语音 ready 再切
+  awaitingNewVoice = true;
+  transitionAfterCurrent = false;
+  draining = false;
 
   wsSend('chat:send', { message: txt, sessionId, call_mode: true });
   showThinking(true);
@@ -660,6 +717,14 @@ async function onReplyDone() {
 
   accumText = '';
   voiceEvents = [];
+
+  // 兜底：回复完了、TTS 管线也空了、确实没有新语音 → 强制停循环
+  if (awaitingNewVoice && ttsFlying === 0 && ttsQueue.length === 0 && audioQ.length === 0) {
+    awaitingNewVoice = false;
+    transitionAfterCurrent = false;
+    if (gapTimer) { clearTimeout(gapTimer); gapTimer = null; }
+    if (replayMode) endReplay();
+  }
 }
 
 /* ── 前端句子切分（移植自 gateway._split_sentences_skip_parens）── */
@@ -850,6 +915,13 @@ function startReplay() {
 function playReplayItem() {
   // draining 立刻停，不继续播 replay
   if (draining) { immediateEndReplay(); return; }
+  // 新语音在句间 ready → 1s 后切
+  if (transitionAfterCurrent) {
+    transitionAfterCurrent = false;
+    playing = false; showWave(false); duckSfx(false);
+    setTimeout(() => endReplay(), 1000);
+    return;
+  }
   if (replayIdx >= playedItems.length) {
     // 一轮结束 → 停顿后重头
     startGap(() => { replayIdx = 0; playReplayItem(); });
@@ -898,13 +970,33 @@ function enqueueAudio(url, text, subtitle) {
     item.blobUrl = URL.createObjectURL(blob);
     blobCache.push(item.blobUrl);
     item.ready = true;
-    if (!playing && !gapTimer && !replayMode) playNext();
+    if (awaitingNewVoice) {
+      // 第一个新语音 ready —— 触发循环→新语音切换
+      awaitingNewVoice = false;
+      if (replayMode) {
+        if (gapTimer) {
+          // 在 gap 停顿中 → 取消 gap，1s 后切新语音
+          clearTimeout(gapTimer); gapTimer = null;
+          playing = false; showWave(false); duckSfx(false);
+          setTimeout(() => endReplay(), 1000);
+        } else if (playing) {
+          // 正在播 replay 句子 → 播完这句后切
+          transitionAfterCurrent = true;
+        } else {
+          endReplay();
+        }
+      } else {
+        if (!playing && !gapTimer) playNext();
+      }
+    } else {
+      if (!playing && !gapTimer && !replayMode) playNext();
+    }
   }).catch(err => {
     console.error('preload error:', url, err);
     item.error = true;
-    if (!playing) playNext();
+    if (!playing && !awaitingNewVoice) playNext();
   });
-  if (!playing) playNext();
+  if (!playing && !awaitingNewVoice) playNext();
 }
 
 function playNext() {
@@ -948,6 +1040,13 @@ function playNext() {
 }
 audio.addEventListener('ended', () => {
   if (replayMode) {
+    // 新语音已 ready → 播完当前句，1s 后切新语音
+    if (transitionAfterCurrent) {
+      transitionAfterCurrent = false;
+      playing = false; showWave(false); duckSfx(false);
+      setTimeout(() => endReplay(), 1000);
+      return;
+    }
     replayIdx++;
     // draining 立刻停；否则继续下一条
     if (draining) { immediateEndReplay(); }
@@ -986,6 +1085,8 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 function hangup() {
   callActive = false;
   draining = false;
+  awaitingNewVoice = false;
+  transitionAfterCurrent = false;
   replayMode = false;
   replayIdx = 0;
   playedItems = [];
