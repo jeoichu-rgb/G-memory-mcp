@@ -43,6 +43,27 @@ session 互通、历史互通、所有后台系统共享。不需要额外的 Cl
     Session：共享 pebbling_session_id，任一前端发消息都更新绑定，自动互通
 
 
+## 消息合并（动态 debounce + 🐑 加速）
+
+Jeoi 微信连发多条消息时自动攒起来，等她说完再一起送进 Claude：
+
+    动态等待时间：
+    - buffer 里只有 1 条 → 等 20 秒
+    - buffer 里 ≥ 2 条 → 等 25 秒（她在连发，给更多时间）
+    - 每条新消息重置计时器
+    - 兜底上限 90 秒（不会永远等）
+
+    可选加速 flush：
+    - 发 🐑（单独一条，或消息末尾加 🐑）→ 立刻合并发送
+    - 🐑🐑（两个及以上）→ 不触发，当正常消息处理
+    - 🐑 本身被剥掉，不送进 Claude
+
+    实际体感：
+    - 单条消息 → 20秒后 Erik 收到
+    - 连发多条 → 最后一条发完 25 秒后 Erik 一起收到
+    - 急的时候 → 发完后补一个 🐑，立刻送出
+
+
 ## 微信端的回复处理
 
 CC CLI 的原始回复包含 thinking（CoT）、tool_use 块、markdown 格式、内部标记
@@ -412,11 +433,17 @@ class WeChatGateway:
         self._seen_msg_ids: set[str] = set()
         # cursor 变化时自动存盘，防止重启后重放历史消息
         self.client._on_cursor_update = self._save_token
-        # ── 消息防抖合并 ──
+        # ── 消息防抖合并（动态 debounce + 🐑 加速 flush） ──
         # 连续快速发的多条消息攒起来，等停下来再一起送进 Claude
         self._msg_buffer: list[str] = []
         self._debounce_task: asyncio.Task | None = None
-        self._debounce_seconds: float = 6.0
+        # 动态 debounce：单条短等，多条长等
+        self._debounce_single: float = 20.0   # buffer 里只有1条时的等待
+        self._debounce_multi: float = 25.0    # buffer 里≥2条时的等待
+        self._debounce_max: float = 90.0      # 从首条消息算起的兜底上限
+        self._buffer_start_ts: float = 0.0    # buffer 首条消息的时间戳（monotonic）
+        # 可选加速 flush emoji（🐑 单个 = 立刻合并发送，🐑🐑 = 正常消息）
+        self._flush_emoji: str = "🐑"
 
     def set_message_handler(self, handler):
         """
@@ -578,13 +605,40 @@ class WeChatGateway:
         log.info(f"WeChat msg: {text[:80]}")
 
         # ── 防抖合并：攒消息，等停下来再一起送 ──
-        self._msg_buffer.append(text)
-        # 第一条进来时发 typing，让 Jeoi 知道在收
+
+        # 🐑 加速 flush：单独一个或消息末尾的 🐑（非重复）立刻合并发送
+        stripped = text.strip()
+        is_flush = False
+        if stripped == self._flush_emoji:
+            is_flush = True
+            text = ""
+        elif (stripped.endswith(self._flush_emoji)
+              and not stripped.endswith(self._flush_emoji * 2)):
+            is_flush = True
+            text = stripped[:-len(self._flush_emoji)].strip()
+
+        if text:
+            self._msg_buffer.append(text)
+
+        if is_flush and self._msg_buffer:
+            if self._debounce_task:
+                self._debounce_task.cancel()
+                self._debounce_task = None
+            log.info(f"WeChat flush signal: 🐑 → flushing {len(self._msg_buffer)} msgs")
+            await self._do_flush(user_id)
+            return
+
+        if not self._msg_buffer:
+            return
+
+        # 第一条进来时发 typing + 记录起始时间
         if len(self._msg_buffer) == 1:
+            self._buffer_start_ts = time_mod.monotonic()
             try:
                 await self.client.send_typing(user_id, status=1)
             except Exception:
                 pass
+
         if self._debounce_task:
             self._debounce_task.cancel()
         self._debounce_task = asyncio.create_task(
@@ -592,12 +646,30 @@ class WeChatGateway:
         )
 
     async def _flush_after_debounce(self, user_id: str):
-        """防抖等待结束，合并缓冲区消息一次性送进 Claude。"""
-        await asyncio.sleep(self._debounce_seconds)
+        """动态防抖：单条20s，多条25s，兜底90s上限。"""
+        # 根据 buffer 数量选择等待时间
+        if len(self._msg_buffer) <= 1:
+            wait = self._debounce_single
+        else:
+            wait = self._debounce_multi
 
+        # 兜底：从首条消息算起不超过 _debounce_max
+        if self._buffer_start_ts:
+            elapsed = time_mod.monotonic() - self._buffer_start_ts
+            remaining = max(1.0, self._debounce_max - elapsed)
+            wait = min(wait, remaining)
+
+        log.info(f"WeChat debounce: waiting {wait:.1f}s "
+                 f"(buffer={len(self._msg_buffer)})")
+        await asyncio.sleep(wait)
+        await self._do_flush(user_id)
+
+    async def _do_flush(self, user_id: str):
+        """合并缓冲区消息一次性送进 Claude。"""
         msgs = list(self._msg_buffer)
         self._msg_buffer.clear()
         self._debounce_task = None
+        self._buffer_start_ts = 0.0
 
         if not msgs:
             return
