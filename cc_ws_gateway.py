@@ -1460,7 +1460,8 @@ def _oneshot_stub_text(prompt_text: str) -> str:
     return f"【{tag}】（你自己的后台自主活动轮，非Jeoi消息）"
 # Single noise lines injected in front of real messages.
 _NOISE_LINE_PREFIXES = ("[stickers:", "[snap]", "[call-ended]", "[context-forge]")
-_TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\+8( #\d+)?\]")
+_DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_TIME_TAG_RE = re.compile(r"\[\d{4}-\d{2}-\d{2}(?: [A-Z][a-z]{2})? \d{2}:\d{2} UTC\+8(?: #\d+)?\]")
 _AUTO_INJECT_RE = re.compile(r"^═+ 自动注入[^\n]*\n.*?\n═+\n?", re.S | re.M)
 
 
@@ -1486,7 +1487,13 @@ def _strip_gateway_noise(text: str) -> str:
             while i < len(lines) and (not lines[i].strip() or lines[i].startswith("  ")):
                 i += 1
             continue
-        if _TIME_TAG_RE.fullmatch(s) or any(s.startswith(p) for p in _NOISE_LINE_PREFIXES):
+        # Time tags: keep the timestamp for forge continuity, strip house number
+        m = _TIME_TAG_RE.fullmatch(s)
+        if m:
+            out.append(re.sub(r'\s*#\d+', '', s))
+            i += 1
+            continue
+        if any(s.startswith(p) for p in _NOISE_LINE_PREFIXES):
             i += 1
             continue
         out.append(lines[i])
@@ -4066,10 +4073,13 @@ async def websocket_endpoint(ws: WebSocket):
                 if content_blocks:
                     snap_paths = save_snap(content_blocks)
 
-                # Auto-inject current time (UTC+8) + per-session house number
-                # (#N = position in THIS gateway session's history; forged CC
-                # context replays older sessions but never occupies a number)
-                now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                # Auto-inject current time (UTC+8) + day-of-week + per-session
+                # house number (#N = position in THIS gateway session's history;
+                # forged CC context replays older sessions but never occupies a
+                # number).  Day abbreviation uses a fixed English lookup so it
+                # doesn't depend on the server's locale.
+                _now = datetime.now(SGT)
+                now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
                 time_tag = f"[{now_str} UTC+8 #{user_msg_idx + 1}]"
                 cli_message = time_tag + "\n" + message
 
@@ -4621,7 +4631,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "binaural": call_session._call_binaural,
                         "spatial_tag": call_session._call_spatial_tag,
                     })
-                    now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                    _now = datetime.now(SGT)
+                    now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
                     _accept_idx = append_message(call_session.id, "user", "（接听来电）", source="voice_call")
                     cli_message = f"[voice-call] Jeoi接听了你的来电。\n\n[{now_str} UTC+8 #{_accept_idx + 1}]\n（Jeoi接听了来电）"
                     await run_claude(cli_message, call_session, ws)
@@ -4632,7 +4643,8 @@ async def websocket_endpoint(ws: WebSocket):
                 reason = data.get("reason", "rejected")
                 if call_session:
                     log.info(f"Incoming call {reason}: session={call_sid}")
-                    now_str = datetime.now(SGT).strftime("%Y-%m-%d %H:%M")
+                    _now = datetime.now(SGT)
+                    now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
                     label = "超时未接听" if reason == "timeout" else "拒绝了来电"
                     notify = f"[{now_str} UTC+8]\n[system] Jeoi{label}。"
                     text, _, _ = await run_cc_oneshot(notify, call_session, max_turns=1)
