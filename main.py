@@ -1735,4 +1735,5 @@ async def push_status():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, proxy_headers=True, forwarded_allow_ips="*")
+    _port = int(os.environ.get("MCP_PORT", "8787"))
+    uvicorn.run("main:app", host="0.0.0.0", port=_port, proxy_headers=True, forwarded_allow_ips="*")
