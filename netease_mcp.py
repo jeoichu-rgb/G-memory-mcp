@@ -1007,11 +1007,17 @@ async def _lt_accept_latest_from_pm() -> tuple[bool, str]:
         data={"userId": str(acceptor_id), "limit": "10", "csrf_token": csrf},
     )
     import urllib.parse
-    for m in res.get("msgs", []):
+    msgs = res.get("msgs", [])
+    debug_lines: list[str] = [f"ACCEPTOR_ID={acceptor_id}, 私信数={len(msgs)}"]
+    for m in msgs:
         try:
             msg_obj = json.loads(m.get("msg", "{}"))
-            if msg_obj.get("type") == 23:
-                native_url = (msg_obj.get("generalMsg") or {}).get("nativeUrl", "")
+            msg_type = msg_obj.get("type")
+            debug_lines.append(f"  msg type={msg_type}, keys={list(msg_obj.keys())[:8]}")
+            if msg_type == 23:
+                general_msg = msg_obj.get("generalMsg") or {}
+                native_url = general_msg.get("nativeUrl", "")
+                debug_lines.append(f"    nativeUrl={native_url[:200]}")
                 if "roomId=" in native_url and "inviterId=" in native_url:
                     parsed = urllib.parse.urlparse(native_url)
                     qs = urllib.parse.parse_qs(parsed.query)
@@ -1028,9 +1034,13 @@ async def _lt_accept_latest_from_pm() -> tuple[bool, str]:
                         acc = await _lt_accept_invitation(rid, iid)
                         if acc.get("code") == 200:
                             return True, f"已接受房间 {rid} 的邀请（邀请人: {iid}）"
-        except Exception:
-            pass
-    return False, "近期私信中未找到有效的一起听邀请卡片"
+                        else:
+                            debug_lines.append(f"    accept失败: {acc}")
+                else:
+                    debug_lines.append("    nativeUrl中没有roomId=或inviterId=")
+        except Exception as e:
+            debug_lines.append(f"  解析异常: {e}")
+    return False, "近期私信中未找到有效的一起听邀请卡片\n调试: " + "\n".join(debug_lines)
 
 
 # ── 一起听：歌词定位 ───────────────────────────────────────
