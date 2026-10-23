@@ -1007,40 +1007,41 @@ async def _lt_accept_latest_from_pm() -> tuple[bool, str]:
         data={"userId": str(acceptor_id), "limit": "10", "csrf_token": csrf},
     )
     import urllib.parse
-    msgs = res.get("msgs", [])
-    debug_lines: list[str] = [f"ACCEPTOR_ID={acceptor_id}, 私信数={len(msgs)}"]
-    for m in msgs:
+    for m in res.get("msgs", []):
         try:
             msg_obj = json.loads(m.get("msg", "{}"))
-            msg_type = msg_obj.get("type")
-            debug_lines.append(f"  msg type={msg_type}, keys={list(msg_obj.keys())[:8]}")
-            if msg_type == 23:
-                general_msg = msg_obj.get("generalMsg") or {}
-                native_url = general_msg.get("nativeUrl", "")
-                debug_lines.append(f"    nativeUrl={native_url[:200]}")
-                if "roomId=" in native_url and "inviterId=" in native_url:
-                    parsed = urllib.parse.urlparse(native_url)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    if "url1" in qs:
-                        sub_qs = urllib.parse.parse_qs(
-                            urllib.parse.urlparse(qs["url1"][0]).query
-                        )
-                        rid = sub_qs.get("roomId", [""])[0]
-                        iid = sub_qs.get("inviterId", [""])[0]
-                    else:
-                        rid = qs.get("roomId", [""])[0]
-                        iid = qs.get("inviterId", [""])[0]
-                    if rid and iid:
-                        acc = await _lt_accept_invitation(rid, iid)
-                        if acc.get("code") == 200:
-                            return True, f"已接受房间 {rid} 的邀请（邀请人: {iid}）"
-                        else:
-                            debug_lines.append(f"    accept失败: {acc}")
+            if msg_obj.get("type") == 23:
+                native_url = (msg_obj.get("generalMsg") or {}).get("nativeUrl", "")
+                # 先解析外层 URL，取出 url1 参数并解码
+                decoded_url = urllib.parse.unquote(native_url)
+                rid, iid = "", ""
+                parsed = urllib.parse.urlparse(native_url)
+                qs = urllib.parse.parse_qs(parsed.query)
+                if "url1" in qs:
+                    # url1 里嵌套了真正的 roomId 和 inviterId
+                    inner_url = qs["url1"][0]
+                    inner_parsed = urllib.parse.urlparse(inner_url)
+                    inner_qs = urllib.parse.parse_qs(inner_parsed.query)
+                    rid = inner_qs.get("roomId", [""])[0]
+                    iid = inner_qs.get("inviterId", [""])[0]
                 else:
-                    debug_lines.append("    nativeUrl中没有roomId=或inviterId=")
-        except Exception as e:
-            debug_lines.append(f"  解析异常: {e}")
-    return False, "近期私信中未找到有效的一起听邀请卡片\n调试: " + "\n".join(debug_lines)
+                    # fallback：直接从外层或解码后的 URL 提取
+                    if "roomId=" in decoded_url and "inviterId=" in decoded_url:
+                        dec_parsed = urllib.parse.urlparse(decoded_url)
+                        dec_qs = urllib.parse.parse_qs(dec_parsed.query)
+                        rid = dec_qs.get("roomId", [""])[0]
+                        iid = dec_qs.get("inviterId", [""])[0]
+                    elif "roomId=" in native_url:
+                        qs_direct = urllib.parse.parse_qs(parsed.query)
+                        rid = qs_direct.get("roomId", [""])[0]
+                        iid = qs_direct.get("inviterId", [""])[0]
+                if rid and iid:
+                    acc = await _lt_accept_invitation(rid, iid)
+                    if acc.get("code") == 200:
+                        return True, f"已接受房间 {rid} 的邀请（邀请人: {iid}）"
+        except Exception:
+            pass
+    return False, "近期私信中未找到有效的一起听邀请卡片"
 
 
 # ── 一起听：歌词定位 ───────────────────────────────────────
