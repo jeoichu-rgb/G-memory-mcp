@@ -13,6 +13,8 @@ import os
 import json
 import re
 import time
+import asyncio
+import bisect
 import httpx
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -869,6 +871,977 @@ async def batch_song_urls(song_ids: str, br: int = DEFAULT_BR) -> str:
         return json.dumps(urls, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+
+# ══════════════════════════════════════════════════════════════
+# 一起听 · Listen Together
+# 基于 BB0813/netease-listen-together-mcp (MIT License) 的
+# HTTP 信令逻辑，适配为 async httpx + FastMCP 风格。
+# ══════════════════════════════════════════════════════════════
+
+# ── 一起听：内部状态 ────────────────────────────────────────
+
+# Jeoi 的网易云 UID（邀请/私信用）
+ACCEPTOR_ID = os.getenv("NETEASE_LISTEN_TOGETHER_ACCEPTOR_ID", "")
+
+# 心跳 / 状态监听 task handle
+_lt_heartbeat_task: asyncio.Task | None = None
+_lt_last_status: dict = {}            # 上一次轮询的播放状态快照
+_lt_on_event: list = []               # 事件回调列表 (gateway 注册)
+
+
+# ── 一起听：底层 HTTP API ───────────────────────────────────
+
+async def _lt_post(path: str, extra: dict | None = None) -> dict:
+    """一起听专用 POST，自动带 csrf_token。"""
+    csrf = _csrf()
+    url = f"{BASE_URL}{path}?csrf_token={csrf}"
+    data = {"csrf_token": csrf}
+    if extra:
+        data.update(extra)
+    return await _netease_post(url.replace(BASE_URL, ""), data)
+
+
+async def _lt_get_status() -> dict:
+    """获取当前一起听房间状态。"""
+    csrf = _csrf()
+    raw = await _netease_post(
+        "/api/listen/together/status/get",
+        data={"csrf_token": csrf},
+    )
+    data = raw.get("data") or {}
+    room_info = data.get("roomInfo") or {}
+    return {
+        "inRoom": bool(data.get("inRoom")),
+        "roomId": room_info.get("roomId"),
+        "creatorId": room_info.get("creatorId"),
+        "status": data.get("status"),
+        "roomUsers": room_info.get("roomUsers") or [],
+        "chatRoomId": room_info.get("chatRoomId"),
+        "data": data,
+    }
+
+
+async def _lt_get_room_state(room_id: str) -> dict:
+    """获取房间播放列表+当前播放指令。"""
+    csrf = _csrf()
+    res = await _netease_post(
+        "/api/listen/together/sync/playlist/get",
+        data={"roomId": str(room_id), "csrf_token": csrf},
+    )
+    if res.get("code") != 200:
+        raise RuntimeError(f"sync/playlist/get failed: {res}")
+    return res.get("data") or {}
+
+
+async def _lt_report_play_command(room_id: str, command: dict) -> dict:
+    """上报播放指令（切歌/暂停/继续/进度）。"""
+    csrf = _csrf()
+    res = await _netease_post(
+        "/api/listen/together/play/command/report",
+        data={
+            "roomId": str(room_id),
+            "commandInfo": json.dumps(command, ensure_ascii=False, separators=(",", ":")),
+            "csrf_token": csrf,
+        },
+    )
+    if res.get("code") != 200 or not (res.get("data") or {}).get("result"):
+        raise RuntimeError(f"play/command/report failed: {res}")
+    return res
+
+
+async def _lt_report_list_command(room_id: str, command: dict) -> dict:
+    """上报列表指令（加歌）。"""
+    csrf = _csrf()
+    res = await _netease_post(
+        "/api/listen/together/sync/list/command/report",
+        data={
+            "roomId": str(room_id),
+            "commandInfo": json.dumps(command, ensure_ascii=False, separators=(",", ":")),
+            "csrf_token": csrf,
+        },
+    )
+    if res.get("code") != 200 or not (res.get("data") or {}).get("result"):
+        raise RuntimeError(f"sync/list/command/report failed: {res}")
+    return res
+
+
+async def _lt_send_chatroom_msg(chatroom_id: str, room_id: str, content: str) -> bool:
+    """在一起听聊天室发消息。"""
+    csrf = _csrf()
+    res = await _netease_post(
+        f"/api/middle/im/chatroom/send?csrf_token={csrf}",
+        data={
+            "chatroomId": str(chatroom_id),
+            "msgType": "0",
+            "clientExt": json.dumps({"bizType": "listenTogether", "roomId": str(room_id)}),
+            "msgBody": json.dumps({"msg": content, "msgType": 0}),
+            "csrf_token": csrf,
+        },
+    )
+    return bool(res.get("code") == 200 and (res.get("data") or {}).get("result"))
+
+
+async def _lt_accept_invitation(room_id: str, inviter_id: str) -> dict:
+    """接受指定房间的一起听邀请。"""
+    csrf = _csrf()
+    res = await _netease_post(
+        "/api/listen/together/play/invitation/accept",
+        data={
+            "roomId": str(room_id),
+            "inviterId": str(inviter_id),
+            "csrf_token": csrf,
+        },
+    )
+    return res
+
+
+async def _lt_accept_latest_from_pm() -> tuple[bool, str]:
+    """从私信历史里找最新的一起听邀请卡片并自动接受。"""
+    acceptor_id = ACCEPTOR_ID
+    if not acceptor_id:
+        return False, "NETEASE_LISTEN_TOGETHER_ACCEPTOR_ID 未配置"
+    csrf = _csrf()
+    res = await _netease_post(
+        "/api/msg/private/history",
+        data={"userId": str(acceptor_id), "limit": "10", "csrf_token": csrf},
+    )
+    import urllib.parse
+    for m in res.get("msgs", []):
+        try:
+            msg_obj = json.loads(m.get("msg", "{}"))
+            if msg_obj.get("type") == 23:
+                native_url = (msg_obj.get("generalMsg") or {}).get("nativeUrl", "")
+                if "roomId=" in native_url and "inviterId=" in native_url:
+                    parsed = urllib.parse.urlparse(native_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if "url1" in qs:
+                        sub_qs = urllib.parse.parse_qs(
+                            urllib.parse.urlparse(qs["url1"][0]).query
+                        )
+                        rid = sub_qs.get("roomId", [""])[0]
+                        iid = sub_qs.get("inviterId", [""])[0]
+                    else:
+                        rid = qs.get("roomId", [""])[0]
+                        iid = qs.get("inviterId", [""])[0]
+                    if rid and iid:
+                        acc = await _lt_accept_invitation(rid, iid)
+                        if acc.get("code") == 200:
+                            return True, f"已接受房间 {rid} 的邀请（邀请人: {iid}）"
+        except Exception:
+            pass
+    return False, "近期私信中未找到有效的一起听邀请卡片"
+
+
+# ── 一起听：歌词定位 ───────────────────────────────────────
+
+_lyric_cache: dict[int, list] = {}
+
+
+async def _lt_get_lyric_timeline(song_id: int) -> list[tuple[float, str]]:
+    """获取歌词时间轴 [(seconds, text), ...]，带缓存。"""
+    if song_id in _lyric_cache:
+        return _lyric_cache[song_id]
+    try:
+        result = await _netease_get(
+            "/api/song/lyric",
+            params={"id": song_id, "lv": 1, "tv": 1},
+        )
+        lrc = result.get("lrc", {}).get("lyric", "")
+        trans = result.get("tlyric", {}).get("lyric", "")
+        if not lrc:
+            return []
+        orig_lines = _parse_lrc(lrc)
+        trans_map = {}
+        if trans:
+            for tl in _parse_lrc(trans):
+                trans_map[tl["time_ms"]] = tl["text"]
+        timeline = []
+        for ol in orig_lines:
+            t_sec = ol["time_ms"] / 1000.0
+            text = ol["text"]
+            tr = trans_map.get(ol["time_ms"])
+            if tr:
+                text += f"「{tr}」"
+            timeline.append((t_sec, text))
+        _lyric_cache[song_id] = timeline
+        # 限制缓存大小
+        if len(_lyric_cache) > 200:
+            oldest = next(iter(_lyric_cache))
+            del _lyric_cache[oldest]
+        return timeline
+    except Exception:
+        return []
+
+
+# ── 一起听：MCP 工具 ───────────────────────────────────────
+
+@netease_mcp.tool()
+async def listen_together_status() -> str:
+    """
+    查看当前一起听状态：是否在房间、房间 ID、参与者。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"]:
+            return (
+                "🎧 当前未在一起听房间中。\n"
+                "让 Jeoi 在网易云 APP 发起一起听并邀请我，"
+                "然后调用 listen_together_accept 加入。"
+            )
+        users = st.get("roomUsers") or []
+        user_lines = []
+        for u in users:
+            nick = u.get("nickname", "")
+            uid = u.get("userId", "")
+            user_lines.append(f"  · {nick} (UID: {uid})")
+        # 拿当前播放
+        try:
+            state = await _lt_get_room_state(st["roomId"])
+            play_cmd = state.get("playCommand") or {}
+            song_id = play_cmd.get("targetSongId")
+            progress = int(play_cmd.get("progress") or 0)
+            play_status = play_cmd.get("playStatus", "UNKNOWN")
+            prog_str = f"{progress // 60000}:{(progress % 60000) // 1000:02d}"
+            song_info = f"歌曲ID: {song_id} | 进度: {prog_str} | {play_status}"
+        except Exception:
+            song_info = "（无法获取播放状态）"
+        return (
+            f"🎧 一起听 · 房间 {st['roomId']}\n"
+            f"参与者:\n" + "\n".join(user_lines) + "\n"
+            f"当前播放: {song_info}"
+        )
+    except Exception as e:
+        return f"获取状态失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_accept(room_id: str = "", inviter_id: str = "") -> str:
+    """
+    接受一起听邀请并加入房间。
+    room_id + inviter_id: 指定房间和邀请人（从邀请链接提取）。
+    都留空则自动从 Jeoi 的最新私信中找邀请卡片。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        if room_id and inviter_id:
+            res = await _lt_accept_invitation(room_id, inviter_id)
+            if res.get("code") == 200:
+                return f"✅ 已加入一起听房间 {room_id}！"
+            return f"加入失败：{res.get('message', res)}"
+        ok, msg = await _lt_accept_latest_from_pm()
+        if ok:
+            return f"✅ {msg}"
+        return f"❌ {msg}"
+    except Exception as e:
+        return f"接受邀请失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_leave() -> str:
+    """
+    退出当前一起听房间。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        csrf = _csrf()
+        res = await _netease_post(
+            "/api/listen/together/end/v2",
+            data={
+                "roomId": st["roomId"],
+                "shareInfo": "{}",
+                "csrf_token": csrf,
+            },
+        )
+        if res.get("code") == 200:
+            return f"✅ 已退出一起听房间 {st['roomId']}"
+        return f"退出失败：{res}"
+    except Exception as e:
+        return f"退出房间失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_context() -> str:
+    """
+    获取当前一起听的播放上下文：
+    歌曲信息 + 当前歌词位置 + 附近 6 句歌词。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        state = await _lt_get_room_state(st["roomId"])
+        play_cmd = state.get("playCommand") or {}
+        song_id = play_cmd.get("targetSongId")
+        if not song_id:
+            return "房间内暂无播放。"
+        # 歌曲详情
+        detail = await _netease_post(
+            "/api/v3/song/detail",
+            data={"c": json.dumps([{"id": int(song_id)}])},
+        )
+        tracks = detail.get("songs") or []
+        title = artist = album = ""
+        duration_ms = 0
+        if tracks:
+            t = tracks[0]
+            title = t.get("name", "")
+            artist = " / ".join(a.get("name", "") for a in t.get("ar", []))
+            album = t.get("al", {}).get("name", "")
+            duration_ms = t.get("dt", 0)
+        progress_ms = int(play_cmd.get("progress") or 0)
+        play_status = play_cmd.get("playStatus", "UNKNOWN")
+        elapsed = progress_ms / 1000.0
+        # 歌词定位
+        timeline = await _lt_get_lyric_timeline(int(song_id))
+        lyrics_block = ""
+        if timeline:
+            cur_idx = max(0, bisect.bisect_right(
+                [item[0] for item in timeline], elapsed
+            ) - 1)
+            lines = []
+            for i in range(max(0, cur_idx - 1), min(len(timeline), cur_idx + 5)):
+                sec, text = timeline[i]
+                marker = " ◀" if i == cur_idx else ""
+                mm = int(sec) // 60
+                ss = int(sec) % 60
+                lines.append(f"  [{mm:02d}:{ss:02d}] {text}{marker}")
+            lyrics_block = "\n".join(lines)
+        prog = f"{progress_ms // 60000}:{(progress_ms % 60000) // 1000:02d}"
+        dur = f"{duration_ms // 60000}:{(duration_ms % 60000) // 1000:02d}"
+        status_emoji = "▶️" if play_status == "PLAY" else "⏸️"
+        return (
+            f"{status_emoji} {title} — {artist}\n"
+            f"   专辑: {album}\n"
+            f"   进度: {prog} / {dur} | ID: {song_id}\n"
+            + (f"\n歌词:\n{lyrics_block}" if lyrics_block else "\n（无歌词）")
+        )
+    except Exception as e:
+        return f"获取播放上下文失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_control(command: str) -> str:
+    """
+    一起听播放控制。
+    command: play / pause / next / previous
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    cmd = command.strip().upper()
+    if cmd not in ("PLAY", "RESUME", "PAUSE", "NEXT", "PREVIOUS", "PREV"):
+        return f"不支持的指令: {command}。可用: play / pause / next / previous"
+    if cmd == "RESUME":
+        cmd = "PLAY"
+    if cmd == "PREV":
+        cmd = "PREVIOUS"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        room_id = st["roomId"]
+        state = await _lt_get_room_state(room_id)
+        play_cmd = state.get("playCommand") or {}
+        playlist = state.get("playlist") or {}
+        former = str(play_cmd.get("targetSongId") or "")
+        seq = int(play_cmd.get("clientSeq", 0))
+        display_items = playlist.get("displayList", {}).get("result", [])
+        display_list = [
+            str(item.get("songId") if isinstance(item, dict) else item)
+            for item in display_items
+        ]
+        current_index = display_list.index(former) if former in display_list else 0
+        if cmd == "PLAY":
+            await _lt_report_play_command(room_id, {
+                "commandType": "PLAY",
+                "progress": int(play_cmd.get("progress") or 0),
+                "playStatus": "PLAY",
+                "formerSongId": former,
+                "targetSongId": former,
+                "clientSeq": seq + 1,
+            })
+            return "▶️ 已继续播放"
+        elif cmd == "PAUSE":
+            await _lt_report_play_command(room_id, {
+                "commandType": "PAUSE",
+                "progress": int(play_cmd.get("progress") or 0),
+                "playStatus": "PAUSE",
+                "formerSongId": former,
+                "targetSongId": former,
+                "clientSeq": seq + 1,
+            })
+            return "⏸️ 已暂停"
+        elif cmd == "NEXT":
+            if not display_list:
+                return "播放列表为空。"
+            target = display_list[(current_index + 1) % len(display_list)]
+            await _lt_report_play_command(room_id, {
+                "commandType": "GOTO",
+                "progress": 0,
+                "playStatus": "PLAY",
+                "formerSongId": former,
+                "targetSongId": target,
+                "clientSeq": seq + 1,
+            })
+            return f"⏭️ 下一首 (ID: {target})"
+        elif cmd == "PREVIOUS":
+            if not display_list:
+                return "播放列表为空。"
+            target = display_list[(current_index - 1) % len(display_list)]
+            await _lt_report_play_command(room_id, {
+                "commandType": "GOTO",
+                "progress": 0,
+                "playStatus": "PLAY",
+                "formerSongId": former,
+                "targetSongId": target,
+                "clientSeq": seq + 1,
+            })
+            return f"⏮️ 上一首 (ID: {target})"
+        return f"指令 {cmd} 已发送"
+    except Exception as e:
+        return f"播放控制失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_play(query: str = "", song_id: int = 0) -> str:
+    """
+    在一起听房间里切歌。
+    query: 搜索关键词（歌名/歌手）
+    song_id: 直接指定歌曲 ID（优先）
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        # 确认在房间
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            # 尝试自动接受邀请
+            ok, msg = await _lt_accept_latest_from_pm()
+            if ok:
+                await asyncio.sleep(1)
+                st = await _lt_get_status()
+            if not st["inRoom"] or not st["roomId"]:
+                return "当前不在一起听房间中。请先让 Jeoi 邀请我。"
+        room_id = st["roomId"]
+        # 确定歌曲
+        if not song_id:
+            if not query.strip():
+                return "请提供歌名或歌曲 ID。"
+            search_res = await _netease_get(
+                "/api/search/get",
+                params={"s": query, "type": 1, "limit": 5, "offset": 0},
+            )
+            songs = search_res.get("result", {}).get("songs", [])
+            if not songs:
+                return f"搜不到「{query}」"
+            song_id = songs[0]["id"]
+        # 获取房间播放状态
+        state = await _lt_get_room_state(room_id)
+        play_cmd = state.get("playCommand") or {}
+        playlist = state.get("playlist") or {}
+        former = str(play_cmd.get("targetSongId") or "")
+        seq = int(play_cmd.get("clientSeq", 0))
+        display_items = playlist.get("displayList", {}).get("result", [])
+        display_list = [
+            str(item.get("songId") if isinstance(item, dict) else item)
+            for item in display_items
+        ]
+        current_index = display_list.index(former) if former in display_list else 0
+        target = str(song_id)
+        # 如果不在列表里先加歌
+        if target not in display_list:
+            my_uid = _get_uid()
+            versions = [dict(v) for v in playlist.get("version", [])]
+            play_mode = playlist.get("playMode", "ORDER_LOOP")
+            found = False
+            for v in versions:
+                if str(v.get("userId")) == str(my_uid):
+                    v["version"] = int(v.get("version", 0)) + 1
+                    found = True
+                    break
+            if not found and my_uid:
+                versions.append({"userId": int(my_uid), "version": 1})
+            try:
+                await _lt_report_list_command(room_id, {
+                    "commandType": "ADD",
+                    "version": versions,
+                    "playMode": play_mode,
+                    "anchorSongId": former,
+                    "anchorPosition": current_index,
+                    "randomList": [target],
+                    "displayList": [target],
+                })
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+        # 切歌
+        await _lt_report_play_command(room_id, {
+            "commandType": "GOTO",
+            "progress": 0,
+            "playStatus": "PLAY",
+            "formerSongId": former,
+            "targetSongId": target,
+            "clientSeq": seq + 1,
+        })
+        # 获取歌曲名
+        detail = await _netease_post(
+            "/api/v3/song/detail",
+            data={"c": json.dumps([{"id": int(song_id)}])},
+        )
+        tracks = detail.get("songs") or []
+        if tracks:
+            t = tracks[0]
+            name = t.get("name", "")
+            ar = " / ".join(a.get("name", "") for a in t.get("ar", []))
+            return f"🎵 已在一起听房间切歌：{name} — {ar}"
+        return f"🎵 已切歌到 ID: {song_id}"
+    except Exception as e:
+        return f"切歌失败：{e}"
+
+
+@netease_mcp.tool()
+async def room_send_message(content: str) -> str:
+    """
+    在一起听房间内发消息（显示在网易云 APP 一起听聊天抽屉）。
+    content: 消息内容
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    if not content.strip():
+        return "消息不能为空。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        chatroom_id = st.get("chatRoomId")
+        if not chatroom_id:
+            return "无法获取聊天室 ID。"
+        ok = await _lt_send_chatroom_msg(chatroom_id, st["roomId"], content)
+        if ok:
+            return f"💬 已发送到一起听房间: {content}"
+        return "发送失败。"
+    except Exception as e:
+        return f"发送消息失败：{e}"
+
+
+@netease_mcp.tool()
+async def room_get_messages(since_id: str = "", limit: int = 20) -> str:
+    """
+    读取一起听房间的聊天记录（通过私信通道的增量顺读）。
+    since_id: 上次最后一条消息的 ID，留空读最近的。
+    limit: 返回数量，默认 20。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        # 确定对方 UID
+        partner_id = ""
+        my_uid = _get_uid()
+        if st["inRoom"]:
+            for u in st.get("roomUsers") or []:
+                if str(u.get("userId")) != str(my_uid):
+                    partner_id = str(u.get("userId"))
+                    break
+        if not partner_id:
+            partner_id = ACCEPTOR_ID
+        if not partner_id:
+            return "无法确定对话对象。"
+        # 读私信历史
+        import datetime
+        csrf = _csrf()
+        fetch_limit = max(limit, 30) if since_id else limit
+        res = await _netease_post(
+            "/api/msg/private/history",
+            data={
+                "userId": str(partner_id),
+                "limit": str(fetch_limit),
+                "csrf_token": csrf,
+            },
+        )
+        raw_msgs = res.get("msgs", [])
+        parsed = []
+        for m in raw_msgs:
+            m_id = str(m.get("id", ""))
+            m_time = m.get("time", 0)
+            from_user = m.get("fromUser", {})
+            from_id = from_user.get("userId")
+            from_nick = from_user.get("nickname", "")
+            is_me = my_uid and (str(from_id) == str(my_uid))
+            raw_text = m.get("msg", "")
+            content = ""
+            msg_type = "text"
+            try:
+                obj = json.loads(raw_text)
+                if isinstance(obj, dict):
+                    if obj.get("type") == 23:
+                        msg_type = "listen_together_card"
+                        content = (
+                            (obj.get("generalMsg") or {}).get("inboxBriefContent")
+                            or obj.get("msg")
+                            or "[一起听邀请]"
+                        )
+                    else:
+                        content = obj.get("msg") or str(obj)
+                else:
+                    content = str(obj)
+            except Exception:
+                content = raw_text
+            time_str = (
+                datetime.datetime.fromtimestamp(m_time / 1000.0).strftime("%H:%M:%S")
+                if m_time else ""
+            )
+            parsed.append({
+                "id": m_id,
+                "time": time_str,
+                "sender": "Erik" if is_me else "Jeoi",
+                "content": content,
+                "type": msg_type,
+            })
+        parsed.sort(key=lambda x: int(x["id"]) if x["id"].isdigit() else 0)
+        # 增量过滤
+        if since_id and since_id.strip().isdigit():
+            since_val = int(since_id.strip())
+            parsed = [x for x in parsed if x["id"].isdigit() and int(x["id"]) > since_val]
+        if len(parsed) > limit:
+            parsed = parsed[-limit:]
+        # 格式化
+        if not parsed:
+            return "没有新消息。"
+        last_id = parsed[-1]["id"]
+        lines = []
+        for p in parsed:
+            sender = p["sender"]
+            lines.append(f"[{p['time']}] {sender}: {p['content']}")
+        return (
+            "\n".join(lines) + f"\n\n---\nlastMessageId: {last_id}"
+        )
+    except Exception as e:
+        return f"读取消息失败：{e}"
+
+
+# ── 一起听：后台状态监听（暂停/换歌推送） ─────────────────
+
+async def _lt_poll_loop(interval: float = 5.0):
+    """
+    后台轮询一起听房间状态。
+    检测到暂停/换歌时触发事件回调（供 gateway 注册）。
+    """
+    global _lt_last_status
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            if not _get_music_u():
+                continue
+            st = await _lt_get_status()
+            if not st["inRoom"] or not st["roomId"]:
+                _lt_last_status = {}
+                continue
+            state = await _lt_get_room_state(st["roomId"])
+            play_cmd = state.get("playCommand") or {}
+            cur = {
+                "songId": play_cmd.get("targetSongId"),
+                "playStatus": play_cmd.get("playStatus"),
+                "progress": play_cmd.get("progress"),
+            }
+            prev = _lt_last_status
+            _lt_last_status = cur
+            if not prev:
+                continue
+            # 检测暂停
+            if prev.get("playStatus") == "PLAY" and cur.get("playStatus") == "PAUSE":
+                song_id = cur.get("songId")
+                progress = int(cur.get("progress") or 0)
+                # 获取歌词上下文
+                context = ""
+                if song_id:
+                    timeline = await _lt_get_lyric_timeline(int(song_id))
+                    if timeline:
+                        elapsed = progress / 1000.0
+                        idx = max(0, bisect.bisect_right(
+                            [t[0] for t in timeline], elapsed
+                        ) - 1)
+                        nearby = timeline[max(0, idx - 1):idx + 4]
+                        lines = []
+                        for i, (sec, text) in enumerate(nearby):
+                            marker = " ◀" if i == (1 if idx > 0 else 0) else ""
+                            lines.append(f"  {text}{marker}")
+                        context = "\n".join(lines)
+                for cb in _lt_on_event:
+                    try:
+                        await cb("pause", {
+                            "songId": song_id,
+                            "progress": progress,
+                            "lyrics": context,
+                        })
+                    except Exception:
+                        pass
+            # 检测换歌
+            if (prev.get("songId") and cur.get("songId")
+                    and prev["songId"] != cur["songId"]):
+                for cb in _lt_on_event:
+                    try:
+                        await cb("song_change", {
+                            "fromSongId": prev["songId"],
+                            "toSongId": cur["songId"],
+                        })
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            await asyncio.sleep(10)
+
+
+def lt_register_event_callback(cb):
+    """注册一起听事件回调。cb(event_type, data) -> awaitable"""
+    _lt_on_event.append(cb)
+
+
+def lt_start_polling():
+    """启动后台轮询（在 main.py 的 startup 里调用）。"""
+    global _lt_heartbeat_task
+    if _lt_heartbeat_task is None or _lt_heartbeat_task.done():
+        _lt_heartbeat_task = asyncio.create_task(_lt_poll_loop())
+
+
+def lt_stop_polling():
+    """停止后台轮询。"""
+    global _lt_heartbeat_task
+    if _lt_heartbeat_task and not _lt_heartbeat_task.done():
+        _lt_heartbeat_task.cancel()
+        _lt_heartbeat_task = None
+
+
+# ══════════════════════════════════════════════════════════════
+# 频谱分析 · Music Ear (轻量版)
+# 下载音频 → numpy FFT → 每秒能量 + 频率重心 → JSON 缓存
+# LRU 30 首，分析完立即删音频原文件
+# ══════════════════════════════════════════════════════════════
+
+_SPECTRUM_CACHE_DIR = Path(os.getenv(
+    "SPECTRUM_CACHE_DIR",
+    str(Path(__file__).resolve().parent / "data" / "spectrum_cache"),
+))
+_SPECTRUM_MAX_ITEMS = 30
+
+
+async def _spectrum_analyze(song_id: int) -> dict | None:
+    """
+    对指定歌曲做频谱分析：
+    1. 检查缓存
+    2. 下载音频
+    3. FFT 分析（每秒 RMS 能量 + 频率重心）
+    4. 保存 JSON，删音频
+    返回 {song_id, duration, energy: [...], centroid: [...]} 或 None。
+    """
+    _SPECTRUM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = _SPECTRUM_CACHE_DIR / f"{song_id}.json"
+    # 1. 缓存命中
+    if cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text())
+            # 更新访问时间（LRU 排序用）
+            cache_file.touch()
+            return data
+        except Exception:
+            pass
+    # 2. 获取音频链接
+    try:
+        url_res = await _netease_get(
+            "/api/song/enhance/player/url",
+            params={"ids": f"[{song_id}]", "br": 128000},
+        )
+        url_data = url_res.get("data", [])
+        if not url_data or not url_data[0].get("url"):
+            return None
+        audio_url = url_data[0]["url"]
+    except Exception:
+        return None
+    # 3. 下载到临时文件
+    tmp_file = _SPECTRUM_CACHE_DIR / f"{song_id}.tmp.mp3"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(audio_url, follow_redirects=True)
+            resp.raise_for_status()
+            tmp_file.write_bytes(resp.content)
+    except Exception:
+        tmp_file.unlink(missing_ok=True)
+        return None
+    # 4. FFT 分析（在线程池里跑，避免阻塞事件循环）
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, _do_fft_analysis, str(tmp_file), song_id
+        )
+    except Exception:
+        result = None
+    finally:
+        tmp_file.unlink(missing_ok=True)
+    if not result:
+        return None
+    # 5. 保存缓存 + LRU 清理
+    cache_file.write_text(json.dumps(result, ensure_ascii=False))
+    _spectrum_lru_cleanup()
+    return result
+
+
+def _do_fft_analysis(audio_path: str, song_id: int) -> dict | None:
+    """同步 FFT 分析（在线程池中执行）。"""
+    try:
+        import numpy as np
+        from pydub import AudioSegment
+    except ImportError:
+        return None
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        # 转单声道 + 降采样到 22050Hz 省内存
+        audio = audio.set_channels(1).set_frame_rate(22050)
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        sr = audio.frame_rate
+        duration = len(samples) / sr
+        # 每秒一个分析窗口
+        window_size = sr  # 1秒
+        hop = sr           # 不重叠
+        energy = []
+        centroid = []
+        for start in range(0, len(samples) - window_size + 1, hop):
+            chunk = samples[start:start + window_size]
+            # RMS 能量 (0~1 归一化)
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+            energy.append(round(rms, 4))
+            # 频率重心
+            fft = np.abs(np.fft.rfft(chunk))
+            freqs = np.fft.rfftfreq(len(chunk), 1.0 / sr)
+            total = fft.sum()
+            if total > 0:
+                fc = float(np.sum(freqs * fft) / total)
+            else:
+                fc = 0.0
+            centroid.append(round(fc, 1))
+        # 归一化能量到 0~1
+        max_e = max(energy) if energy else 1.0
+        if max_e > 0:
+            energy = [round(e / max_e, 3) for e in energy]
+        return {
+            "song_id": song_id,
+            "duration": round(duration, 1),
+            "sample_rate": sr,
+            "energy": energy,       # 每秒归一化 RMS
+            "centroid": centroid,    # 每秒频率重心 (Hz)
+        }
+    except Exception:
+        return None
+
+
+def _spectrum_lru_cleanup():
+    """保留最近 30 个缓存文件，多的按修改时间删。"""
+    try:
+        files = sorted(
+            _SPECTRUM_CACHE_DIR.glob("*.json"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        for f in files[_SPECTRUM_MAX_ITEMS:]:
+            f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+@netease_mcp.tool()
+async def listen_together_spectrum(seconds_before: int = 5, seconds_after: int = 5) -> str:
+    """
+    获取当前一起听播放位置附近的频谱能量描述。
+    seconds_before: 往前看几秒，默认 5
+    seconds_after: 往后看几秒，默认 5
+    返回当前时间点附近的音乐能量起伏。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        state = await _lt_get_room_state(st["roomId"])
+        play_cmd = state.get("playCommand") or {}
+        song_id = play_cmd.get("targetSongId")
+        if not song_id:
+            return "房间内暂无播放。"
+        progress_sec = int(play_cmd.get("progress") or 0) / 1000.0
+        # 分析（缓存命中则秒返回）
+        spec = await _spectrum_analyze(int(song_id))
+        if not spec:
+            return "频谱分析不可用（可能缺少 numpy/pydub 或音频获取失败）。"
+        energy = spec.get("energy", [])
+        centroid = spec.get("centroid", [])
+        if not energy:
+            return "频谱数据为空。"
+        # 截取附近的窗口
+        center = int(progress_sec)
+        start = max(0, center - seconds_before)
+        end = min(len(energy), center + seconds_after + 1)
+        window_e = energy[start:end]
+        window_c = centroid[start:end] if centroid else []
+        # 能量描述
+        avg_e = sum(window_e) / len(window_e) if window_e else 0
+        max_e = max(window_e) if window_e else 0
+        min_e = min(window_e) if window_e else 0
+        # 趋势
+        if len(window_e) >= 3:
+            first_half = sum(window_e[:len(window_e)//2]) / max(1, len(window_e)//2)
+            second_half = sum(window_e[len(window_e)//2:]) / max(1, len(window_e) - len(window_e)//2)
+            if second_half > first_half * 1.3:
+                trend = "渐强 📈"
+            elif first_half > second_half * 1.3:
+                trend = "渐弱 📉"
+            else:
+                trend = "平稳"
+        else:
+            trend = "—"
+        # 强度描述
+        if avg_e > 0.7:
+            intensity = "高能量（高潮/副歌段）"
+        elif avg_e > 0.4:
+            intensity = "中等能量"
+        elif avg_e > 0.15:
+            intensity = "轻柔段"
+        else:
+            intensity = "极安静（前奏/间奏/尾奏）"
+        # 频率描述
+        avg_c = sum(window_c) / len(window_c) if window_c else 0
+        if avg_c > 3000:
+            freq_desc = "高频为主（人声/弦乐突出）"
+        elif avg_c > 1500:
+            freq_desc = "中频为主（人声/钢琴）"
+        elif avg_c > 500:
+            freq_desc = "中低频（贝斯/鼓点明显）"
+        else:
+            freq_desc = "低频为主（重低音/bass drop）"
+        # 每秒能量条
+        bar_lines = []
+        for i, e in enumerate(window_e):
+            sec = start + i
+            bars = "█" * int(e * 20)
+            marker = " ◀" if sec == center else ""
+            bar_lines.append(f"  {sec:3d}s │{bars:<20s}│ {e:.2f}{marker}")
+        return (
+            f"🎼 频谱 · {start}s ~ {end-1}s (当前 {center}s)\n"
+            f"   强度: {intensity}\n"
+            f"   趋势: {trend}\n"
+            f"   音色: {freq_desc}\n"
+            f"   能量范围: {min_e:.2f} ~ {max_e:.2f}\n\n"
+            + "\n".join(bar_lines)
+        )
+    except Exception as e:
+        return f"频谱分析失败：{e}"
 
 
 # ── 导出 ASGI app ────────────────────────────────────────────
