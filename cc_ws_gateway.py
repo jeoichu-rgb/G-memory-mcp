@@ -77,12 +77,24 @@ CC_CWD = os.getenv("CC_CWD", "/opt/G-memory-mcp")
 
 # ── 网易云音乐 MCP（挂在网关上，软重启即生效）──
 # URL: music.erikssheep.uk/{secret}/sse → Traefik → :3000/{secret}/sse
+import bisect as _bisect
+
 try:
     from netease_mcp import netease_mcp_app
     app.mount(f"/{PALACE_SECRET}", netease_mcp_app)
     logging.getLogger("cc-gw").info("NetEase MCP mounted")
 except Exception as _e:
     logging.getLogger("cc-gw").warning(f"NetEase MCP mount failed: {_e}")
+
+# 一起听后台 worker 需要的内部函数
+try:
+    from netease_mcp import (
+        _lt_get_status, _lt_get_room_state, _lt_get_lyric_timeline,
+        _netease_post as _ne_post, _get_music_u as _ne_logged_in,
+    )
+    _LT_IMPORTS_OK = True
+except Exception:
+    _LT_IMPORTS_OK = False
 # ── 静态资源（头像等）──
 _STATIC_DIR = Path(CC_CWD) / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
@@ -3073,6 +3085,217 @@ async def pebbling_worker():
 
 
 # ══════════════════════════════════════════════
+#  一起听 · 后台 Worker
+# ══════════════════════════════════════════════
+
+_LT_POLL_FAST = 5          # 在房间时轮询间隔 (秒)
+_LT_POLL_SLOW = 30         # 不在房间时检测间隔
+_LT_EVENT_COOLDOWN = 15    # 同类事件冷却 (秒)
+
+
+async def _lt_fetch_song_name(song_id) -> str:
+    """获取歌名，失败返回空串。"""
+    try:
+        detail = await _ne_post(
+            "/api/v3/song/detail",
+            data={"c": json.dumps([{"id": int(song_id)}])},
+        )
+        t = (detail.get("songs") or [{}])[0]
+        name = t.get("name", "")
+        artist = " / ".join(a.get("name", "") for a in t.get("ar", []))
+        return f"{name} — {artist}" if artist else name
+    except Exception:
+        return ""
+
+
+async def listen_together_worker():
+    """后台轮询一起听房间状态，检测暂停/换歌事件并推送到绑定 session。
+
+    事件类型:
+      pause       → 推歌词位置到 session (oneshot)
+      song_change → 推新歌名到 session (oneshot)
+      resume      → 仅 WS 通知前端，不触发 oneshot
+    """
+    if not _LT_IMPORTS_OK:
+        log.warning("Listen Together worker: netease_mcp imports failed, worker disabled")
+        return
+
+    last_song_id = None
+    last_play_status = None
+    last_room_id = None
+    last_event_ts: dict[str, float] = {}   # event_type → timestamp
+
+    log.info("Listen Together worker started")
+
+    while True:
+        try:
+            # 频率控制：在房间内快轮询，否则慢轮询
+            await asyncio.sleep(_LT_POLL_FAST if last_room_id else _LT_POLL_SLOW)
+
+            # 没登录就跳过
+            if not _ne_logged_in():
+                last_room_id = None
+                continue
+
+            # ── 房间状态 ──
+            try:
+                st = await _lt_get_status()
+            except Exception as e:
+                log.debug(f"LT status poll error: {e}")
+                continue
+
+            if not st.get("inRoom"):
+                if last_room_id is not None:
+                    log.info("Listen Together: left room")
+                last_room_id = None
+                last_song_id = None
+                last_play_status = None
+                continue
+
+            room_id = st["roomId"]
+
+            # 刚进房间 → 初始化快照，不触发事件
+            if last_room_id is None:
+                last_room_id = room_id
+                log.info(f"Listen Together: entered room {room_id}")
+                try:
+                    init_state = await _lt_get_room_state(room_id)
+                    init_cmd = init_state.get("playCommand") or {}
+                    last_song_id = init_cmd.get("targetSongId")
+                    last_play_status = init_cmd.get("playStatus", "UNKNOWN")
+                except Exception:
+                    pass
+                continue
+
+            # ── 播放状态 ──
+            try:
+                room_state = await _lt_get_room_state(room_id)
+            except Exception as e:
+                log.debug(f"LT room state error: {e}")
+                continue
+
+            play_cmd = room_state.get("playCommand") or {}
+            song_id = play_cmd.get("targetSongId")
+            play_status = play_cmd.get("playStatus", "UNKNOWN")
+            progress_ms = int(play_cmd.get("progress") or 0)
+            now = time_mod.time()
+
+            # ── 事件检测 ──
+            events: list[tuple[str, str | None, int]] = []
+
+            if song_id and last_song_id and str(song_id) != str(last_song_id):
+                events.append(("song_change", song_id, progress_ms))
+
+            if play_status == "PAUSE" and last_play_status == "PLAYING":
+                events.append(("pause", song_id, progress_ms))
+
+            if play_status == "PLAYING" and last_play_status == "PAUSE":
+                events.append(("resume", song_id, progress_ms))
+
+            last_song_id = song_id
+            last_play_status = play_status
+            last_room_id = room_id
+
+            if not events:
+                continue
+
+            # ── 处理事件 ──
+            sid = peb_state.get("pebbling_session_id")
+            session = sessions.get(sid) if sid else None
+
+            for ev_type, ev_song_id, ev_progress in events:
+                # 冷却检查
+                if now - last_event_ts.get(ev_type, 0) < _LT_EVENT_COOLDOWN:
+                    continue
+                last_event_ts[ev_type] = now
+
+                # 歌词定位（暂停/换歌时）
+                lyric_ctx = ""
+                if ev_song_id and ev_type in ("pause", "song_change"):
+                    try:
+                        timeline = await _lt_get_lyric_timeline(int(ev_song_id))
+                        if timeline:
+                            pos_sec = ev_progress / 1000.0
+                            times = [t[0] for t in timeline]
+                            idx = _bisect.bisect_right(times, pos_sec) - 1
+                            idx = max(idx, 0)
+                            start = max(0, idx - 2)
+                            end = min(len(timeline), idx + 4)
+                            lines = []
+                            for i in range(start, end):
+                                marker = " ◀" if i == idx else ""
+                                lines.append(f"  {timeline[i][1]}{marker}")
+                            lyric_ctx = "\n".join(lines)
+                    except Exception:
+                        pass
+
+                # 歌名
+                song_name = ""
+                if ev_song_id and ev_type in ("pause", "song_change"):
+                    song_name = await _lt_fetch_song_name(ev_song_id)
+
+                # 组装消息
+                prog_str = f"{ev_progress // 60000}:{(ev_progress % 60000) // 1000:02d}"
+                if ev_type == "pause":
+                    display = song_name or f"ID {ev_song_id}"
+                    msg = f"🎵 Jeoi 暂停了「{display}」({prog_str})"
+                    if lyric_ctx:
+                        msg += f"\n{lyric_ctx}"
+                elif ev_type == "song_change":
+                    display = song_name or f"ID {ev_song_id}"
+                    msg = f"🎵 换歌 →「{display}」"
+                    if lyric_ctx:
+                        msg += f"\n{lyric_ctx}"
+                elif ev_type == "resume":
+                    msg = f"🎵 继续播放 ({prog_str})"
+                else:
+                    continue
+
+                log.info(f"LT event: {ev_type} song={ev_song_id} progress={prog_str}")
+
+                # → 前端 WS
+                if active_ws:
+                    try:
+                        await active_ws.send_json({
+                            "event": "listen_together",
+                            "type": ev_type,
+                            "song_id": str(ev_song_id) if ev_song_id else None,
+                            "song_name": song_name,
+                            "progress": ev_progress,
+                            "content": msg,
+                            "time": datetime.now(SGT).strftime("%H:%M"),
+                        })
+                    except Exception:
+                        pass
+
+                # → session oneshot（暂停/换歌才推，resume 不打扰）
+                if ev_type in ("pause", "song_change") and session:
+                    if (session.cc_session_id
+                            and not _tmux_send_lock.locked()
+                            and not _user_msg_active):
+                        try:
+                            prompt = f"[listen_together:{ev_type}] {msg}"
+                            reply, thinking, tools = await run_cc_oneshot(
+                                prompt, session, max_turns=3,
+                            )
+                            if reply:
+                                reply = _strip_oneshot_scaffold(reply)
+                                await push_pebbling_msg(
+                                    "listen_together", reply, session,
+                                    thinking=thinking, push_backup=False,
+                                )
+                        except Exception as e:
+                            log.warning(f"LT oneshot error: {e}")
+
+        except asyncio.CancelledError:
+            log.info("Listen Together worker cancelled")
+            return
+        except Exception as e:
+            log.warning(f"Listen Together worker error: {e}")
+            await asyncio.sleep(15)
+
+
+# ══════════════════════════════════════════════
 #  TMUX + CHANNEL
 # ══════════════════════════════════════════════
 
@@ -3704,6 +3927,8 @@ async def startup_load_sessions():
     asyncio.create_task(pebbling_worker())
     asyncio.create_task(ws_keepalive())
     asyncio.create_task(stardew_event_worker())
+    if _LT_IMPORTS_OK:
+        asyncio.create_task(listen_together_worker())
 
     # WeChat ClawBot gateway
     if WECHAT_ENABLED:
