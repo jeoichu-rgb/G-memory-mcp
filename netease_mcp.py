@@ -1688,17 +1688,16 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
     except Exception as e:
         _spec_log.error("[spectrum] 获取音频URL异常: %s", e, exc_info=True)
         return None
-    # 3. 下载到临时文件
+    # 3. 下载到临时文件（用 urllib 避免 httpx 对 URL 特殊字符重编码导致签名失效）
     tmp_file = _SPECTRUM_CACHE_DIR / f"{song_id}.tmp.mp3"
     try:
-        async with httpx.AsyncClient(timeout=30, headers={
+        import urllib.request
+        req = urllib.request.Request(audio_url, headers={
             "User-Agent": HEADERS["User-Agent"],
             "Referer": HEADERS["Referer"],
-            "Cookie": _build_cookie(),
-        }) as client:
-            resp = await client.get(audio_url)
-            resp.raise_for_status()
-            tmp_file.write_bytes(resp.content)
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tmp_file.write_bytes(resp.read())
         _spec_log.debug("[spectrum] 音频下载完成, 大小=%d bytes", tmp_file.stat().st_size)
     except Exception as e:
         _spec_log.error("[spectrum] 下载音频异常: %s", e, exc_info=True)
