@@ -1667,9 +1667,13 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
     if cache_file.exists():
         try:
             data = json.loads(cache_file.read_text())
-            # 更新访问时间（LRU 排序用）
-            cache_file.touch()
-            return data
+            # 旧缓存没有 segments 的话，删掉重新分析
+            if "segments" not in data:
+                cache_file.unlink(missing_ok=True)
+            else:
+                # 更新访问时间（LRU 排序用）
+                cache_file.touch()
+                return data
         except Exception:
             pass
     # 2. 获取音频链接
