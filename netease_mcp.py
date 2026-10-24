@@ -1681,6 +1681,9 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
             _spec_log.warning("[spectrum] 音频URL为空, song_id=%s, url_data=%s", song_id, url_data)
             return None
         audio_url = url_data[0]["url"]
+        # CDN 的 HTTP 端口可能 403，强制走 HTTPS（参考 netease-together-music-ear）
+        if audio_url.startswith("http://"):
+            audio_url = "https://" + audio_url[7:]
         _spec_log.debug("[spectrum] 拿到音频URL: %s...%s", audio_url[:60], audio_url[-20:])
     except Exception as e:
         _spec_log.error("[spectrum] 获取音频URL异常: %s", e, exc_info=True)
@@ -1693,7 +1696,7 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
             "Referer": HEADERS["Referer"],
             "Cookie": _build_cookie(),
         }) as client:
-            resp = await client.get(audio_url, follow_redirects=True)
+            resp = await client.get(audio_url)
             resp.raise_for_status()
             tmp_file.write_bytes(resp.content)
         _spec_log.debug("[spectrum] 音频下载完成, 大小=%d bytes", tmp_file.stat().st_size)
