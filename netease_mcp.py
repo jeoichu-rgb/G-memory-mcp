@@ -15,6 +15,7 @@ import re
 import time
 import asyncio
 import bisect
+import logging
 import httpx
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -146,6 +147,9 @@ async def _netease_get_raw(path: str, params: dict | None = None) -> httpx.Respo
 
 
 # ── FastMCP 实例 ──────────────────────────────────────────────
+
+_spec_log = logging.getLogger("spectrum")
+_spec_log.setLevel(logging.DEBUG)
 
 netease_mcp = FastMCP(
     name="NetEase Music",
@@ -1674,9 +1678,12 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
         )
         url_data = url_res.get("data", [])
         if not url_data or not url_data[0].get("url"):
+            _spec_log.warning("[spectrum] 音频URL为空, song_id=%s, url_data=%s", song_id, url_data)
             return None
         audio_url = url_data[0]["url"]
-    except Exception:
+        _spec_log.debug("[spectrum] 拿到音频URL: %s...%s", audio_url[:60], audio_url[-20:])
+    except Exception as e:
+        _spec_log.error("[spectrum] 获取音频URL异常: %s", e, exc_info=True)
         return None
     # 3. 下载到临时文件
     tmp_file = _SPECTRUM_CACHE_DIR / f"{song_id}.tmp.mp3"
@@ -1685,7 +1692,9 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
             resp = await client.get(audio_url, follow_redirects=True)
             resp.raise_for_status()
             tmp_file.write_bytes(resp.content)
-    except Exception:
+        _spec_log.debug("[spectrum] 音频下载完成, 大小=%d bytes", tmp_file.stat().st_size)
+    except Exception as e:
+        _spec_log.error("[spectrum] 下载音频异常: %s", e, exc_info=True)
         tmp_file.unlink(missing_ok=True)
         return None
     # 4. FFT 分析（在线程池里跑，避免阻塞事件循环）
@@ -1693,11 +1702,13 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
         result = await asyncio.get_event_loop().run_in_executor(
             None, _do_fft_analysis, str(tmp_file), song_id
         )
-    except Exception:
+    except Exception as e:
+        _spec_log.error("[spectrum] FFT executor异常: %s", e, exc_info=True)
         result = None
     finally:
         tmp_file.unlink(missing_ok=True)
     if not result:
+        _spec_log.warning("[spectrum] FFT分析返回None, song_id=%s", song_id)
         return None
     # 5. 保存缓存 + LRU 清理
     cache_file.write_text(json.dumps(result, ensure_ascii=False))
@@ -1710,9 +1721,12 @@ def _do_fft_analysis(audio_path: str, song_id: int) -> dict | None:
     try:
         import numpy as np
         from pydub import AudioSegment
-    except ImportError:
+        _spec_log.debug("[spectrum] numpy=%s, pydub OK", np.__version__)
+    except ImportError as e:
+        _spec_log.error("[spectrum] 依赖缺失: %s", e)
         return None
     try:
+        _spec_log.debug("[spectrum] 开始解码音频: %s", audio_path)
         audio = AudioSegment.from_file(audio_path)
         # 转单声道 + 降采样到 22050Hz 省内存
         audio = audio.set_channels(1).set_frame_rate(22050)
@@ -1749,7 +1763,8 @@ def _do_fft_analysis(audio_path: str, song_id: int) -> dict | None:
             "energy": energy,       # 每秒归一化 RMS
             "centroid": centroid,    # 每秒频率重心 (Hz)
         }
-    except Exception:
+    except Exception as e:
+        _spec_log.error("[spectrum] FFT分析异常: %s", e, exc_info=True)
         return None
 
 
@@ -1787,6 +1802,7 @@ async def listen_together_spectrum(seconds_before: int = 5, seconds_after: int =
         if not song_id:
             return "房间内暂无播放。"
         progress_sec = int(play_cmd.get("progress") or 0) / 1000.0
+        _spec_log.info("[spectrum] 开始频谱分析: song_id=%s, progress=%.1fs", song_id, progress_sec)
         # 分析（缓存命中则秒返回）
         spec = await _spectrum_analyze(int(song_id))
         if not spec:
