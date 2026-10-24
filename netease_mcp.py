@@ -1603,6 +1603,8 @@ async def _lt_poll_loop(interval: float = 5.0):
             # 检测换歌
             if (prev.get("songId") and cur.get("songId")
                     and prev["songId"] != cur["songId"]):
+                # 后台预缓存新歌频谱（不阻塞事件循环）
+                asyncio.ensure_future(_spectrum_analyze(int(cur["songId"])))
                 for cb in _lt_on_event:
                     try:
                         await cb("song_change", {
@@ -1719,6 +1721,74 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
     return result
 
 
+def _detect_segments(np, energy: list, centroid: list) -> list:
+    """从逐秒能量和频率重心中检测音乐段落。"""
+    n = len(energy)
+    if n < 10:
+        avg_e = sum(energy) / n if n else 0
+        avg_c = sum(centroid) / n if centroid and n else 0
+        return [{"start": 0, "end": n - 1, "sec": n,
+                 "energy": round(avg_e, 2), "tone": _tone_label(avg_c),
+                 "intensity": _intensity_label(avg_e), "trend": "→"}]
+    e = np.array(energy)
+    # 5 秒移动平均平滑
+    kernel = np.ones(5) / 5
+    smooth = np.convolve(e, kernel, mode="same")
+    # 找跳变点：前后 5 秒窗口平均能量差异 > 0.12
+    win = 5
+    boundaries = [0]
+    for i in range(win, n - win):
+        left = float(smooth[max(0, i - win):i].mean())
+        right = float(smooth[i:min(n, i + win)].mean())
+        if abs(right - left) > 0.12 and i - boundaries[-1] >= 8:
+            boundaries.append(i)
+    boundaries.append(n)
+    # 生成段落
+    segments = []
+    for j in range(len(boundaries) - 1):
+        s, t = boundaries[j], boundaries[j + 1]
+        seg_e = energy[s:t]
+        seg_c = centroid[s:t] if centroid else []
+        avg_e = sum(seg_e) / len(seg_e) if seg_e else 0
+        avg_c = sum(seg_c) / len(seg_c) if seg_c else 0
+        # 趋势
+        if len(seg_e) >= 4:
+            half = len(seg_e) // 2
+            first = sum(seg_e[:half]) / half
+            second = sum(seg_e[half:]) / (len(seg_e) - half)
+            trend = "↗" if second > first * 1.2 else ("↘" if first > second * 1.2 else "→")
+        else:
+            trend = "→"
+        segments.append({
+            "start": s, "end": t - 1, "sec": t - s,
+            "energy": round(avg_e, 2),
+            "intensity": _intensity_label(avg_e),
+            "trend": trend,
+            "tone": _tone_label(avg_c),
+        })
+    return segments
+
+
+def _intensity_label(avg_e: float) -> str:
+    if avg_e > 0.7:
+        return "高能"
+    elif avg_e > 0.4:
+        return "中等"
+    elif avg_e > 0.15:
+        return "轻柔"
+    return "极轻"
+
+
+def _tone_label(avg_c: float) -> str:
+    if avg_c > 3000:
+        return "高频亮"
+    elif avg_c > 1500:
+        return "中高频"
+    elif avg_c > 800:
+        return "中频"
+    return "中低频"
+
+
 def _do_fft_analysis(audio_path: str, song_id: int) -> dict | None:
     """同步 FFT 分析（在线程池中执行）。"""
     try:
@@ -1759,12 +1829,15 @@ def _do_fft_analysis(audio_path: str, song_id: int) -> dict | None:
         max_e = max(energy) if energy else 1.0
         if max_e > 0:
             energy = [round(e / max_e, 3) for e in energy]
+        # 段落检测
+        segments = _detect_segments(np, energy, centroid)
         return {
             "song_id": song_id,
             "duration": round(duration, 1),
             "sample_rate": sr,
             "energy": energy,       # 每秒归一化 RMS
             "centroid": centroid,    # 每秒频率重心 (Hz)
+            "segments": segments,   # 自动检测的段落摘要
         }
     except Exception as e:
         _spec_log.error("[spectrum] FFT分析异常: %s", e, exc_info=True)
@@ -1872,6 +1945,54 @@ async def listen_together_spectrum(seconds_before: int = 5, seconds_after: int =
         )
     except Exception as e:
         return f"频谱分析失败：{e}"
+
+
+@netease_mcp.tool()
+async def listen_together_spectrum_summary() -> str:
+    """
+    获取当前一起听歌曲的完整频谱段落摘要。
+    返回整首歌的段落结构：每段的时间范围、能量强度、趋势和音色特征。
+    适合在切歌时调用，一眼看出整首歌的"形状"。
+    """
+    if not _get_music_u():
+        return "需要先登录。"
+    try:
+        st = await _lt_get_status()
+        if not st["inRoom"] or not st["roomId"]:
+            return "当前不在一起听房间中。"
+        state = await _lt_get_room_state(st["roomId"])
+        play_cmd = state.get("playCommand") or {}
+        song_id = play_cmd.get("targetSongId")
+        if not song_id:
+            return "房间内暂无播放。"
+        progress_sec = int(play_cmd.get("progress") or 0) / 1000.0
+        spec = await _spectrum_analyze(int(song_id))
+        if not spec:
+            return "频谱分析不可用（可能缺少 numpy/pydub 或音频获取失败）。"
+        segments = spec.get("segments", [])
+        if not segments:
+            return "频谱数据为空。"
+        duration = spec.get("duration", 0)
+        # 格式化段落摘要
+        def fmt_time(s):
+            m, sec = divmod(s, 60)
+            return f"{m}:{sec:02d}" if m else f"{sec}s"
+        lines = [f"🎼 全曲频谱 · {fmt_time(int(duration))} · {len(segments)} 段"]
+        lines.append("")
+        # 找当前所在段落
+        cur_sec = int(progress_sec)
+        for i, seg in enumerate(segments):
+            s, e = seg["start"], seg["end"]
+            marker = " ◀ 现在" if s <= cur_sec <= e else ""
+            lines.append(
+                f"  {fmt_time(s)}-{fmt_time(e)}  "
+                f"{seg['intensity']} {seg['trend']}  "
+                f"{seg['tone']}  "
+                f"(avg {seg['energy']}){marker}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"频谱摘要失败：{e}"
 
 
 # ── 导出 ASGI app ────────────────────────────────────────────
