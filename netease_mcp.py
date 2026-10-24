@@ -1691,6 +1691,7 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
         async with httpx.AsyncClient(timeout=30, headers={
             "User-Agent": HEADERS["User-Agent"],
             "Referer": HEADERS["Referer"],
+            "Cookie": _build_cookie(),
         }) as client:
             resp = await client.get(audio_url, follow_redirects=True)
             resp.raise_for_status()
