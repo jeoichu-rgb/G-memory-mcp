@@ -1688,7 +1688,10 @@ async def _spectrum_analyze(song_id: int) -> dict | None:
     # 3. 下载到临时文件
     tmp_file = _SPECTRUM_CACHE_DIR / f"{song_id}.tmp.mp3"
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Referer": HEADERS["Referer"],
+        }) as client:
             resp = await client.get(audio_url, follow_redirects=True)
             resp.raise_for_status()
             tmp_file.write_bytes(resp.content)
