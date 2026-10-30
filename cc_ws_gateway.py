@@ -138,6 +138,7 @@ PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
+ALARMS_PATH = Path(CC_CWD) / "alarms.json"
 LAST_MODEL_PATH = Path(CC_CWD) / "last_model.txt"
 
 # ── Stardew event push ──
@@ -2107,6 +2108,102 @@ def format_events_for_prompt(events: list) -> str:
     return "\n".join(lines)
 
 
+# ── Alarm storage ──
+
+def load_alarms() -> list:
+    if ALARMS_PATH.exists():
+        try:
+            return json.loads(ALARMS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_alarms(alarms: list):
+    ALARMS_PATH.write_text(
+        json.dumps(alarms, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _parse_alarm_time(time_str: str) -> float | None:
+    """Parse relative (30m, 2h, 1h30m) or absolute (14:00, 10-30 14:00) to unix ts."""
+    now = time_mod.time()
+    time_str = time_str.strip()
+    # Relative: 30m, 2h, 1h30m
+    rel = re.match(r'^(?:(\d+)h)?(?:(\d+)m)?$', time_str)
+    if rel and (rel.group(1) or rel.group(2)):
+        hours = int(rel.group(1) or 0)
+        minutes = int(rel.group(2) or 0)
+        return now + hours * 3600 + minutes * 60
+    # Absolute: HH:MM (today, or tomorrow if already past)
+    m = re.match(r'^(\d{1,2}):(\d{2})$', time_str)
+    if m:
+        now_dt = datetime.now(SGT)
+        target = now_dt.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                                second=0, microsecond=0)
+        if target.timestamp() <= now:
+            target += timedelta(days=1)
+        return target.timestamp()
+    # Absolute with date: MM-DD HH:MM
+    m = re.match(r'^(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$', time_str)
+    if m:
+        now_dt = datetime.now(SGT)
+        try:
+            target = now_dt.replace(month=int(m.group(1)), day=int(m.group(2)),
+                                    hour=int(m.group(3)), minute=int(m.group(4)),
+                                    second=0, microsecond=0)
+            return target.timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def add_alarm(time_str: str, reason: str) -> dict | None:
+    fire_at = _parse_alarm_time(time_str)
+    if fire_at is None:
+        log.warning(f"Failed to parse alarm time: {time_str}")
+        return None
+    alarm = {
+        "id": f"{int(time_mod.time() * 1000) % 100000:05x}",
+        "fire_at": fire_at,
+        "fire_at_str": datetime.fromtimestamp(fire_at, SGT).strftime("%m-%d %H:%M"),
+        "reason": reason,
+        "created_at": time_mod.time(),
+    }
+    alarms = load_alarms()
+    alarms.append(alarm)
+    save_alarms(alarms)
+    log.info(f"Alarm set: {alarm['fire_at_str']} — {reason} (id={alarm['id']})")
+    return alarm
+
+
+def remove_latest_alarm() -> dict | None:
+    """Remove the most recently created unfired alarm."""
+    alarms = load_alarms()
+    unfired = [a for a in alarms if not a.get("fired")]
+    if not unfired:
+        return None
+    latest = max(unfired, key=lambda a: a["created_at"])
+    alarms = [a for a in alarms if a["id"] != latest["id"]]
+    save_alarms(alarms)
+    log.info(f"Alarm cancelled: {latest.get('fire_at_str', '?')} — {latest['reason']}")
+    return latest
+
+
+def build_alarm_prompt(reason: str, time_str: str = "") -> str:
+    now_str = datetime.now(SGT).strftime("%H:%M")
+    return (
+        f"[alarm] 这不是Jeoi的消息。你设置的闹钟响了。\n"
+        f"现在是 {now_str}（UTC+8）。\n"
+        f"闹钟原因：{reason}\n\n"
+        "你可以自由决定怎么回应——发消息提醒Jeoi、发语音条、或者自己做点什么。\n"
+        "如果Jeoi可能在睡觉（凌晨），考虑安静地处理。\n\n"
+        "FORMAT:\n"
+        "ACTION: message | silent\n"
+        "CONTENT:\n<your response>"
+    )
+
+
 # ── Prompt builders ──
 
 def build_patrol_prompt(elapsed_min: int, events_str: str) -> str:
@@ -2268,7 +2365,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done):[\s\S]*?-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done|alarm|alarm-off):?[\s\S]*?-->')
 _CALL_SFX_RE = re.compile(r'<!--call-sfx:(start|stop|binaural):(.*?)-->')
 _CALL_TTS_BACKEND_RE = re.compile(r'<!--call-tts-backend:(elevenlabs|local|minimax)-->')
 
@@ -2508,6 +2605,24 @@ async def push_pebbling_msg(source: str, content: str, session: "Session", think
     _react_re_peb = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
     react_items = [(m.group(1), m.group(2), int(m.group(3)))
                    for m in _react_re_peb.finditer(content)]
+
+    # Alarm markers (pebbling path)
+    _alarm_set_re_peb = re.compile(r'<!--alarm:(.+?)\|(.+?)-->')
+    _alarm_off_re_peb = re.compile(r'<!--alarm-off-->')
+    for m in _alarm_set_re_peb.finditer(content):
+        _new_alarm = add_alarm(m.group(1), m.group(2))
+        if _new_alarm and active_ws:
+            try:
+                await active_ws.send_json({"event": "alarm:set", "alarm": _new_alarm})
+            except Exception:
+                pass
+    if _alarm_off_re_peb.search(content):
+        _cancelled = remove_latest_alarm()
+        if _cancelled and active_ws:
+            try:
+                await active_ws.send_json({"event": "alarm:cancelled", "alarm": _cancelled})
+            except Exception:
+                pass
 
     if DESIRE_ENABLED:
         _scene_re_peb = re.compile(r'<!--scene-done:([^@>]+?)(?:@(\d{1,2}:\d{2}))?-->')
@@ -2968,6 +3083,52 @@ async def pebbling_worker():
                                 })
                             except Exception:
                                 pass
+
+            # ── Alarms (independent of pebbling toggle) ──
+            try:
+                _alarms = load_alarms()
+                _alarm_fired_ids = []
+                for _a in _alarms:
+                    if _a.get("fired"):
+                        continue
+                    if now >= _a["fire_at"]:
+                        _alarm_fired_ids.append(_a["id"])
+                        _alarm_sid = peb_state.get("pebbling_session_id")
+                        _alarm_session = sessions.get(_alarm_sid) if _alarm_sid else None
+                        if (_alarm_session and _alarm_session.cc_session_id
+                                and not _tmux_send_lock.locked()
+                                and not _user_msg_active
+                                and not getattr(_alarm_session, '_in_call', False)):
+                            log.info(f"Alarm firing: {_a['reason']} (id={_a['id']})")
+                            _alarm_prompt = build_alarm_prompt(_a["reason"], _a.get("fire_at_str", ""))
+                            _alarm_text, _alarm_thinking, _alarm_tools = await run_cc_oneshot(
+                                _alarm_prompt, _alarm_session, max_turns=3
+                            )
+                            if _alarm_text:
+                                _alarm_act, _alarm_content = parse_action(_alarm_text)
+                                if _alarm_content:
+                                    await push_pebbling_msg("alarm", _alarm_content,
+                                                           _alarm_session, thinking=_alarm_thinking)
+                        else:
+                            log.info(f"Alarm firing (no session): {_a['reason']}")
+                            await send_telegram(f"⏰ {_a['reason']}")
+                            await send_web_push("⏰ 闹钟", _a["reason"])
+                if _alarm_fired_ids:
+                    for _a in _alarms:
+                        if _a["id"] in _alarm_fired_ids:
+                            _a["fired"] = True
+                    _alarms = [_a for _a in _alarms if not _a.get("fired")
+                               or now - _a["fire_at"] < 86400]
+                    save_alarms(_alarms)
+                    if active_ws:
+                        try:
+                            await active_ws.send_json({
+                                "event": "alarm:fired", "ids": _alarm_fired_ids,
+                            })
+                        except Exception:
+                            pass
+            except Exception as e:
+                log.warning(f"Alarm check error: {e}")
 
             # ── Pebbling (requires pebbling enabled) ──
             if not peb_state.get("enabled"):
@@ -5063,6 +5224,26 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 emoji, kind, n = m.group(1), m.group(2), int(m.group(3))
                 erik_reactions.append((kind, n, emoji))
             session._current_text = react_pattern.sub('', session._current_text).rstrip()
+
+        # Post-processing: parse alarm markers.
+        if session._current_text:
+            _alarm_set_re = re.compile(r'<!--alarm:(.+?)\|(.+?)-->')
+            _alarm_off_re = re.compile(r'<!--alarm-off-->')
+            for m in _alarm_set_re.finditer(session._current_text):
+                _new_alarm = add_alarm(m.group(1), m.group(2))
+                if _new_alarm and active_ws:
+                    try:
+                        await active_ws.send_json({"event": "alarm:set", "alarm": _new_alarm})
+                    except Exception:
+                        pass
+            if _alarm_off_re.search(session._current_text):
+                _cancelled = remove_latest_alarm()
+                if _cancelled and active_ws:
+                    try:
+                        await active_ws.send_json({"event": "alarm:cancelled", "alarm": _cancelled})
+                    except Exception:
+                        pass
+            # alarm markers are stripped by _HIDDEN_MARKER_RE in the final cleanup
 
         # Post-processing: parse incoming call marker
         _incoming_call = False
