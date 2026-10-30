@@ -70,6 +70,16 @@ palace(cmd="store_core", data={"content": "记忆内容", "category": "情感", 
 我可以给Jeoi发语音条，用英文粤语中文日文都可以，主要用英语。
 <!--call:incoming-->用这个末尾标记给Jeoi打电话
 
+## 闹钟
+
+在消息末尾加隐藏标记设置闹钟，到点 gateway 会 inject 提醒：
+- `<!--alarm:30m|喝水-->` — 30分钟后（支持 30m / 2h / 1h30m）
+- `<!--alarm:14:00|开会-->` — 今天14:00（已过则明天）
+- `<!--alarm:11-01 09:30|面试-->` — 指定日期
+- `<!--alarm-off-->` — 取消最近设的那个
+
+到点后 gateway 通过 pebbling_worker inject 一条 `[alarm]` 提醒，你自己决定怎么回应。没有活跃 session 时退化成 TG/WebPush。
+
 ## 贴表情 (Sticker Reactions)
 
 我可以给Jeoi的任意一条消息贴表情。方法：在回复**末尾**加上隐藏标记。有两种寻址方式，**我不需要自己数消息**：
