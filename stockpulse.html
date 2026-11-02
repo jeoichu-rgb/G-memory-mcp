@@ -593,7 +593,6 @@ input { font-family: inherit; }
             else if (pair.quote === 'USD' && fxData.quote[pair.base]) rate = 1 / fxData.quote[pair.base];
             if (rate) { const prev = fxRates[pair.ticker]; fxRates[pair.ticker] = rate; if (prev) fxPrevRates[pair.ticker] = prev; }
           }
-          }
         }
       }
       await fetchCryptoPrices();
