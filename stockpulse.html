@@ -845,19 +845,32 @@ input { font-family: inherit; }
     const empty = $('chart-empty');
     empty.style.display = 'flex'; empty.textContent = 'K线加载中...';
     if (chart) { chart.remove(); chart = null; candleSeries = null; }
-    if (!finnhubKey) { empty.textContent = '设置 Finnhub API Key 查看K线'; return; }
-    const to = Math.floor(Date.now() / 1000);
-    const rangeSec = {15: 5*86400, 60: 30*86400, D: 180*86400, W: 365*86400, M: 730*86400}[currentRes] || 180*86400;
-    const from = to - rangeSec;
     const isCrypto = stocks.find(s => s.ticker === ticker)?.category === 'crypto';
-    const endpoint = isCrypto ? 'crypto/candle' : 'stock/candle';
-    const symbol = isCrypto ? 'BINANCE:' + ticker.replace('-USD', 'USDT') : ticker;
-    const data = await fh(endpoint, { symbol, resolution: currentRes, from, to });
+    let data = null;
+    if (finnhubKey) {
+      const to = Math.floor(Date.now() / 1000);
+      const rangeSec = {15: 5*86400, 60: 30*86400, D: 180*86400, W: 365*86400, M: 730*86400}[currentRes] || 180*86400;
+      const from = to - rangeSec;
+      const endpoint = isCrypto ? 'crypto/candle' : 'stock/candle';
+      const symbol = isCrypto ? 'BINANCE:' + ticker.replace('-USD', 'USDT') : ticker;
+      data = await fh(endpoint, { symbol, resolution: currentRes, from, to });
+    }
+    if (!(data?.s === 'ok' && data?.t?.length) && !isCrypto) {
+      const resMap = {15: '15m', 60: '60m', D: '1d', W: '1wk', M: '1mo'};
+      const rangeMap = {15: '5d', 60: '1mo', D: '6mo', W: '2y', M: '5y'};
+      const yInterval = resMap[currentRes] || '1d';
+      const yRange = rangeMap[currentRes] || '6mo';
+      const ySymbol = ticker.replace('-USD', '-USD');
+      try {
+        const r = await fetch('/api/stockpulse/candle?symbol=' + encodeURIComponent(ySymbol) + '&interval=' + yInterval + '&range=' + yRange);
+        if (r.ok) data = await r.json();
+      } catch(e) {}
+    }
     if (data?.s === 'ok' && data.t?.length) {
       const candles = data.t.map((t, i) => ({ time: new Date(t * 1000).toISOString().slice(0, 10), open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i] }));
       empty.style.display = 'none';
-      renderChart($('chart-container'), currentRes === 'D' ? candles : candles);
-    } else { empty.textContent = 'Finnhub 无此标的K线数据'; }
+      renderChart($('chart-container'), candles);
+    } else { empty.textContent = '暂无K线数据'; }
   }
 
   function renderChart(container, data) {

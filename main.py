@@ -146,6 +146,7 @@ class CheckSecretMiddleware:
             or path == "/health/update"
             or path == "/location/update"
             or path == "/stockpulse.html"
+            or path.startswith("/api/stockpulse/")
             or path == "/music"
             or path.startswith("/api/music/")
             or path == "/api/ears"
@@ -294,6 +295,36 @@ async def serve_stockpulse(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>stockpulse.html not found</h1>", status_code=500)
+
+@app.get("/api/stockpulse/candle")
+async def stockpulse_candle(symbol: str, interval: str = "1d", range: str = "6mo"):
+    """Proxy Yahoo Finance chart API for StockPulse K-line data."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"interval": interval, "range": range}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                return JSONResponse({"s": "no_data"})
+            data = r.json()
+            result = data.get("chart", {}).get("result", [])
+            if not result:
+                return JSONResponse({"s": "no_data"})
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            if not ts or not quote.get("open"):
+                return JSONResponse({"s": "no_data"})
+            return JSONResponse({
+                "s": "ok",
+                "t": ts,
+                "o": quote.get("open", []),
+                "h": quote.get("high", []),
+                "l": quote.get("low", []),
+                "c": quote.get("close", []),
+                "v": quote.get("volume", []),
+            })
+    except Exception:
+        return JSONResponse({"s": "no_data"})
 
 @app.get("/health/report")
 async def serve_health_report(request: Request):
