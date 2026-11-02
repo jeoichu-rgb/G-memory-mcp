@@ -1,0 +1,991 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>StockPulse</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-card: #0d0d0d;
+  --bg-elevated: #161616;
+  --bg-sheet: #111111;
+  --fg: #f0f0f0;
+  --fg-secondary: #737373;
+  --fg-dim: #404040;
+  --green: #22c55e;
+  --green-bg: rgba(34,197,94,0.12);
+  --red: #ef4444;
+  --red-bg: rgba(239,68,68,0.12);
+  --accent: #3b82f6;
+  --accent-bg: rgba(59,130,246,0.15);
+  --border: #1a1a1a;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  -webkit-font-smoothing: antialiased;
+  max-width: 600px; margin: 0 auto; min-height: 100%; padding-block: 0;
+}
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto;
+  height: env(safe-area-inset-top, 0px); z-index: 100; background: var(--bg);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+button { font-family: inherit; border: none; background: none; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+input { font-family: inherit; }
+
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0 8px;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 50;
+  background: var(--bg);
+}
+.header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.header-actions { display: flex; gap: 4px; }
+.header-btn {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; transition: background 0.15s;
+}
+.header-btn:active { background: var(--bg-elevated); }
+
+.search-bar { display: none; padding: 0 0 8px; position: relative; }
+.search-bar.active { display: block; }
+.search-bar input {
+  width: 100%; padding: 10px 14px; border-radius: var(--radius);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--fg); font-size: 15px; outline: none;
+}
+.search-bar input:focus { border-color: var(--accent); }
+.search-bar input::placeholder { color: var(--fg-dim); }
+.search-results {
+  position: absolute; left: 0; right: 0; top: 100%;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); max-height: 360px; overflow-y: auto;
+  z-index: 60; display: none;
+}
+.search-results.active { display: block; }
+.search-section-label {
+  font-size: 11px; font-weight: 600; color: var(--fg-dim);
+  padding: 10px 14px 4px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.search-result-item {
+  display: flex; align-items: center; padding: 10px 14px; gap: 10px;
+  cursor: pointer; transition: background 0.1s;
+}
+.search-result-item:active { background: var(--bg-elevated); }
+.search-result-info { flex: 1; min-width: 0; }
+.search-result-ticker { font-size: 14px; font-weight: 600; }
+.search-result-name { font-size: 12px; color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-result-cat {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: var(--bg-elevated); color: var(--fg-secondary); flex-shrink: 0;
+}
+.search-result-add { font-size: 20px; color: var(--accent); flex-shrink: 0; width: 28px; text-align: center; font-weight: 300; }
+.search-result-check { font-size: 14px; color: var(--green); flex-shrink: 0; width: 28px; text-align: center; }
+.search-loading { padding: 8px 14px; font-size: 12px; color: var(--fg-dim); }
+
+.tabs { display: flex; gap: 6px; padding: 4px 0 12px; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 500;
+  white-space: nowrap; transition: all 0.2s;
+  background: var(--bg-card); color: var(--fg-secondary); border: 1px solid var(--border);
+}
+.tab.active { background: var(--fg); color: var(--bg); border-color: transparent; }
+
+.sort-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 0 10px; font-size: 12px; color: var(--fg-secondary);
+}
+.sort-btn {
+  font-size: 12px; color: var(--fg-secondary); padding: 4px 10px;
+  border-radius: 14px; background: var(--bg-card); border: 1px solid var(--border);
+  transition: all 0.15s;
+}
+.sort-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+
+.stock-list { display: flex; flex-direction: column; }
+.stock-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 0.1s; position: relative;
+  user-select: none; -webkit-user-select: none;
+}
+.stock-item:active { background: var(--bg-card); }
+.stock-item.dragging { opacity: 0.4; }
+.stock-item.drag-over::before {
+  content: ''; position: absolute; top: -1px; left: 0; right: 0;
+  height: 2px; background: var(--accent);
+}
+.stock-info { flex: 1; min-width: 0; }
+.stock-ticker-row { display: flex; align-items: center; gap: 6px; }
+.stock-ticker { font-size: 16px; font-weight: 600; }
+.position-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.stock-name {
+  font-size: 12px; color: var(--fg-secondary); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stock-sparkline { width: 64px; height: 32px; flex-shrink: 0; }
+.stock-price-col { text-align: right; flex-shrink: 0; min-width: 80px; }
+.stock-price { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stock-change {
+  display: inline-block; font-size: 12px; font-weight: 500; padding: 2px 8px;
+  border-radius: 6px; margin-top: 3px; font-variant-numeric: tabular-nums;
+}
+.stock-change.up { color: var(--green); background: var(--green-bg); }
+.stock-change.down { color: var(--red); background: var(--red-bg); }
+.drag-handle {
+  width: 20px; display: flex; flex-direction: column; align-items: center;
+  gap: 2px; padding: 8px 0; cursor: grab; flex-shrink: 0; opacity: 0.3;
+}
+.drag-handle span { display: block; width: 14px; height: 2px; background: var(--fg-secondary); border-radius: 1px; }
+.data-source-tag { font-size: 10px; color: var(--fg-dim); text-align: center; padding: 8px 0 16px; }
+
+.fx-item { display: flex; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); gap: 12px; }
+.fx-flag { font-size: 22px; flex-shrink: 0; }
+.fx-info { flex: 1; }
+.fx-pair { font-size: 15px; font-weight: 600; }
+.fx-name { font-size: 12px; color: var(--fg-secondary); margin-top: 1px; }
+.fx-rate-col { text-align: right; }
+.fx-rate { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fx-change { font-size: 12px; margin-top: 2px; }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--fg-secondary); font-size: 14px; line-height: 1.6; }
+
+.sheet-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  z-index: 80; opacity: 0; pointer-events: none; transition: opacity 0.3s;
+}
+.sheet-overlay.active { opacity: 1; pointer-events: auto; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  max-height: 92vh; z-index: 90; background: var(--bg-sheet);
+  border-radius: 16px 16px 0 0;
+  transform: translateY(100%);
+  transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow-y: auto; overflow-x: hidden;
+  padding: 0 max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-bottom, 0px));
+}
+.sheet.active { transform: translateY(0); }
+.sheet-handle { width: 36px; height: 4px; background: var(--fg-dim); border-radius: 2px; margin: 10px auto 16px; }
+.sheet-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+.sheet-close {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--bg-elevated); display: flex; align-items: center;
+  justify-content: center; font-size: 16px; color: var(--fg-secondary); flex-shrink: 0;
+}
+.detail-ticker { font-size: 24px; font-weight: 700; }
+.detail-name { font-size: 13px; color: var(--fg-secondary); margin-top: 2px; }
+.detail-price-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+.detail-price { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.detail-change { font-size: 15px; font-weight: 500; }
+.time-tabs { display: flex; gap: 4px; margin-bottom: 12px; overflow-x: auto; scrollbar-width: none; }
+.time-tabs::-webkit-scrollbar { display: none; }
+.time-tab {
+  padding: 6px 12px; border-radius: 16px; font-size: 12px; font-weight: 500;
+  background: var(--bg-elevated); color: var(--fg-secondary); white-space: nowrap; transition: all 0.15s;
+}
+.time-tab.active { background: var(--fg); color: var(--bg); }
+.chart-container { width: 100%; height: 280px; margin-bottom: 16px; border-radius: var(--radius-sm); overflow: hidden; }
+.chart-empty {
+  height: 280px; display: flex; align-items: center; justify-content: center;
+  color: var(--fg-dim); font-size: 13px; background: var(--bg-card); border-radius: var(--radius-sm);
+}
+.detail-stats {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 1px; background: var(--border); border-radius: var(--radius-sm);
+  overflow: hidden; margin-bottom: 20px;
+}
+.stat-cell { background: var(--bg-card); padding: 12px 14px; }
+.stat-label { font-size: 11px; color: var(--fg-secondary); margin-bottom: 4px; }
+.stat-value { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.trade-buttons { display: flex; gap: 10px; margin-bottom: 16px; }
+.trade-btn {
+  flex: 1; padding: 14px; border-radius: var(--radius);
+  font-size: 15px; font-weight: 600; text-align: center; transition: opacity 0.15s;
+}
+.trade-btn:active { opacity: 0.7; }
+.trade-btn.buy { background: var(--green); color: #000; }
+.trade-btn.sell { background: var(--red); color: #fff; }
+.tv-link {
+  display: block; text-align: center; padding: 10px;
+  color: var(--fg-secondary); font-size: 12px; text-decoration: none; margin-bottom: 12px;
+}
+.tv-link:hover { color: var(--fg); }
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  z-index: 100; display: none; align-items: flex-end; justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--bg-sheet); border-radius: 16px 16px 0 0;
+  padding: 24px max(20px, env(safe-area-inset-left, 0px)) max(24px, env(safe-area-inset-bottom, 0px));
+  width: 100%; max-width: 600px;
+}
+.modal-title { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+.form-group { margin-bottom: 16px; }
+.form-label { font-size: 13px; color: var(--fg-secondary); margin-bottom: 6px; display: block; }
+.form-input {
+  width: 100%; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--fg); font-size: 16px; outline: none; font-variant-numeric: tabular-nums;
+}
+.form-input:focus { border-color: var(--accent); }
+.form-hint { font-size: 12px; color: var(--fg-secondary); margin-top: 6px; }
+.form-row { display: flex; gap: 10px; margin-top: 20px; }
+.form-cancel {
+  flex: 1; padding: 14px; border-radius: var(--radius);
+  background: var(--bg-elevated); font-size: 15px; font-weight: 500; color: var(--fg-secondary);
+}
+.form-confirm { flex: 2; padding: 14px; border-radius: var(--radius); font-size: 15px; font-weight: 600; }
+.form-confirm.buy { background: var(--green); color: #000; }
+.form-confirm.sell { background: var(--red); color: #fff; }
+
+.menu-panel {
+  position: fixed; inset: 0; z-index: 85; background: var(--bg);
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow-y: auto;
+  padding: env(safe-area-inset-top, 0px) max(20px, env(safe-area-inset-right, 0px)) max(20px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
+}
+.menu-panel.active { transform: translateX(0); }
+.menu-header { display: flex; align-items: center; gap: 12px; padding: 16px 0 20px; }
+.menu-back {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.menu-title { font-size: 20px; font-weight: 600; }
+.menu-item {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 0; border-bottom: 1px solid var(--border); font-size: 15px; cursor: pointer;
+}
+.menu-item:active { opacity: 0.6; }
+.menu-icon { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.menu-icon svg { width: 20px; height: 20px; }
+
+.pos-card { background: var(--bg-card); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 8px; }
+.pos-row { display: flex; justify-content: space-between; align-items: center; }
+.pos-ticker { font-weight: 600; font-size: 15px; }
+.pos-detail { font-size: 13px; color: var(--fg-secondary); margin-top: 6px; display: flex; gap: 16px; }
+.pos-pnl { font-weight: 500; }
+.log-card {
+  background: var(--bg-card); border-radius: var(--radius-sm);
+  padding: 12px 14px; margin-bottom: 6px; display: flex; align-items: center; gap: 12px;
+}
+.log-type { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
+.log-type.buy { color: var(--green); background: var(--green-bg); }
+.log-type.sell { color: var(--red); background: var(--red-bg); }
+.log-info { flex: 1; min-width: 0; }
+.log-ticker { font-weight: 600; font-size: 14px; }
+.log-meta { font-size: 12px; color: var(--fg-secondary); margin-top: 2px; }
+.log-amount { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
+.journal-card { background: var(--bg-card); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 8px; }
+.journal-date { font-size: 12px; color: var(--fg-secondary); margin-bottom: 6px; }
+.journal-content { font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+.loading { text-align: center; padding: 40px; color: var(--fg-dim); font-size: 13px; }
+.toast {
+  position: fixed; bottom: max(80px, calc(env(safe-area-inset-bottom, 0px) + 20px));
+  left: 50%; transform: translateX(-50%) translateY(80px);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  padding: 12px 24px; border-radius: var(--radius);
+  font-size: 14px; z-index: 200; opacity: 0; transition: all 0.3s;
+}
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+.api-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--fg-secondary);
+}
+.api-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+}
+.api-dot.on { background: var(--green); }
+.api-dot.off { background: var(--red); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinning svg { animation: spin 0.8s linear infinite; }
+</style>
+
+<div id="app">
+  <header class="header">
+    <h1>StockPulse</h1>
+    <div class="header-actions">
+      <button class="header-btn" id="btn-refresh" aria-label="Refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-2.2-5.9"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <button class="header-btn" id="btn-search" aria-label="Search">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      </button>
+      <button class="header-btn" id="btn-menu" aria-label="More">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="search-bar" id="search-bar">
+    <input type="text" id="search-input" placeholder="搜索股票、加密货币、汇率...">
+    <div class="search-results" id="search-results"></div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-cat="us">美股</button>
+    <button class="tab" data-cat="crypto">加密货币</button>
+    <button class="tab" data-cat="hk">港股</button>
+    <button class="tab" data-cat="index">指数</button>
+    <button class="tab" data-cat="fx">汇率</button>
+  </div>
+
+  <div class="sort-bar" id="sort-bar">
+    <span>排序</span>
+    <button class="sort-btn active" data-sort="custom">自定义</button>
+    <button class="sort-btn" data-sort="change">涨跌幅</button>
+    <button class="sort-btn" data-sort="price">价格</button>
+  </div>
+
+  <div class="stock-list" id="stock-list">
+    <div class="loading" id="loading-state">加载中...</div>
+  </div>
+</div>
+
+<div class="sheet-overlay" id="sheet-overlay"></div>
+<div class="sheet" id="detail-sheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <div>
+      <div class="detail-ticker" id="detail-ticker"></div>
+      <div class="detail-name" id="detail-name"></div>
+    </div>
+    <button class="sheet-close" id="sheet-close">&times;</button>
+  </div>
+  <div class="detail-price-row">
+    <span class="detail-price" id="detail-price"></span>
+    <span class="detail-change" id="detail-change"></span>
+  </div>
+  <div class="time-tabs" id="time-tabs">
+    <button class="time-tab" data-tf="15" data-res="15">15m</button>
+    <button class="time-tab" data-tf="60" data-res="60">1h</button>
+    <button class="time-tab active" data-tf="D" data-res="D">日K</button>
+    <button class="time-tab" data-tf="W" data-res="W">周K</button>
+    <button class="time-tab" data-tf="M" data-res="M">月K</button>
+  </div>
+  <div class="chart-container" id="chart-container">
+    <div class="chart-empty" id="chart-empty">K线数据加载中...</div>
+  </div>
+  <div class="detail-stats" id="detail-stats"></div>
+  <a class="tv-link" id="tv-link" target="_blank" rel="noopener">在 TradingView 查看完整图表 →</a>
+  <div class="trade-buttons">
+    <button class="trade-btn buy" id="btn-buy">买入</button>
+    <button class="trade-btn sell" id="btn-sell">卖出</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="trade-modal">
+  <div class="modal">
+    <div class="modal-title" id="trade-title"></div>
+    <div class="form-group">
+      <label class="form-label" for="trade-shares">数量（股）</label>
+      <input class="form-input" type="number" id="trade-shares" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+      <div class="form-hint" id="trade-hint"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">交易金额</label>
+      <div id="trade-amount" style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums">$0.00</div>
+    </div>
+    <div class="form-row">
+      <button class="form-cancel" id="trade-cancel">取消</button>
+      <button class="form-confirm" id="trade-confirm">确认</button>
+    </div>
+  </div>
+</div>
+
+<div class="menu-panel" id="menu-panel">
+  <div class="menu-header">
+    <button class="menu-back" id="menu-back">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <div class="menu-title" id="menu-panel-title">更多</div>
+  </div>
+  <div id="menu-content"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.7/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  const TICKER_DB = [
+    {ticker:'AAPL',name:'Apple Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'MSFT',name:'Microsoft Corp.',cat:'us',ex:'NASDAQ'},
+    {ticker:'GOOGL',name:'Alphabet Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'AMZN',name:'Amazon.com Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'META',name:'Meta Platforms',cat:'us',ex:'NASDAQ'},
+    {ticker:'NVDA',name:'NVIDIA Corp.',cat:'us',ex:'NASDAQ'},
+    {ticker:'TSLA',name:'Tesla Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'AMD',name:'Advanced Micro Devices',cat:'us',ex:'NASDAQ'},
+    {ticker:'NFLX',name:'Netflix Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'INTC',name:'Intel Corp.',cat:'us',ex:'NASDAQ'},
+    {ticker:'AVGO',name:'Broadcom Inc.',cat:'us',ex:'NASDAQ'},
+    {ticker:'CRM',name:'Salesforce Inc.',cat:'us',ex:'NYSE'},
+    {ticker:'ORCL',name:'Oracle Corp.',cat:'us',ex:'NYSE'},
+    {ticker:'DIS',name:'Walt Disney Co.',cat:'us',ex:'NYSE'},
+    {ticker:'BA',name:'Boeing Co.',cat:'us',ex:'NYSE'},
+    {ticker:'JPM',name:'JPMorgan Chase',cat:'us',ex:'NYSE'},
+    {ticker:'V',name:'Visa Inc.',cat:'us',ex:'NYSE'},
+    {ticker:'MA',name:'Mastercard Inc.',cat:'us',ex:'NYSE'},
+    {ticker:'HD',name:'Home Depot',cat:'us',ex:'NYSE'},
+    {ticker:'WMT',name:'Walmart Inc.',cat:'us',ex:'NYSE'},
+    {ticker:'SCHW',name:'Charles Schwab',cat:'us',ex:'NYSE'},
+    {ticker:'UBER',name:'Uber Technologies',cat:'us',ex:'NYSE'},
+    {ticker:'RDDT',name:'Reddit Inc.',cat:'us',ex:'NYSE'},
+    {ticker:'PLTR',name:'Palantir Technologies',cat:'us',ex:'NYSE'},
+    {ticker:'COIN',name:'Coinbase Global',cat:'us',ex:'NASDAQ'},
+    {ticker:'PYPL',name:'PayPal Holdings',cat:'us',ex:'NASDAQ'},
+    {ticker:'QQQ',name:'Invesco QQQ Trust',cat:'us',ex:'NASDAQ'},
+    {ticker:'SPY',name:'SPDR S&P 500 ETF',cat:'us',ex:'NYSE'},
+    {ticker:'BTC-USD',name:'Bitcoin',cat:'crypto',ex:'CRYPTO',cgId:'bitcoin'},
+    {ticker:'ETH-USD',name:'Ethereum',cat:'crypto',ex:'CRYPTO',cgId:'ethereum'},
+    {ticker:'SOL-USD',name:'Solana',cat:'crypto',ex:'CRYPTO',cgId:'solana'},
+    {ticker:'BNB-USD',name:'BNB',cat:'crypto',ex:'CRYPTO',cgId:'binancecoin'},
+    {ticker:'XRP-USD',name:'XRP',cat:'crypto',ex:'CRYPTO',cgId:'ripple'},
+    {ticker:'DOGE-USD',name:'Dogecoin',cat:'crypto',ex:'CRYPTO',cgId:'dogecoin'},
+    {ticker:'ADA-USD',name:'Cardano',cat:'crypto',ex:'CRYPTO',cgId:'cardano'},
+    {ticker:'AVAX-USD',name:'Avalanche',cat:'crypto',ex:'CRYPTO',cgId:'avalanche-2'},
+    {ticker:'LINK-USD',name:'Chainlink',cat:'crypto',ex:'CRYPTO',cgId:'chainlink'},
+    {ticker:'SUI-USD',name:'Sui',cat:'crypto',ex:'CRYPTO',cgId:'sui'},
+    {ticker:'PEPE-USD',name:'Pepe',cat:'crypto',ex:'CRYPTO',cgId:'pepe'},
+    {ticker:'0700.HK',name:'腾讯控股',cat:'hk',ex:'HKEX'},
+    {ticker:'9988.HK',name:'阿里巴巴',cat:'hk',ex:'HKEX'},
+    {ticker:'3690.HK',name:'美团',cat:'hk',ex:'HKEX'},
+    {ticker:'1810.HK',name:'小米集团',cat:'hk',ex:'HKEX'},
+    {ticker:'9618.HK',name:'京东集团',cat:'hk',ex:'HKEX'},
+    {ticker:'9888.HK',name:'百度集团',cat:'hk',ex:'HKEX'},
+    {ticker:'1024.HK',name:'快手',cat:'hk',ex:'HKEX'},
+    {ticker:'0388.HK',name:'香港交易所',cat:'hk',ex:'HKEX'},
+    {ticker:'1211.HK',name:'比亚迪',cat:'hk',ex:'HKEX'},
+    {ticker:'USDCNY',name:'美元/人民币',cat:'fx',ex:'FX',base:'USD',quote:'CNY',flag:'🇨🇳'},
+    {ticker:'USDHKD',name:'美元/港币',cat:'fx',ex:'FX',base:'USD',quote:'HKD',flag:'🇭🇰'},
+    {ticker:'EURUSD',name:'欧元/美元',cat:'fx',ex:'FX',base:'EUR',quote:'USD',flag:'🇪🇺'},
+    {ticker:'GBPUSD',name:'英镑/美元',cat:'fx',ex:'FX',base:'GBP',quote:'USD',flag:'🇬🇧'},
+    {ticker:'USDJPY',name:'美元/日元',cat:'fx',ex:'FX',base:'USD',quote:'JPY',flag:'🇯🇵'},
+    {ticker:'USDKRW',name:'美元/韩元',cat:'fx',ex:'FX',base:'USD',quote:'KRW',flag:'🇰🇷'},
+    {ticker:'USDSGD',name:'美元/新加坡元',cat:'fx',ex:'FX',base:'USD',quote:'SGD',flag:'🇸🇬'},
+    {ticker:'AUDUSD',name:'澳元/美元',cat:'fx',ex:'FX',base:'AUD',quote:'USD',flag:'🇦🇺'},
+    {ticker:'USDTWD',name:'美元/新台币',cat:'fx',ex:'FX',base:'USD',quote:'TWD',flag:'🇹🇼'},
+    {ticker:'USDNOK',name:'美元/挪威克朗',cat:'fx',ex:'FX',base:'USD',quote:'NOK',flag:'🇳🇴'},
+  ];
+
+  const LS = {
+    get(k, fb) { try { const v = localStorage.getItem('sp_' + k); return v ? JSON.parse(v) : fb; } catch { return fb; } },
+    set(k, v) { try { localStorage.setItem('sp_' + k, JSON.stringify(v)); } catch {} }
+  };
+
+  let finnhubKey = LS.get('key', null);
+  let stocks = LS.get('stocks', []);
+  stocks.forEach(s => { s.price = null; s.change = 0; s.changePercent = 0; s.sparkline = []; delete s.open; delete s.high; delete s.low; delete s.prevClose; delete s.lastUpdated; });
+  let positions = LS.get('positions', {});
+  let trades = LS.get('trades', []);
+  let journal = LS.get('journal', []);
+  let fxRates = {};
+  let fxPrevRates = {};
+  let currentCat = 'us', currentSort = 'custom', searchQuery = '';
+  let currentTicker = null, tradeType = 'buy';
+  let chart = null, candleSeries = null;
+  let currentRes = 'D';
+  let refreshTimer = null, searchTimer = null;
+
+  const $ = id => document.getElementById(id);
+  const listEl = $('stock-list'), loadingEl = $('loading-state');
+
+  function saveStocks() { LS.set('stocks', stocks.map(s => ({ ticker: s.ticker, name: s.name, category: s.category, exchange: s.exchange, order: s.order }))); }
+  function savePositions() { LS.set('positions', positions); }
+  function saveTrades() { LS.set('trades', trades); }
+
+  async function fh(endpoint, params = {}) {
+    if (!finnhubKey) return null;
+    const u = new URL('https://finnhub.io/api/v1/' + endpoint);
+    params.token = finnhubKey;
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
+    try { const r = await fetch(u); if (!r.ok) return null; return await r.json(); } catch { return null; }
+  }
+
+  function init() {
+    if (!stocks.length) {
+      const defs = [
+        {t:'AAPL',n:'Apple Inc.',c:'us',e:'NASDAQ'},{t:'NVDA',n:'NVIDIA Corp.',c:'us',e:'NASDAQ'},
+        {t:'MSFT',n:'Microsoft Corp.',c:'us',e:'NASDAQ'},{t:'GOOGL',n:'Alphabet Inc.',c:'us',e:'NASDAQ'},
+        {t:'TSLA',n:'Tesla Inc.',c:'us',e:'NASDAQ'},{t:'AMZN',n:'Amazon.com Inc.',c:'us',e:'NASDAQ'},
+        {t:'META',n:'Meta Platforms',c:'us',e:'NASDAQ'},
+        {t:'BTC-USD',n:'Bitcoin',c:'crypto',e:'CRYPTO'},{t:'ETH-USD',n:'Ethereum',c:'crypto',e:'CRYPTO'},
+        {t:'SOL-USD',n:'Solana',c:'crypto',e:'CRYPTO'},
+      ];
+      stocks = defs.map((d, i) => ({ ticker: d.t, name: d.n, category: d.c, exchange: d.e, price: null, change: 0, changePercent: 0, sparkline: [], order: i }));
+      saveStocks();
+    }
+    stocks.forEach(s => { s.hasPosition = !!positions[s.ticker]; });
+    loadingEl.style.display = 'none';
+    renderList();
+    if (finnhubKey) {
+      setTimeout(refreshAllQuotes, 500);
+      refreshTimer = setInterval(refreshAllQuotes, 60000);
+    }
+    fetchCryptoPrices();
+    if (!finnhubKey) fetchFxFree();
+  }
+
+  async function refreshAllQuotes() {
+    const btn = $('btn-refresh');
+    btn.classList.add('spinning');
+    try {
+      if (finnhubKey) {
+        for (const s of stocks) {
+          if (s.category === 'crypto') continue;
+          const q = await fh('quote', { symbol: s.ticker });
+          if (q && q.c > 0) {
+            Object.assign(s, { price: q.c, change: q.d, changePercent: parseFloat((q.dp || 0).toFixed(2)), open: q.o, high: q.h, low: q.l, prevClose: q.pc, lastUpdated: new Date().toISOString() });
+            if (!s.sparkline) s.sparkline = [];
+            s.sparkline.push(q.c);
+            if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30);
+          }
+          await new Promise(r => setTimeout(r, 120));
+        }
+        const fxData = await fh('forex/rates', { base: 'USD' });
+        if (fxData && fxData.quote) {
+          for (const pair of TICKER_DB.filter(t => t.cat === 'fx')) {
+            let rate;
+            if (pair.base === 'USD' && fxData.quote[pair.quote]) rate = fxData.quote[pair.quote];
+            else if (pair.quote === 'USD' && fxData.quote[pair.base]) rate = 1 / fxData.quote[pair.base];
+            if (rate) { const prev = fxRates[pair.ticker]; fxRates[pair.ticker] = rate; if (prev) fxPrevRates[pair.ticker] = prev; }
+          }
+          }
+        }
+      }
+      await fetchCryptoPrices();
+      renderList();
+    } finally { setTimeout(() => btn.classList.remove('spinning'), 400); }
+  }
+
+  async function fetchFxFree() {
+    try {
+      const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
+      if (!res.ok) return; const data = await res.json(); if (!data.rates) return;
+      for (const pair of TICKER_DB.filter(t => t.cat === 'fx')) {
+        let rate;
+        if (pair.base === 'USD' && data.rates[pair.quote]) rate = data.rates[pair.quote];
+        else if (pair.quote === 'USD' && data.rates[pair.base]) rate = 1 / data.rates[pair.base];
+        if (rate) { const prev = fxRates[pair.ticker]; fxRates[pair.ticker] = rate; if (prev) fxPrevRates[pair.ticker] = prev; }
+      }
+      if (currentCat === 'fx') renderList();
+    } catch {}
+  }
+
+  async function fetchCryptoPrices() {
+    const cryptoStocks = stocks.filter(s => s.category === 'crypto');
+    if (!cryptoStocks.length) return;
+    const cgIds = cryptoStocks.map(s => { const e = TICKER_DB.find(t => t.ticker === s.ticker); return e?.cgId; }).filter(Boolean);
+    if (!cgIds.length) return;
+    try {
+      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=' + cgIds.join(',') + '&vs_currencies=usd&include_24hr_change=true');
+      if (!res.ok) return; const data = await res.json();
+      for (const s of cryptoStocks) {
+        const e = TICKER_DB.find(t => t.ticker === s.ticker);
+        if (!e?.cgId || !data[e.cgId]) continue;
+        const info = data[e.cgId];
+        if (info.usd) {
+          s.price = info.usd;
+          if (info.usd_24h_change) s.changePercent = parseFloat(info.usd_24h_change.toFixed(2));
+          if (!s.sparkline) s.sparkline = [];
+          s.sparkline.push(info.usd);
+          if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30);
+        }
+      }
+      if (currentCat === 'crypto') renderList();
+    } catch {}
+  }
+
+  function renderList() {
+    if (currentCat === 'fx') { renderFxList(); return; }
+    $('sort-bar').style.display = 'flex';
+    let items = stocks.filter(s => (s.category || 'us') === currentCat);
+    if (searchQuery && !$('search-results').classList.contains('active')) {
+      const q = searchQuery.toLowerCase();
+      items = items.filter(s => s.ticker.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q));
+    }
+    items = sortStocks(items);
+    if (!items.length) {
+      const cn = {us:'美股',crypto:'加密货币',hk:'港股',index:'指数'}[currentCat] || '';
+      listEl.innerHTML = '<div class="empty-state">此板块暂无关注的标的<br><span style="font-size:12px;color:var(--fg-dim)">点击搜索图标添加' + cn + '</span></div>';
+      return;
+    }
+    listEl.innerHTML = items.map((s, i) => {
+      const cp = s.changePercent || 0, dir = cp >= 0 ? 'up' : 'down', sign = cp >= 0 ? '+' : '';
+      const spark = renderSparkline(s.sparkline, dir);
+      const dot = s.hasPosition ? '<span class="position-dot"></span>' : '';
+      return '<div class="stock-item" data-ticker="' + s.ticker + '" draggable="true" data-order="' + (s.order ?? i) + '">' +
+        '<div class="drag-handle"><span></span><span></span><span></span></div>' +
+        '<div class="stock-info"><div class="stock-ticker-row"><span class="stock-ticker">' + s.ticker + '</span>' + dot + '</div><div class="stock-name">' + (s.name || '') + '</div></div>' +
+        '<div class="stock-sparkline">' + spark + '</div>' +
+        '<div class="stock-price-col"><div class="stock-price">' + fmtPrice(s.price, s.category) + '</div><span class="stock-change ' + dir + '">' + sign + cp.toFixed(2) + '%</span></div></div>';
+    }).join('');
+    const srcMap = { us: finnhubKey ? 'Finnhub 实时' : '设置 API Key 获取实时数据', crypto: 'CoinGecko 实时', hk: finnhubKey ? 'Finnhub' : '设置 API Key', index: finnhubKey ? 'Finnhub' : '设置 API Key' };
+    if (srcMap[currentCat]) listEl.innerHTML += '<div class="data-source-tag">' + srcMap[currentCat] + '</div>';
+    listEl.querySelectorAll('.stock-item').forEach(el => {
+      el.addEventListener('click', e => { if (!e.target.closest('.drag-handle')) openDetail(el.dataset.ticker); });
+    });
+    initDragSort();
+  }
+
+  function renderFxList() {
+    $('sort-bar').style.display = 'none';
+    const pairs = TICKER_DB.filter(t => t.cat === 'fx');
+    if (!Object.keys(fxRates).length) { listEl.innerHTML = '<div class="loading">汇率加载中...</div>'; return; }
+    listEl.innerHTML = pairs.map(p => {
+      const rate = fxRates[p.ticker]; if (!rate) return '';
+      const prev = fxPrevRates[p.ticker] || rate;
+      const chg = prev ? ((rate - prev) / prev * 100) : 0;
+      const color = chg >= 0 ? 'var(--green)' : 'var(--red)', sign = chg >= 0 ? '+' : '';
+      const dec = rate > 100 ? 2 : rate > 10 ? 3 : 4;
+      return '<div class="fx-item"><div class="fx-flag">' + (p.flag||'') + '</div><div class="fx-info"><div class="fx-pair">' + p.base + '/' + p.quote + '</div><div class="fx-name">' + p.name + '</div></div><div class="fx-rate-col"><div class="fx-rate">' + rate.toFixed(dec) + '</div><div class="fx-change" style="color:' + color + '">' + sign + chg.toFixed(3) + '%</div></div></div>';
+    }).filter(Boolean).join('');
+    listEl.innerHTML += '<div class="data-source-tag">' + (finnhubKey ? 'Finnhub 实时' : 'ExchangeRate-API') + '</div>';
+  }
+
+  function sortStocks(items) {
+    const a = [...items];
+    if (currentSort === 'change') a.sort((x, y) => Math.abs(y.changePercent || 0) - Math.abs(x.changePercent || 0));
+    else if (currentSort === 'price') a.sort((x, y) => (y.price || 0) - (x.price || 0));
+    else a.sort((x, y) => { if (x.hasPosition !== y.hasPosition) return x.hasPosition ? -1 : 1; return (x.order ?? 999) - (y.order ?? 999); });
+    return a;
+  }
+
+  function renderSparkline(data, dir) {
+    if (!data?.length) return '';
+    const w = 64, h = 32, pad = 2;
+    const mn = Math.min(...data), mx = Math.max(...data), rng = mx - mn || 1;
+    const pts = data.map((v, i) => (pad + i / (data.length - 1) * (w - pad * 2)).toFixed(1) + ',' + (pad + (1 - (v - mn) / rng) * (h - pad * 2)).toFixed(1)).join(' ');
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '"><polyline points="' + pts + '" fill="none" stroke="' + (dir === 'up' ? 'var(--green)' : 'var(--red)') + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  }
+
+  function fmtPrice(p, cat) {
+    if (p == null) return '—';
+    if (cat === 'crypto' && p < 1) return '$' + p.toFixed(6);
+    return '$' + (p >= 1000 ? p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : p.toFixed(2));
+  }
+
+  function doSearch(q) {
+    const rEl = $('search-results');
+    if (!q) { rEl.classList.remove('active'); searchQuery = ''; renderList(); return; }
+    searchQuery = q; showLocalResults(q);
+    if (searchTimer) clearTimeout(searchTimer);
+    if (finnhubKey && q.length >= 2) searchTimer = setTimeout(() => fhSearch(q), 350);
+  }
+
+  function showLocalResults(q) {
+    const rEl = $('search-results'), ql = q.toLowerCase();
+    const watched = new Set(stocks.map(s => s.ticker));
+    const wMatches = stocks.filter(s => s.ticker.toLowerCase().includes(ql) || (s.name || '').toLowerCase().includes(ql)).slice(0, 5);
+    const aMatches = TICKER_DB.filter(t => !watched.has(t.ticker) && (t.ticker.toLowerCase().includes(ql) || t.name.toLowerCase().includes(ql))).slice(0, 6);
+    if (!wMatches.length && !aMatches.length) {
+      rEl.innerHTML = '<div style="padding:14px;text-align:center;color:var(--fg-dim);font-size:13px">输入代码回车直接添加' + (finnhubKey ? '<br>Finnhub 搜索中...' : '') + '</div>';
+      rEl.classList.add('active'); return;
+    }
+    let html = '';
+    if (wMatches.length) {
+      html += '<div class="search-section-label">已关注</div>' + wMatches.map(s =>
+        '<div class="search-result-item" data-action="open" data-ticker="' + s.ticker + '"><div class="search-result-info"><div class="search-result-ticker">' + s.ticker + '</div><div class="search-result-name">' + (s.name || '') + '</div></div><span class="search-result-check">&#10003;</span></div>'
+      ).join('');
+    }
+    if (aMatches.length) {
+      html += '<div class="search-section-label">添加到关注</div>' + aMatches.map(t => {
+        const cl = {us:'美股',crypto:'加密',hk:'港股',index:'指数',fx:'汇率'}[t.cat] || '';
+        return '<div class="search-result-item" data-action="add" data-ticker="' + t.ticker + '" data-cat="' + t.cat + '" data-name="' + t.name + '" data-ex="' + t.ex + '"><div class="search-result-info"><div class="search-result-ticker">' + t.ticker + '</div><div class="search-result-name">' + t.name + '</div></div><span class="search-result-cat">' + cl + '</span><span class="search-result-add">+</span></div>';
+      }).join('');
+    }
+    if (finnhubKey && q.length >= 2) html += '<div class="search-loading">Finnhub 搜索中...</div>';
+    rEl.innerHTML = html; rEl.classList.add('active'); bindSearchClicks();
+  }
+
+  async function fhSearch(q) {
+    const data = await fh('search', { q });
+    if (!data?.result?.length) { const el = document.querySelector('.search-loading'); if (el) el.remove(); return; }
+    const watched = new Set(stocks.map(s => s.ticker));
+    const localTickers = new Set(TICKER_DB.map(t => t.ticker));
+    const results = data.result.filter(r => r.symbol && !watched.has(r.symbol) && !localTickers.has(r.symbol)).slice(0, 8);
+    if (!results.length) { const el = document.querySelector('.search-loading'); if (el) el.remove(); return; }
+    const rEl = $('search-results'), loadEl = rEl.querySelector('.search-loading');
+    let html = '<div class="search-section-label">FINNHUB</div>' + results.map(r => {
+      const cat = guessCat(r), cl = {us:'美股',crypto:'加密',hk:'港股',index:'指数'}[cat] || r.type || '';
+      return '<div class="search-result-item" data-action="add" data-ticker="' + (r.displaySymbol || r.symbol) + '" data-cat="' + cat + '" data-name="' + (r.description || '') + '" data-ex="' + (r.type || '') + '"><div class="search-result-info"><div class="search-result-ticker">' + (r.displaySymbol || r.symbol) + '</div><div class="search-result-name">' + (r.description || '') + '</div></div><span class="search-result-cat">' + cl + '</span><span class="search-result-add">+</span></div>';
+    }).join('');
+    if (loadEl) loadEl.outerHTML = html; else rEl.innerHTML += html;
+    bindSearchClicks();
+  }
+
+  function guessCat(r) {
+    const t = (r.type || '').toLowerCase();
+    if (t.includes('crypto')) return 'crypto';
+    const s = r.symbol || '';
+    if (s.includes('.HK')) return 'hk';
+    if (s.startsWith('^')) return 'index';
+    return 'us';
+  }
+
+  function bindSearchClicks() {
+    $('search-results').querySelectorAll('.search-result-item').forEach(el => {
+      el.onclick = () => {
+        if (el.dataset.action === 'open') { $('search-results').classList.remove('active'); openDetail(el.dataset.ticker); }
+        else if (el.dataset.action === 'add') {
+          addToWatchlist(el.dataset.ticker, el.dataset.name, el.dataset.cat, el.dataset.ex);
+          const add = el.querySelector('.search-result-add');
+          if (add) { add.textContent = '✓'; add.style.color = 'var(--green)'; }
+        }
+      };
+    });
+  }
+
+  async function addToWatchlist(ticker, name, cat, ex) {
+    if (stocks.find(s => s.ticker === ticker)) { showToast(ticker + ' 已在列表'); return; }
+    const maxOrd = stocks.filter(s => s.category === (cat || 'us')).reduce((m, s) => Math.max(m, s.order ?? 0), -1);
+    const ns = { ticker, name: name || ticker, category: cat || 'us', exchange: ex || '', price: null, change: 0, changePercent: 0, sparkline: [], order: maxOrd + 1, hasPosition: false };
+    stocks.push(ns); saveStocks(); showToast('已添加 ' + ticker); renderList();
+    if (finnhubKey && cat !== 'crypto') {
+      const q = await fh('quote', { symbol: ticker });
+      if (q?.c > 0) {
+        Object.assign(ns, { price: q.c, change: q.d, changePercent: parseFloat((q.dp||0).toFixed(2)), open: q.o, high: q.h, low: q.l, prevClose: q.pc });
+        ns.sparkline.push(q.c);
+        renderList();
+      }
+    }
+    if (cat === 'crypto') fetchCryptoPrices();
+  }
+
+  let dragSrc = null;
+  function initDragSort() {
+    listEl.querySelectorAll('.stock-item').forEach(el => {
+      el.addEventListener('dragstart', e => { dragSrc = el; el.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', el.dataset.ticker); });
+      el.addEventListener('dragend', () => { el.classList.remove('dragging'); listEl.querySelectorAll('.stock-item').forEach(x => x.classList.remove('drag-over')); dragSrc = null; });
+      el.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (el !== dragSrc) el.classList.add('drag-over'); });
+      el.addEventListener('dragleave', () => el.classList.remove('drag-over'));
+      el.addEventListener('drop', e => { e.preventDefault(); el.classList.remove('drag-over'); if (dragSrc && dragSrc !== el) saveDragOrder(dragSrc.dataset.ticker, el.dataset.ticker); });
+    });
+  }
+
+  function saveDragOrder(from, to) {
+    const cat = stocks.filter(s => s.category === currentCat).sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+    const ts = cat.map(s => s.ticker);
+    const fi = ts.indexOf(from), ti = ts.indexOf(to);
+    if (fi < 0 || ti < 0) return;
+    ts.splice(fi, 1); ts.splice(ti, 0, from);
+    ts.forEach((t, i) => { const s = stocks.find(x => x.ticker === t); if (s) s.order = i; });
+    saveStocks(); renderList();
+  }
+
+  function openDetail(ticker) {
+    currentTicker = ticker;
+    const s = stocks.find(x => x.ticker === ticker);
+    if (!s) return;
+    $('detail-ticker').textContent = ticker;
+    $('detail-name').textContent = s.name || '';
+    $('detail-price').textContent = fmtPrice(s.price, s.category);
+    const cp = s.changePercent || 0, ch = s.change || 0, sign = cp >= 0 ? '+' : '';
+    const cel = $('detail-change');
+    cel.textContent = sign + ch.toFixed(2) + ' (' + sign + cp.toFixed(2) + '%)';
+    cel.style.color = cp >= 0 ? 'var(--green)' : 'var(--red)';
+    $('detail-stats').innerHTML = [
+      ['今日开盘', s.open], ['今日最高', s.high], ['今日最低', s.low],
+      ['昨收', s.prevClose], ['成交量', s.volume ? fmtVol(s.volume) : null], ['市值', s.marketCap ? fmtCap(s.marketCap) : null]
+    ].map(function(pair) { const l = pair[0], v = pair[1]; return '<div class="stat-cell"><div class="stat-label">' + l + '</div><div class="stat-value">' + (v != null ? (typeof v === 'number' ? fmtPrice(v) : v) : '—') + '</div></div>'; }).join('');
+    $('tv-link').href = 'https://www.tradingview.com/chart/?symbol=' + (s.exchange || 'NASDAQ') + ':' + ticker;
+    $('btn-sell').style.opacity = positions[ticker] ? '1' : '0.3';
+    showSheet();
+    currentRes = 'D';
+    document.querySelectorAll('.time-tab').forEach(t => t.classList.toggle('active', t.dataset.res === 'D'));
+    loadCandles(ticker);
+  }
+
+  function fmtVol(v) { return v >= 1e9 ? (v/1e9).toFixed(2)+'亿' : v >= 1e4 ? (v/1e4).toFixed(0)+'万' : String(v); }
+  function fmtCap(v) { return v >= 1e12 ? '$'+(v/1e12).toFixed(2)+'万亿' : v >= 1e8 ? '$'+(v/1e8).toFixed(2)+'亿' : '$'+v; }
+
+  async function loadCandles(ticker) {
+    const empty = $('chart-empty');
+    empty.style.display = 'flex'; empty.textContent = 'K线加载中...';
+    if (chart) { chart.remove(); chart = null; candleSeries = null; }
+    if (!finnhubKey) { empty.textContent = '设置 Finnhub API Key 查看K线'; return; }
+    const to = Math.floor(Date.now() / 1000);
+    const rangeSec = {15: 5*86400, 60: 30*86400, D: 180*86400, W: 365*86400, M: 730*86400}[currentRes] || 180*86400;
+    const from = to - rangeSec;
+    const isCrypto = stocks.find(s => s.ticker === ticker)?.category === 'crypto';
+    const endpoint = isCrypto ? 'crypto/candle' : 'stock/candle';
+    const symbol = isCrypto ? 'BINANCE:' + ticker.replace('-USD', 'USDT') : ticker;
+    const data = await fh(endpoint, { symbol, resolution: currentRes, from, to });
+    if (data?.s === 'ok' && data.t?.length) {
+      const candles = data.t.map((t, i) => ({ time: new Date(t * 1000).toISOString().slice(0, 10), open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i] }));
+      empty.style.display = 'none';
+      renderChart($('chart-container'), currentRes === 'D' ? candles : candles);
+    } else { empty.textContent = 'Finnhub 无此标的K线数据'; }
+  }
+
+  function renderChart(container, data) {
+    chart = LightweightCharts.createChart(container, {
+      layout: { background: { type: 'solid', color: '#000' }, textColor: '#666', fontFamily: 'Inter, sans-serif', fontSize: 11 },
+      grid: { vertLines: { color: '#111' }, horzLines: { color: '#111' } },
+      timeScale: { borderColor: '#222', timeVisible: ['15','60'].includes(currentRes) },
+      rightPriceScale: { borderColor: '#222' },
+      crosshair: { mode: 0, vertLine: { color: '#333', width: 1 }, horzLine: { color: '#333', width: 1 } },
+      handleScroll: { vertTouchDrag: false },
+    });
+    candleSeries = chart.addCandlestickSeries({
+      upColor: '#22c55e', downColor: '#ef4444', borderUpColor: '#22c55e', borderDownColor: '#ef4444', wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+    });
+    candleSeries.setData(data);
+    chart.timeScale().fitContent();
+  }
+
+  function showSheet() { $('sheet-overlay').classList.add('active'); $('detail-sheet').classList.add('active'); document.body.style.overflow = 'hidden'; }
+  function hideSheet() { $('sheet-overlay').classList.remove('active'); $('detail-sheet').classList.remove('active'); document.body.style.overflow = ''; if (chart) { chart.remove(); chart = null; candleSeries = null; } }
+
+  function openTrade(type) {
+    if (!currentTicker) return;
+    tradeType = type;
+    const s = stocks.find(x => x.ticker === currentTicker);
+    if (!s) return;
+    const pos = positions[currentTicker];
+    if (type === 'sell' && !pos) { showToast('暂无持仓'); return; }
+    $('trade-title').textContent = (type === 'buy' ? '买入 ' : '卖出 ') + currentTicker;
+    $('trade-shares').value = ''; $('trade-amount').textContent = '$0.00';
+    $('trade-hint').textContent = type === 'buy' ? '当前价格 ' + fmtPrice(s.price, s.category) : '持仓 ' + pos.shares + ' 股 · 均价 ' + fmtPrice(pos.avgCost);
+    const cf = $('trade-confirm'); cf.className = 'form-confirm ' + type; cf.textContent = type === 'buy' ? '确认买入' : '确认卖出';
+    $('trade-modal').classList.add('active');
+    setTimeout(() => $('trade-shares').focus(), 100);
+  }
+
+  $('trade-shares').addEventListener('input', () => {
+    const s = stocks.find(x => x.ticker === currentTicker);
+    $('trade-amount').textContent = '$' + ((parseFloat($('trade-shares').value) || 0) * (s?.price || 0)).toFixed(2);
+  });
+
+  function executeTrade() {
+    if (!currentTicker) return;
+    const shares = parseFloat($('trade-shares').value);
+    if (!shares || shares <= 0) { showToast('请输入有效数量'); return; }
+    const s = stocks.find(x => x.ticker === currentTicker);
+    if (!s) return;
+    const price = s.price, pos = positions[currentTicker];
+    if (tradeType === 'sell' && (!pos || shares > pos.shares)) { showToast('卖出数量超过持仓'); return; }
+    trades.unshift({ ticker: currentTicker, type: tradeType, shares, price, amount: shares * price, timestamp: new Date().toISOString() });
+    if (trades.length > 50) trades = trades.slice(0, 50);
+    saveTrades();
+    if (tradeType === 'buy') {
+      if (pos) { const ns = pos.shares + shares; positions[currentTicker] = { ...pos, shares: ns, avgCost: (pos.avgCost * pos.shares + price * shares) / ns }; }
+      else positions[currentTicker] = { ticker: currentTicker, shares, avgCost: price, category: s.category || 'us' };
+    } else {
+      const rem = pos.shares - shares;
+      if (rem <= 0.001) delete positions[currentTicker];
+      else positions[currentTicker] = { ...pos, shares: rem };
+    }
+    savePositions();
+    stocks.forEach(s => { s.hasPosition = !!positions[s.ticker]; });
+    $('trade-modal').classList.remove('active');
+    showToast((tradeType === 'buy' ? '买入 ' : '卖出 ') + shares + ' 股 ' + currentTicker);
+    renderList();
+  }
+
+  let menuView = 'main';
+  function openMenu() { menuView = 'main'; renderMenu(); $('menu-panel').classList.add('active'); }
+  function closeMenu() { $('menu-panel').classList.remove('active'); }
+
+  function renderMenu() {
+    const c = $('menu-content'), t = $('menu-panel-title');
+    if (menuView === 'main') {
+      t.textContent = '更多';
+      const apiStatus = finnhubKey ? '<span class="api-dot on"></span>已连接' : '<span class="api-dot off"></span>未设置';
+      c.innerHTML =
+        '<div class="menu-item" data-view="positions"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>持仓表</div>' +
+        '<div class="menu-item" data-view="trades"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>交易记录</div>' +
+        '<div class="menu-item" data-view="journal"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></span>交易日志</div>' +
+        '<div class="menu-item" data-view="settings"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></span>API 设置 <span class="api-status" style="margin-left:auto">' + apiStatus + '</span></div>';
+      c.querySelectorAll('.menu-item').forEach(el => { el.onclick = () => { menuView = el.dataset.view; renderMenu(); }; });
+    } else if (menuView === 'settings') {
+      t.textContent = 'API 设置';
+      const masked = finnhubKey ? finnhubKey.slice(0, 4) + '****' + finnhubKey.slice(-4) : '';
+      c.innerHTML =
+        '<div style="margin-bottom:20px"><div class="form-label">Finnhub API Key</div>' +
+        '<div style="font-size:12px;color:var(--fg-dim);margin-bottom:8px">免费注册: finnhub.io · 支持美股实时、外汇、加密、K线搜索</div>' +
+        '<input class="form-input" type="text" id="fh-key-input" placeholder="输入你的 Finnhub API Key" value="' + masked + '">' +
+        '<div style="margin-top:12px"><button class="trade-btn buy" id="save-key-btn" style="font-size:14px;padding:10px">保存</button></div></div>' +
+        '<div style="font-size:12px;color:var(--fg-dim);line-height:1.6">Key 和关注列表存储在 localStorage 中，所有行情数据均从 API 实时拉取，不缓存在本地。<br>保存后页面自动每60秒刷新报价。</div>';
+      $('save-key-btn').onclick = () => {
+        const val = $('fh-key-input').value.trim();
+        if (!val || val.includes('****')) { showToast('请输入完整的 Key'); return; }
+        finnhubKey = val;
+        LS.set('key', val);
+        showToast('Key 已保存，开始自动刷新');
+        if (!refreshTimer) refreshTimer = setInterval(refreshAllQuotes, 60000);
+        setTimeout(refreshAllQuotes, 500);
+        menuView = 'main'; renderMenu();
+      };
+    } else if (menuView === 'positions') {
+      t.textContent = '持仓表';
+      const entries = Object.entries(positions);
+      if (!entries.length) { c.innerHTML = '<div class="empty-state">暂无持仓</div>'; return; }
+      let tv = 0, tc = 0;
+      const cards = entries.map(function(pair) {
+        const tk = pair[0], pos = pair[1];
+        const s = stocks.find(x => x.ticker === tk);
+        const pr = s?.price || pos.avgCost;
+        const val = pos.shares * pr, cost = pos.shares * pos.avgCost, pnl = val - cost;
+        const pp = cost > 0 ? (pnl / cost * 100) : 0; tv += val; tc += cost;
+        const col = pnl >= 0 ? 'var(--green)' : 'var(--red)', sg = pnl >= 0 ? '+' : '';
+        return '<div class="pos-card"><div class="pos-row"><span class="pos-ticker">' + tk + '</span><span class="pos-pnl" style="color:' + col + '">' + sg + '$' + pnl.toFixed(2) + ' (' + sg + pp.toFixed(1) + '%)</span></div><div class="pos-detail"><span>' + pos.shares + '股</span><span>均价 ' + fmtPrice(pos.avgCost) + '</span><span>现价 ' + fmtPrice(pr) + '</span></div></div>';
+      }).join('');
+      const tp = tv - tc, ts2 = tp >= 0 ? '+' : '', tcol = tp >= 0 ? 'var(--green)' : 'var(--red)';
+      c.innerHTML = '<div style="margin-bottom:16px;padding:16px;background:var(--bg-card);border-radius:var(--radius-sm)"><div style="font-size:12px;color:var(--fg-secondary);margin-bottom:4px">总市值</div><div style="font-size:24px;font-weight:700;font-variant-numeric:tabular-nums">$' + tv.toFixed(2) + '</div><div style="font-size:14px;color:' + tcol + ';margin-top:4px">' + ts2 + '$' + tp.toFixed(2) + '</div></div>' + cards;
+    } else if (menuView === 'trades') {
+      t.textContent = '交易记录';
+      if (!trades.length) { c.innerHTML = '<div class="empty-state">暂无交易记录</div>'; return; }
+      c.innerHTML = trades.map(tr => {
+        const d = new Date(tr.timestamp);
+        return '<div class="log-card"><span class="log-type ' + tr.type + '">' + (tr.type === 'buy' ? '买入' : '卖出') + '</span><div class="log-info"><div class="log-ticker">' + tr.ticker + '</div><div class="log-meta">' + tr.shares + '股 @ ' + fmtPrice(tr.price) + ' · ' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0') + '</div></div><div class="log-amount">$' + (tr.amount||0).toFixed(2) + '</div></div>';
+      }).join('');
+    } else if (menuView === 'journal') {
+      t.textContent = '交易日志';
+      if (!journal.length) { c.innerHTML = '<div class="empty-state">暂无日志</div>'; return; }
+      c.innerHTML = journal.map(j => '<div class="journal-card"><div class="journal-date">' + (j.date||'') + '</div><div class="journal-content">' + (j.content||'') + '</div></div>').join('');
+    }
+  }
+
+  function showToast(msg) { const el = $('toast'); el.textContent = msg; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2500); }
+
+  $('tabs').addEventListener('click', e => { const tab = e.target.closest('.tab'); if (!tab) return; document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); currentCat = tab.dataset.cat; $('sort-bar').style.display = currentCat === 'fx' ? 'none' : 'flex'; renderList(); });
+  document.querySelector('.sort-bar').addEventListener('click', e => { const btn = e.target.closest('.sort-btn'); if (!btn) return; document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); currentSort = btn.dataset.sort; renderList(); });
+  $('btn-search').addEventListener('click', () => { const bar = $('search-bar'); bar.classList.toggle('active'); if (bar.classList.contains('active')) $('search-input').focus(); else { $('search-input').value = ''; searchQuery = ''; $('search-results').classList.remove('active'); renderList(); } });
+  $('search-input').addEventListener('input', e => doSearch(e.target.value));
+  $('search-input').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const val = e.target.value.trim().toUpperCase(); if (!val) return;
+    const existing = stocks.find(s => s.ticker === val);
+    if (existing) { $('search-results').classList.remove('active'); openDetail(val); }
+    else { const entry = TICKER_DB.find(t => t.ticker === val); addToWatchlist(entry?.ticker || val, entry?.name || val, entry?.cat || currentCat, entry?.ex || ''); }
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.search-bar')) $('search-results').classList.remove('active'); });
+  $('btn-refresh').addEventListener('click', () => { refreshAllQuotes(); showToast('刷新中...'); });
+  $('sheet-overlay').addEventListener('click', hideSheet);
+  $('sheet-close').addEventListener('click', hideSheet);
+  $('time-tabs').addEventListener('click', e => { const tab = e.target.closest('.time-tab'); if (!tab) return; document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); currentRes = tab.dataset.res; if (currentTicker) loadCandles(currentTicker); });
+  $('btn-buy').addEventListener('click', () => openTrade('buy'));
+  $('btn-sell').addEventListener('click', () => openTrade('sell'));
+  $('trade-cancel').addEventListener('click', () => $('trade-modal').classList.remove('active'));
+  $('trade-confirm').addEventListener('click', executeTrade);
+  $('btn-menu').addEventListener('click', openMenu);
+  $('menu-back').addEventListener('click', () => { if (menuView === 'main') closeMenu(); else { menuView = 'main'; renderMenu(); } });
+
+  init();
+})();
+</script>
+
+</body></html>
