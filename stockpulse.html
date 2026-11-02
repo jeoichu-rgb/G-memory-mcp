@@ -509,6 +509,9 @@ input { font-family: inherit; }
     {ticker:'AUDUSD',name:'澳元/美元',cat:'fx',ex:'FX',base:'AUD',quote:'USD',flag:'🇦🇺'},
     {ticker:'USDTWD',name:'美元/新台币',cat:'fx',ex:'FX',base:'USD',quote:'TWD',flag:'🇹🇼'},
     {ticker:'USDNOK',name:'美元/挪威克朗',cat:'fx',ex:'FX',base:'USD',quote:'NOK',flag:'🇳🇴'},
+    {ticker:'CNYHKD',name:'人民币/港币',cat:'fx',ex:'FX',base:'CNY',quote:'HKD',flag:'🇨🇳🇭🇰'},
+    {ticker:'CNYJPY',name:'人民币/日元',cat:'fx',ex:'FX',base:'CNY',quote:'JPY',flag:'🇨🇳🇯🇵'},
+    {ticker:'CNYNOK',name:'人民币/挪威克朗',cat:'fx',ex:'FX',base:'CNY',quote:'NOK',flag:'🇨🇳🇳🇴'},
   ];
 
   const LS = {
@@ -596,6 +599,7 @@ input { font-family: inherit; }
             let rate;
             if (pair.base === 'USD' && fxData.quote[pair.quote]) rate = fxData.quote[pair.quote];
             else if (pair.quote === 'USD' && fxData.quote[pair.base]) rate = 1 / fxData.quote[pair.base];
+            else if (fxData.quote[pair.base] && fxData.quote[pair.quote]) rate = fxData.quote[pair.quote] / fxData.quote[pair.base];
             if (rate) { const prev = fxRates[pair.ticker]; fxRates[pair.ticker] = rate; if (prev) fxPrevRates[pair.ticker] = prev; }
           }
         }
@@ -613,6 +617,7 @@ input { font-family: inherit; }
         let rate;
         if (pair.base === 'USD' && data.rates[pair.quote]) rate = data.rates[pair.quote];
         else if (pair.quote === 'USD' && data.rates[pair.base]) rate = 1 / data.rates[pair.base];
+        else if (data.rates[pair.base] && data.rates[pair.quote]) rate = data.rates[pair.quote] / data.rates[pair.base];
         if (rate) { const prev = fxRates[pair.ticker]; fxRates[pair.ticker] = rate; if (prev) fxPrevRates[pair.ticker] = prev; }
       }
       if (currentCat === 'fx') renderList();
