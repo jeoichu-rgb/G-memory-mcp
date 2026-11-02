@@ -516,7 +516,7 @@ input { font-family: inherit; }
     set(k, v) { try { localStorage.setItem('sp_' + k, JSON.stringify(v)); } catch(e) {} }
   };
 
-  let finnhubKey = LS.get('key', null);
+  let finnhubKey = true;
   let stocks = LS.get('stocks', []);
   stocks.forEach(s => { s.price = null; s.change = 0; s.changePercent = 0; s.sparkline = []; delete s.open; delete s.high; delete s.low; delete s.prevClose; delete s.lastUpdated; });
   let positions = LS.get('positions', {});
@@ -538,11 +538,16 @@ input { font-family: inherit; }
   function saveTrades() { LS.set('trades', trades); }
 
   async function fh(endpoint, params = {}) {
-    if (!finnhubKey) return null;
-    const u = new URL('https://finnhub.io/api/v1/' + endpoint);
-    params.token = finnhubKey;
-    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
-    try { const r = await fetch(u); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
+    if (endpoint === 'quote') {
+      try { const r = await fetch('/api/stockpulse/quote?symbol=' + encodeURIComponent(params.symbol)); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
+    }
+    if (endpoint === 'forex/rates') {
+      try { const r = await fetch('/api/stockpulse/fx'); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
+    }
+    if (endpoint === 'search') {
+      try { const r = await fetch('/api/stockpulse/search?q=' + encodeURIComponent(params.q)); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
+    }
+    return null;
   }
 
   function init() {
@@ -566,7 +571,7 @@ input { font-family: inherit; }
       refreshTimer = setInterval(refreshAllQuotes, 60000);
     }
     fetchCryptoPrices();
-    if (!finnhubKey) fetchFxFree();
+    fetchFxFree();
   }
 
   async function refreshAllQuotes() {
@@ -662,7 +667,7 @@ input { font-family: inherit; }
         '<div class="stock-sparkline">' + spark + '</div>' +
         '<div class="stock-price-col"><div class="stock-price">' + fmtPrice(s.price, s.category) + '</div><span class="stock-change ' + dir + '">' + sign + cp.toFixed(2) + '%</span></div></div>';
     }).join('');
-    const srcMap = { us: finnhubKey ? 'Finnhub 实时' : '设置 API Key 获取实时数据', crypto: 'CoinGecko 实时', hk: finnhubKey ? 'Finnhub' : '设置 API Key', index: finnhubKey ? 'Finnhub' : '设置 API Key' };
+    const srcMap = { us: 'Finnhub 实时', crypto: 'CoinGecko 实时', hk: 'Finnhub', index: 'Finnhub' };
     if (srcMap[currentCat]) listEl.innerHTML += '<div class="data-source-tag">' + srcMap[currentCat] + '</div>';
     listEl.querySelectorAll('.stock-item').forEach(el => {
       el.addEventListener('click', e => { if (!e.target.closest('.drag-handle')) openDetail(el.dataset.ticker); });
@@ -682,7 +687,7 @@ input { font-family: inherit; }
       const dec = rate > 100 ? 2 : rate > 10 ? 3 : 4;
       return '<div class="fx-item"><div class="fx-flag">' + (p.flag||'') + '</div><div class="fx-info"><div class="fx-pair">' + p.base + '/' + p.quote + '</div><div class="fx-name">' + p.name + '</div></div><div class="fx-rate-col"><div class="fx-rate">' + rate.toFixed(dec) + '</div><div class="fx-change" style="color:' + color + '">' + sign + chg.toFixed(3) + '%</div></div></div>';
     }).filter(Boolean).join('');
-    listEl.innerHTML += '<div class="data-source-tag">' + (finnhubKey ? 'Finnhub 实时' : 'ExchangeRate-API') + '</div>';
+    listEl.innerHTML += '<div class="data-source-tag">Finnhub + ExchangeRate-API</div>';
   }
 
   function sortStocks(items) {
@@ -712,7 +717,7 @@ input { font-family: inherit; }
     if (!q) { rEl.classList.remove('active'); searchQuery = ''; renderList(); return; }
     searchQuery = q; showLocalResults(q);
     if (searchTimer) clearTimeout(searchTimer);
-    if (finnhubKey && q.length >= 2) searchTimer = setTimeout(() => fhSearch(q), 350);
+    if (q.length >= 2) searchTimer = setTimeout(() => fhSearch(q), 350);
   }
 
   function showLocalResults(q) {
@@ -721,7 +726,7 @@ input { font-family: inherit; }
     const wMatches = stocks.filter(s => s.ticker.toLowerCase().includes(ql) || (s.name || '').toLowerCase().includes(ql)).slice(0, 5);
     const aMatches = TICKER_DB.filter(t => !watched.has(t.ticker) && (t.ticker.toLowerCase().includes(ql) || t.name.toLowerCase().includes(ql))).slice(0, 6);
     if (!wMatches.length && !aMatches.length) {
-      rEl.innerHTML = '<div style="padding:14px;text-align:center;color:var(--fg-dim);font-size:13px">输入代码回车直接添加' + (finnhubKey ? '<br>Finnhub 搜索中...' : '') + '</div>';
+      rEl.innerHTML = '<div style="padding:14px;text-align:center;color:var(--fg-dim);font-size:13px">输入代码回车直接添加<br>Finnhub 搜索中...</div>';
       rEl.classList.add('active'); return;
     }
     let html = '';
@@ -736,7 +741,7 @@ input { font-family: inherit; }
         return '<div class="search-result-item" data-action="add" data-ticker="' + t.ticker + '" data-cat="' + t.cat + '" data-name="' + t.name + '" data-ex="' + t.ex + '"><div class="search-result-info"><div class="search-result-ticker">' + t.ticker + '</div><div class="search-result-name">' + t.name + '</div></div><span class="search-result-cat">' + cl + '</span><span class="search-result-add">+</span></div>';
       }).join('');
     }
-    if (finnhubKey && q.length >= 2) html += '<div class="search-loading">Finnhub 搜索中...</div>';
+    if (q.length >= 2) html += '<div class="search-loading">Finnhub 搜索中...</div>';
     rEl.innerHTML = html; rEl.classList.add('active'); bindSearchClicks();
   }
 
@@ -783,7 +788,7 @@ input { font-family: inherit; }
     const maxOrd = stocks.filter(s => s.category === (cat || 'us')).reduce((m, s) => Math.max(m, s.order ?? 0), -1);
     const ns = { ticker, name: name || ticker, category: cat || 'us', exchange: ex || '', price: null, change: 0, changePercent: 0, sparkline: [], order: maxOrd + 1, hasPosition: false };
     stocks.push(ns); saveStocks(); showToast('已添加 ' + ticker); renderList();
-    if (finnhubKey && cat !== 'crypto') {
+    if (cat !== 'crypto') {
       const q = await fh('quote', { symbol: ticker });
       if (q?.c > 0) {
         Object.assign(ns, { price: q.c, change: q.d, changePercent: parseFloat((q.dp||0).toFixed(2)), open: q.o, high: q.h, low: q.l, prevClose: q.pc });
@@ -946,7 +951,7 @@ input { font-family: inherit; }
     const c = $('menu-content'), t = $('menu-panel-title');
     if (menuView === 'main') {
       t.textContent = '更多';
-      const apiStatus = finnhubKey ? '<span class="api-dot on"></span>已连接' : '<span class="api-dot off"></span>未设置';
+      const apiStatus = '<span class="api-dot on"></span>已连接';
       c.innerHTML =
         '<div class="menu-item" data-view="positions"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>持仓表</div>' +
         '<div class="menu-item" data-view="trades"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>交易记录</div>' +
@@ -954,24 +959,18 @@ input { font-family: inherit; }
         '<div class="menu-item" data-view="settings"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></span>API 设置 <span class="api-status" style="margin-left:auto">' + apiStatus + '</span></div>';
       c.querySelectorAll('.menu-item').forEach(el => { el.onclick = () => { menuView = el.dataset.view; renderMenu(); }; });
     } else if (menuView === 'settings') {
-      t.textContent = 'API 设置';
-      const masked = finnhubKey ? finnhubKey.slice(0, 4) + '****' + finnhubKey.slice(-4) : '';
+      t.textContent = '数据源';
       c.innerHTML =
-        '<div style="margin-bottom:20px"><div class="form-label">Finnhub API Key</div>' +
-        '<div style="font-size:12px;color:var(--fg-dim);margin-bottom:8px">免费注册: finnhub.io · 支持美股实时、外汇、加密、K线搜索</div>' +
-        '<input class="form-input" type="text" id="fh-key-input" placeholder="输入你的 Finnhub API Key" value="' + masked + '">' +
-        '<div style="margin-top:12px"><button class="trade-btn buy" id="save-key-btn" style="font-size:14px;padding:10px">保存</button></div></div>' +
-        '<div style="font-size:12px;color:var(--fg-dim);line-height:1.6">Key 和关注列表存储在 localStorage 中，所有行情数据均从 API 实时拉取，不缓存在本地。<br>保存后页面自动每60秒刷新报价。</div>';
-      $('save-key-btn').onclick = () => {
-        const val = $('fh-key-input').value.trim();
-        if (!val || val.includes('****')) { showToast('请输入完整的 Key'); return; }
-        finnhubKey = val;
-        LS.set('key', val);
-        showToast('Key 已保存，开始自动刷新');
-        if (!refreshTimer) refreshTimer = setInterval(refreshAllQuotes, 60000);
-        setTimeout(refreshAllQuotes, 500);
-        menuView = 'main'; renderMenu();
-      };
+        '<div style="margin-bottom:20px">' +
+        '<div class="form-label" style="margin-bottom:12px">数据源配置</div>' +
+        '<div style="font-size:13px;line-height:1.8;color:var(--fg-dim)">' +
+        '<div><span class="api-dot on"></span> 美股/港股/指数报价 — Finnhub (服务端)</div>' +
+        '<div><span class="api-dot on"></span> 加密货币 — CoinGecko</div>' +
+        '<div><span class="api-dot on"></span> 汇率 — Finnhub + ExchangeRate-API</div>' +
+        '<div><span class="api-dot on"></span> K线图 — Yahoo Finance (服务端)</div>' +
+        '<div><span class="api-dot on"></span> 搜索 — Finnhub (服务端)</div>' +
+        '</div></div>' +
+        '<div style="font-size:12px;color:var(--fg-dim);line-height:1.6">API Key 通过服务器环境变量配置，无需手动设置。<br>关注列表存储在 localStorage 中。</div>';
     } else if (menuView === 'positions') {
       t.textContent = '持仓表';
       const entries = Object.entries(positions);

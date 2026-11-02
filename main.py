@@ -296,6 +296,45 @@ async def serve_stockpulse(request: Request):
     except FileNotFoundError:
         return HTMLResponse(content="<h1>stockpulse.html not found</h1>", status_code=500)
 
+@app.get("/api/stockpulse/quote")
+async def stockpulse_quote(symbol: str):
+    """Proxy Finnhub quote via server-side key."""
+    key = os.getenv("FINNHUB_API_KEY", "")
+    if not key:
+        return JSONResponse({"error": "no_key"}, status_code=503)
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get("https://finnhub.io/api/v1/quote", params={"symbol": symbol, "token": key})
+            return JSONResponse(r.json() if r.status_code == 200 else {"error": "upstream"})
+    except Exception:
+        return JSONResponse({"error": "fetch_failed"})
+
+@app.get("/api/stockpulse/fx")
+async def stockpulse_fx():
+    """Proxy Finnhub forex/rates via server-side key."""
+    key = os.getenv("FINNHUB_API_KEY", "")
+    if not key:
+        return JSONResponse({"error": "no_key"}, status_code=503)
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get("https://finnhub.io/api/v1/forex/rates", params={"base": "USD", "token": key})
+            return JSONResponse(r.json() if r.status_code == 200 else {"error": "upstream"})
+    except Exception:
+        return JSONResponse({"error": "fetch_failed"})
+
+@app.get("/api/stockpulse/search")
+async def stockpulse_search(q: str):
+    """Proxy Finnhub symbol search via server-side key."""
+    key = os.getenv("FINNHUB_API_KEY", "")
+    if not key:
+        return JSONResponse({"result": []})
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get("https://finnhub.io/api/v1/search", params={"q": q, "token": key})
+            return JSONResponse(r.json() if r.status_code == 200 else {"result": []})
+    except Exception:
+        return JSONResponse({"result": []})
+
 @app.get("/api/stockpulse/candle")
 async def stockpulse_candle(symbol: str, interval: str = "1d", range: str = "6mo"):
     """Proxy Yahoo Finance chart API for StockPulse K-line data."""
