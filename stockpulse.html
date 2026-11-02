@@ -310,7 +310,13 @@ input { font-family: inherit; }
 .spinning svg { animation: spin 0.8s linear infinite; }
 </style>
 
-<div id="app">
+<div id="auth-gate" style="display:none;position:fixed;inset:0;z-index:9999;background:#000;flex-direction:column;align-items:center;justify-content:center;font-family:var(--font)">
+  <div style="text-align:center;margin-bottom:32px;font-size:22px;font-weight:700;color:#f0f0f0">StockPulse</div>
+  <input type="password" id="sp-pw" placeholder="输入密码" style="width:240px;padding:12px 16px;border-radius:10px;background:#161616;border:1px solid #333;color:#f0f0f0;font-size:16px;outline:none;text-align:center" autofocus>
+  <div id="sp-pw-err" style="color:#ef4444;font-size:13px;margin-top:10px;height:18px"></div>
+</div>
+
+<div id="app" style="display:none">
   <header class="header">
     <h1>StockPulse</h1>
     <div class="header-actions">
@@ -414,6 +420,31 @@ input { font-family: inherit; }
 
 <div class="toast" id="toast"></div>
 
+<script>
+(function(){
+  const PW = 'Jeoi2026', PK = 'sp_auth';
+  const saved = localStorage.getItem(PK);
+  if (saved === PW) {
+    document.getElementById('app').style.display = '';
+  } else {
+    const gate = document.getElementById('auth-gate');
+    gate.style.display = 'flex';
+    document.getElementById('sp-pw').addEventListener('keydown', function(e) {
+      if (e.key !== 'Enter') return;
+      const v = this.value.trim();
+      if (v === PW) {
+        localStorage.setItem(PK, v);
+        gate.style.display = 'none';
+        document.getElementById('app').style.display = '';
+        window.__spInit && window.__spInit();
+      } else {
+        document.getElementById('sp-pw-err').textContent = '密码错误';
+      }
+    });
+    return;
+  }
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.7/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 (function() {
@@ -984,7 +1015,10 @@ input { font-family: inherit; }
   $('btn-menu').addEventListener('click', openMenu);
   $('menu-back').addEventListener('click', () => { if (menuView === 'main') closeMenu(); else { menuView = 'main'; renderMenu(); } });
 
-  init();
+  if (document.getElementById('app').style.display !== 'none') {
+    init();
+  }
+  window.__spInit = init;
 })();
 </script>
 

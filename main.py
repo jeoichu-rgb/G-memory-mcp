@@ -145,6 +145,7 @@ class CheckSecretMiddleware:
             or path == "/api/push/vapid-key"
             or path == "/health/update"
             or path == "/location/update"
+            or path == "/stockpulse.html"
             or path == "/music"
             or path.startswith("/api/music/")
             or path == "/api/ears"
@@ -285,6 +286,14 @@ async def serve_health(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>health.html not found</h1>", status_code=500)
+
+@app.get("/stockpulse.html")
+async def serve_stockpulse(request: Request):
+    try:
+        with open("stockpulse.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>stockpulse.html not found</h1>", status_code=500)
 
 @app.get("/health/report")
 async def serve_health_report(request: Request):
