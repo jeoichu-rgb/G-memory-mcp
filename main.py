@@ -308,13 +308,13 @@ async def serve_trade_journal(request: Request):
 # ── Trade Journal API ──
 TRADE_JOURNAL_DIR = "./trade_journal"
 
-class TradeJournalCreate(_BM):
+class TradeJournalCreate(BaseModel):
     title: str
     content: str = ""
     erik_notes: str = ""
     account: dict = None
 
-class TradeJournalUpdate(_BM):
+class TradeJournalUpdate(BaseModel):
     content: str = ""
     erik_notes: str = ""
     account: dict = None
