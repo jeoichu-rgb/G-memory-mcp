@@ -593,16 +593,27 @@ input { font-family: inherit; }
       if (finnhubKey) {
         for (const s of stocks) {
           if (s.category === 'crypto') continue;
+          let got = false;
           const q = await fh('quote', { symbol: s.ticker });
           if (q && q.c > 0) {
             const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
             const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
             Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null, lastUpdated: new Date().toISOString() });
-            if (!s.sparkline) s.sparkline = [];
-            s.sparkline.push(q.c);
-            if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30);
+            got = true;
           }
-          await new Promise(r => setTimeout(r, 120));
+          if (!got) {
+            const to = Math.floor(Date.now() / 1000);
+            const cd = await fh('stock/candle', { symbol: s.ticker, resolution: 'D', from: to - 5*86400, to });
+            if (cd?.s === 'ok' && cd.t?.length >= 1) {
+              const li = cd.c.length - 1, pi = li >= 1 ? li - 1 : li;
+              const price = cd.c[li], pc = cd.c[pi];
+              const chg = price - pc, chgPct = pc ? (chg / pc * 100) : 0;
+              Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc, lastUpdated: new Date().toISOString() });
+            }
+          }
+          if (!s.sparkline) s.sparkline = [];
+          if (s.price != null) { s.sparkline.push(s.price); if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30); }
+          await new Promise(r => setTimeout(r, 150));
         }
         const fxData = await fh('forex/rates', { base: 'USD' });
         if (fxData && fxData.quote) {
@@ -881,15 +892,27 @@ input { font-family: inherit; }
     document.querySelectorAll('.time-tab').forEach(t => t.classList.toggle('active', t.dataset.res === 'D'));
     loadCandles(ticker);
     if (s.category !== 'crypto') {
+      let got = false;
       const q = await fh('quote', { symbol: ticker });
       if (q && q.c > 0) {
         const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
         const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
         Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null });
-        updateDetailPrice(s);
-        renderDetailStats(s);
-        renderList();
+        got = true;
       }
+      if (!got) {
+        const to = Math.floor(Date.now() / 1000);
+        const cd = await fh('stock/candle', { symbol: ticker, resolution: 'D', from: to - 5*86400, to });
+        if (cd?.s === 'ok' && cd.t?.length >= 1) {
+          const li = cd.c.length - 1, pi = li >= 1 ? li - 1 : li;
+          const price = cd.c[li], pc = cd.c[pi];
+          const chg = price - pc, chgPct = pc ? (chg / pc * 100) : 0;
+          Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc });
+        }
+      }
+      updateDetailPrice(s);
+      renderDetailStats(s);
+      renderList();
     }
   }
 
@@ -994,7 +1017,12 @@ input { font-family: inherit; }
     if (type === 'sell' && !pos) { showToast('暂无持仓'); return; }
     if (!s.price && s.category !== 'crypto') {
       const q = await fh('quote', { symbol: currentTicker });
-      if (q?.c > 0) s.price = q.c;
+      if (q?.c > 0) { s.price = q.c; }
+      else {
+        const to = Math.floor(Date.now() / 1000);
+        const cd = await fh('stock/candle', { symbol: currentTicker, resolution: 'D', from: to - 5*86400, to });
+        if (cd?.s === 'ok' && cd.c?.length) s.price = cd.c[cd.c.length - 1];
+      }
     }
     $('trade-title').textContent = (type === 'buy' ? '买入 ' : '卖出 ') + currentTicker;
     $('trade-shares').value = ''; $('trade-amount').textContent = '$0.00';
