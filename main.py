@@ -335,6 +335,27 @@ async def stockpulse_search(q: str):
     except Exception:
         return JSONResponse({"result": []})
 
+@app.get("/api/stockpulse/fh-candle")
+async def stockpulse_fh_candle(symbol: str, resolution: str = "D", from_ts: int = 0, to_ts: int = 0):
+    """Proxy Finnhub stock/candle or crypto/candle via server-side key."""
+    key = os.getenv("FINNHUB_API_KEY", "")
+    if not key:
+        return JSONResponse({"s": "no_data"})
+    endpoint = "crypto/candle" if ":" in symbol else "stock/candle"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"https://finnhub.io/api/v1/{endpoint}", params={
+                "symbol": symbol, "resolution": resolution,
+                "from": from_ts, "to": to_ts, "token": key
+            })
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("s") == "ok":
+                    return JSONResponse(data)
+            return JSONResponse({"s": "no_data"})
+    except Exception:
+        return JSONResponse({"s": "no_data"})
+
 @app.get("/api/stockpulse/candle")
 async def stockpulse_candle(symbol: str, interval: str = "1d", range: str = "6mo"):
     """Proxy Yahoo Finance chart API for StockPulse K-line data."""

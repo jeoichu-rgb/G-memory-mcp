@@ -170,12 +170,13 @@ input { font-family: inherit; }
   padding: 0 max(20px, env(safe-area-inset-left, 0px)) max(20px, env(safe-area-inset-bottom, 0px));
 }
 .sheet.active { transform: translateY(0); }
-.sheet-handle { width: 36px; height: 4px; background: var(--fg-dim); border-radius: 2px; margin: 10px auto 16px; }
+.sheet-handle { width: 36px; height: 4px; background: var(--fg-dim); border-radius: 2px; margin: 10px auto 16px; cursor: grab; touch-action: none; }
 .sheet-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
 .sheet-close {
-  width: 30px; height: 30px; border-radius: 50%;
+  width: 44px; height: 44px; border-radius: 50%;
   background: var(--bg-elevated); display: flex; align-items: center;
-  justify-content: center; font-size: 16px; color: var(--fg-secondary); flex-shrink: 0;
+  justify-content: center; font-size: 20px; color: var(--fg-secondary); flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 .detail-ticker { font-size: 24px; font-weight: 700; }
 .detail-name { font-size: 13px; color: var(--fg-secondary); margin-top: 2px; }
@@ -521,7 +522,7 @@ input { font-family: inherit; }
 
   let finnhubKey = true;
   let stocks = LS.get('stocks', []);
-  stocks.forEach(s => { s.price = null; s.change = 0; s.changePercent = 0; s.sparkline = []; delete s.open; delete s.high; delete s.low; delete s.prevClose; delete s.lastUpdated; });
+  stocks.forEach(s => { s.price = null; s.change = 0; s.changePercent = 0; s.sparkline = []; s.open = null; s.high = null; s.low = null; s.prevClose = null; s.volume = null; s.marketCap = null; delete s.lastUpdated; });
   let positions = LS.get('positions', {});
   let trades = LS.get('trades', []);
   let journal = LS.get('journal', []);
@@ -543,6 +544,14 @@ input { font-family: inherit; }
   async function fh(endpoint, params = {}) {
     if (endpoint === 'quote') {
       try { const r = await fetch('/api/stockpulse/quote?symbol=' + encodeURIComponent(params.symbol)); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
+    }
+    if (endpoint === 'stock/candle' || endpoint === 'crypto/candle') {
+      try {
+        const url = '/api/stockpulse/fh-candle?symbol=' + encodeURIComponent(params.symbol) +
+          '&resolution=' + encodeURIComponent(params.resolution) +
+          '&from_ts=' + params.from + '&to_ts=' + params.to;
+        const r = await fetch(url); if (!r.ok) return null; return await r.json();
+      } catch(e) { return null; }
     }
     if (endpoint === 'forex/rates') {
       try { const r = await fetch('/api/stockpulse/fx'); if (!r.ok) return null; return await r.json(); } catch(e) { return null; }
@@ -586,7 +595,9 @@ input { font-family: inherit; }
           if (s.category === 'crypto') continue;
           const q = await fh('quote', { symbol: s.ticker });
           if (q && q.c > 0) {
-            Object.assign(s, { price: q.c, change: q.d, changePercent: parseFloat((q.dp || 0).toFixed(2)), open: q.o, high: q.h, low: q.l, prevClose: q.pc, lastUpdated: new Date().toISOString() });
+            const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
+            const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
+            Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o || null, high: q.h || null, low: q.l || null, prevClose: q.pc || null, lastUpdated: new Date().toISOString() });
             if (!s.sparkline) s.sparkline = [];
             s.sparkline.push(q.c);
             if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30);
@@ -825,27 +836,61 @@ input { font-family: inherit; }
     saveStocks(); renderList();
   }
 
-  function openDetail(ticker) {
-    currentTicker = ticker;
-    const s = stocks.find(x => x.ticker === ticker);
-    if (!s) return;
-    $('detail-ticker').textContent = ticker;
-    $('detail-name').textContent = s.name || '';
+  function getUSTime() {
+    try {
+      const now = new Date();
+      const et = now.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+      const h = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false });
+      const hr = parseInt(h);
+      const day = now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+      const isWeekend = ['Sat','Sun'].includes(day);
+      const isOpen = !isWeekend && hr >= 9 && (hr < 16 || (hr === 9 && parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', minute: 'numeric' })) >= 30));
+      return { text: 'ET ' + et, isOpen };
+    } catch(e) { return { text: '', isOpen: false }; }
+  }
+
+  function renderDetailStats(s) {
+    const usTime = getUSTime();
+    const timeHtml = usTime.text ? '<div style="grid-column:1/-1;background:var(--bg-card);padding:10px 14px;font-size:12px;color:var(--fg-secondary);display:flex;align-items:center;gap:6px"><span class="api-dot ' + (usTime.isOpen ? 'on' : 'off') + '"></span>' + usTime.text + (usTime.isOpen ? ' · 交易中' : ' · 已收盘') + '</div>' : '';
+    $('detail-stats').innerHTML = timeHtml + [
+      ['今日开盘', s.open], ['今日最高', s.high], ['今日最低', s.low],
+      ['昨收', s.prevClose], ['成交量', s.volume ? fmtVol(s.volume) : null], ['市值', s.marketCap ? fmtCap(s.marketCap) : null]
+    ].map(function(pair) { const l = pair[0], v = pair[1]; return '<div class="stat-cell"><div class="stat-label">' + l + '</div><div class="stat-value">' + (v != null ? (typeof v === 'number' ? fmtPrice(v) : v) : '—') + '</div></div>'; }).join('');
+  }
+
+  function updateDetailPrice(s) {
     $('detail-price').textContent = fmtPrice(s.price, s.category);
     const cp = s.changePercent || 0, ch = s.change || 0, sign = cp >= 0 ? '+' : '';
     const cel = $('detail-change');
     cel.textContent = sign + ch.toFixed(2) + ' (' + sign + cp.toFixed(2) + '%)';
     cel.style.color = cp >= 0 ? 'var(--green)' : 'var(--red)';
-    $('detail-stats').innerHTML = [
-      ['今日开盘', s.open], ['今日最高', s.high], ['今日最低', s.low],
-      ['昨收', s.prevClose], ['成交量', s.volume ? fmtVol(s.volume) : null], ['市值', s.marketCap ? fmtCap(s.marketCap) : null]
-    ].map(function(pair) { const l = pair[0], v = pair[1]; return '<div class="stat-cell"><div class="stat-label">' + l + '</div><div class="stat-value">' + (v != null ? (typeof v === 'number' ? fmtPrice(v) : v) : '—') + '</div></div>'; }).join('');
+  }
+
+  async function openDetail(ticker) {
+    currentTicker = ticker;
+    const s = stocks.find(x => x.ticker === ticker);
+    if (!s) return;
+    $('detail-ticker').textContent = ticker;
+    $('detail-name').textContent = s.name || '';
+    updateDetailPrice(s);
+    renderDetailStats(s);
     $('tv-link').href = 'https://www.tradingview.com/chart/?symbol=' + (s.exchange || 'NASDAQ') + ':' + ticker;
     $('btn-sell').style.opacity = positions[ticker] ? '1' : '0.3';
     showSheet();
     currentRes = 'D';
     document.querySelectorAll('.time-tab').forEach(t => t.classList.toggle('active', t.dataset.res === 'D'));
     loadCandles(ticker);
+    if (s.category !== 'crypto') {
+      const q = await fh('quote', { symbol: ticker });
+      if (q && q.c > 0) {
+        const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
+        const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
+        Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o || null, high: q.h || null, low: q.l || null, prevClose: q.pc || null });
+        updateDetailPrice(s);
+        renderDetailStats(s);
+        renderList();
+      }
+    }
   }
 
   function fmtVol(v) { return v >= 1e9 ? (v/1e9).toFixed(2)+'亿' : v >= 1e4 ? (v/1e4).toFixed(0)+'万' : String(v); }
@@ -877,9 +922,17 @@ input { font-family: inherit; }
       } catch(e) {}
     }
     if (data?.s === 'ok' && data.t?.length) {
-      const candles = data.t.map((t, i) => ({ time: new Date(t * 1000).toISOString().slice(0, 10), open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i] }));
-      empty.style.display = 'none';
-      renderChart($('chart-container'), candles);
+      const isIntraday = ['15','60'].includes(String(currentRes));
+      const seen = new Set();
+      const candles = data.t.map((t, i) => {
+        const o = data.o[i], h = data.h[i], l = data.l[i], c = data.c[i];
+        if (o == null || h == null || l == null || c == null) return null;
+        let time;
+        if (isIntraday) { time = t; } else { time = new Date(t * 1000).toISOString().slice(0, 10); if (seen.has(time)) return null; seen.add(time); }
+        return { time, open: o, high: h, low: l, close: c };
+      }).filter(Boolean);
+      if (candles.length) { empty.style.display = 'none'; renderChart($('chart-container'), candles); }
+      else { empty.textContent = '暂无K线数据'; }
     } else { empty.textContent = '暂无K线数据'; }
   }
 
@@ -900,15 +953,48 @@ input { font-family: inherit; }
   }
 
   function showSheet() { $('sheet-overlay').classList.add('active'); $('detail-sheet').classList.add('active'); document.body.style.overflow = 'hidden'; }
-  function hideSheet() { $('sheet-overlay').classList.remove('active'); $('detail-sheet').classList.remove('active'); document.body.style.overflow = ''; if (chart) { chart.remove(); chart = null; candleSeries = null; } }
+  function hideSheet() { $('sheet-overlay').classList.remove('active'); $('detail-sheet').classList.remove('active'); document.body.style.overflow = ''; const sh = $('detail-sheet'); sh.style.transform = ''; sh.style.transition = ''; if (chart) { chart.remove(); chart = null; candleSeries = null; } }
 
-  function openTrade(type) {
+  (function initSheetSwipe() {
+    const sheet = $('detail-sheet');
+    let startY = 0, currentY = 0, dragging = false;
+    function onStart(e) {
+      const touch = e.touches ? e.touches[0] : e;
+      const target = e.target.closest('.sheet-handle, .sheet-header');
+      if (!target) return;
+      if (sheet.scrollTop > 0 && !e.target.closest('.sheet-handle')) return;
+      dragging = true; startY = touch.clientY; currentY = 0;
+      sheet.style.transition = 'none';
+    }
+    function onMove(e) {
+      if (!dragging) return;
+      const touch = e.touches ? e.touches[0] : e;
+      currentY = Math.max(0, touch.clientY - startY);
+      sheet.style.transform = 'translateY(' + currentY + 'px)';
+      if (currentY > 10) e.preventDefault();
+    }
+    function onEnd() {
+      if (!dragging) return;
+      dragging = false;
+      sheet.style.transition = '';
+      if (currentY > 100) { hideSheet(); } else { sheet.style.transform = 'translateY(0)'; }
+    }
+    sheet.addEventListener('touchstart', onStart, { passive: true });
+    sheet.addEventListener('touchmove', onMove, { passive: false });
+    sheet.addEventListener('touchend', onEnd);
+  })();
+
+  async function openTrade(type) {
     if (!currentTicker) return;
     tradeType = type;
     const s = stocks.find(x => x.ticker === currentTicker);
     if (!s) return;
     const pos = positions[currentTicker];
     if (type === 'sell' && !pos) { showToast('暂无持仓'); return; }
+    if (!s.price && s.category !== 'crypto') {
+      const q = await fh('quote', { symbol: currentTicker });
+      if (q?.c > 0) s.price = q.c;
+    }
     $('trade-title').textContent = (type === 'buy' ? '买入 ' : '卖出 ') + currentTicker;
     $('trade-shares').value = ''; $('trade-amount').textContent = '$0.00';
     $('trade-hint').textContent = type === 'buy' ? '当前价格 ' + fmtPrice(s.price, s.category) : '持仓 ' + pos.shares + ' 股 · 均价 ' + fmtPrice(pos.avgCost);
