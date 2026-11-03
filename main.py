@@ -388,18 +388,92 @@ async def tj_update(filename: str, payload: TradeJournalUpdate):
         _json.dump(data, f, ensure_ascii=False, indent=2)
     return {"status": "ok"}
 
+# ── StockPulse in-memory cache (TTL 45s) ──
+_sp_cache: dict = {}
+_SP_TTL = 45
+
+def _sp_get(key: str):
+    e = _sp_cache.get(key)
+    if e and time.time() - e[0] < _SP_TTL:
+        return e[1]
+    return None
+
+def _sp_set(key: str, val: dict):
+    _sp_cache[key] = (time.time(), val)
+    if len(_sp_cache) > 300:
+        cutoff = time.time() - _SP_TTL * 3
+        for k in [k for k, v in _sp_cache.items() if v[0] < cutoff]:
+            _sp_cache.pop(k, None)
+
+async def _yf_quote(symbol: str, client: httpx.AsyncClient):
+    """Fetch quote from Yahoo Finance chart API as fallback."""
+    yf_sym = symbol
+    try:
+        r = await client.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}",
+            params={"interval": "1d", "range": "5d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if r.status_code != 200:
+            return None
+        res = r.json().get("chart", {}).get("result", [])
+        if not res:
+            return None
+        meta = res[0].get("meta", {})
+        quotes = res[0].get("indicators", {}).get("quote", [{}])[0]
+        ts_list = res[0].get("timestamp", [])
+        price = meta.get("regularMarketPrice")
+        pc = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if not price or price <= 0:
+            return None
+        last = lambda arr: arr[-1] if arr else None
+        d = round(price - pc, 4) if pc else 0
+        dp = round((price - pc) / pc * 100, 4) if pc else 0
+        return {
+            "c": price, "d": d, "dp": dp,
+            "h": last(quotes.get("high")),
+            "l": last(quotes.get("low")),
+            "o": last(quotes.get("open")),
+            "pc": pc,
+            "v": last(quotes.get("volume")),
+            "t": ts_list[-1] if ts_list else 0,
+            "_src": "yahoo",
+        }
+    except Exception:
+        return None
+
 @app.get("/api/stockpulse/quote")
 async def stockpulse_quote(symbol: str):
-    """Proxy Finnhub quote via server-side key."""
+    """Proxy Finnhub quote with Yahoo Finance fallback + volume."""
+    cached = _sp_get(f"q:{symbol}")
+    if cached:
+        return JSONResponse(cached)
     key = os.getenv("FINNHUB_API_KEY", "")
-    if not key:
-        return JSONResponse({"error": "no_key"}, status_code=503)
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.get("https://finnhub.io/api/v1/quote", params={"symbol": symbol, "token": key})
-            return JSONResponse(r.json() if r.status_code == 200 else {"error": "upstream"})
-    except Exception:
-        return JSONResponse({"error": "fetch_failed"})
+    result = None
+    async with httpx.AsyncClient(timeout=10) as client:
+        # 1) Try Finnhub
+        if key:
+            try:
+                r = await client.get("https://finnhub.io/api/v1/quote",
+                                     params={"symbol": symbol, "token": key})
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("c") and data["c"] > 0:
+                        result = data
+            except Exception:
+                pass
+        # 2) Yahoo Finance fallback (also provides volume)
+        if not result:
+            result = await _yf_quote(symbol, client)
+        # 3) If Finnhub worked but has no volume, supplement from Yahoo
+        if result and result.get("v") is None and result.get("_src") != "yahoo":
+            yf = await _yf_quote(symbol, client)
+            if yf and yf.get("v") is not None:
+                result["v"] = yf["v"]
+    if result:
+        _sp_set(f"q:{symbol}", result)
+        return JSONResponse(result)
+    return JSONResponse({"error": "all_sources_failed"})
 
 @app.get("/api/stockpulse/fx")
 async def stockpulse_fx():
@@ -426,6 +500,31 @@ async def stockpulse_search(q: str):
             return JSONResponse(r.json() if r.status_code == 200 else {"result": []})
     except Exception:
         return JSONResponse({"result": []})
+
+@app.get("/api/stockpulse/profile")
+async def stockpulse_profile(symbol: str):
+    """Get marketCap from Finnhub /stock/profile2 (cached 5 min)."""
+    ck = f"prof:{symbol}"
+    cached = _sp_cache.get(ck)
+    if cached and time.time() - cached[0] < 300:  # 5 min TTL for profile
+        return JSONResponse(cached[1])
+    key = os.getenv("FINNHUB_API_KEY", "")
+    result: dict = {}
+    if key:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get("https://finnhub.io/api/v1/stock/profile2",
+                                     params={"symbol": symbol, "token": key})
+                if r.status_code == 200:
+                    data = r.json()
+                    mc = data.get("marketCapitalization")
+                    if mc:
+                        result = {"marketCap": mc * 1e6}  # Finnhub returns millions
+        except Exception:
+            pass
+    if result:
+        _sp_cache[ck] = (time.time(), result)
+    return JSONResponse(result)
 
 @app.get("/api/stockpulse/fh-candle")
 async def stockpulse_fh_candle(symbol: str, resolution: str = "D", from_ts: int = 0, to_ts: int = 0):

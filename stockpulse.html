@@ -598,7 +598,7 @@ input { font-family: inherit; }
           if (q && q.c > 0) {
             const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
             const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
-            Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null, lastUpdated: new Date().toISOString() });
+            Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null, volume: q.v != null ? q.v : s.volume, lastUpdated: new Date().toISOString() });
             got = true;
           }
           if (!got) {
@@ -608,7 +608,8 @@ input { font-family: inherit; }
               const li = cd.c.length - 1, pi = li >= 1 ? li - 1 : li;
               const price = cd.c[li], pc = cd.c[pi];
               const chg = price - pc, chgPct = pc ? (chg / pc * 100) : 0;
-              Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc, lastUpdated: new Date().toISOString() });
+              const vol = cd.v ? cd.v[li] : null;
+              Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc, volume: vol, lastUpdated: new Date().toISOString() });
             }
           }
           if (!s.sparkline) s.sparkline = [];
@@ -897,7 +898,7 @@ input { font-family: inherit; }
       if (q && q.c > 0) {
         const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
         const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
-        Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null });
+        Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null, volume: q.v != null ? q.v : s.volume });
         got = true;
       }
       if (!got) {
@@ -907,12 +908,20 @@ input { font-family: inherit; }
           const li = cd.c.length - 1, pi = li >= 1 ? li - 1 : li;
           const price = cd.c[li], pc = cd.c[pi];
           const chg = price - pc, chgPct = pc ? (chg / pc * 100) : 0;
-          Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc });
+          const vol = cd.v ? cd.v[li] : null;
+          Object.assign(s, { price, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: cd.o[li], high: cd.h[li], low: cd.l[li], prevClose: pc, volume: vol });
         }
       }
       updateDetailPrice(s);
       renderDetailStats(s);
       renderList();
+      // Fetch marketCap in background
+      if (s.category === 'us' || s.category === 'hk') {
+        fetch('/api/stockpulse/profile?symbol=' + encodeURIComponent(ticker))
+          .then(r => r.ok ? r.json() : {})
+          .then(pd => { if (pd.marketCap) { s.marketCap = pd.marketCap; if (currentTicker === ticker) renderDetailStats(s); } })
+          .catch(() => {});
+      }
     }
   }
 
