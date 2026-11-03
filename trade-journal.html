@@ -656,6 +656,22 @@ async function createEntry(){
 
 function esc(s){ return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+// ── 跨标签页联动：stockpulse 交易/刷价后自动更新账户概览 ──
+window.addEventListener('storage', (e) => {
+  if(e.key && (e.key.startsWith('sp_') || e.key === 'tj_init_capital' || e.key === 'tj_start_date')){
+    renderAccount();
+  }
+});
+
+// 同页面内也监听（storage 事件不触发自身页面）
+const _origSetItem = Storage.prototype.setItem;
+Storage.prototype.setItem = function(k, v){
+  _origSetItem.call(this, k, v);
+  if(k.startsWith('sp_') || k === 'tj_init_capital' || k === 'tj_start_date'){
+    try{ renderAccount(); }catch(e){}
+  }
+};
+
 // ── 启动 ──
 initTheme();
 loadAll();
