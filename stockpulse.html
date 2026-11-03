@@ -938,8 +938,8 @@ input { font-family: inherit; }
       '15': { sec: 15*60, res: '1', yInt: '1m', yRng: '1d' },
       '60': { sec: 60*60, res: '1', yInt: '2m', yRng: '1d' },
       'D':  { sec: 86400, res: '5', yInt: '5m', yRng: '1d' },
-      'W':  { sec: 7*86400, res: '60', yInt: '60m', yRng: '5d' },
-      'M':  { sec: 30*86400, res: 'D', yInt: '1d', yRng: '1mo' },
+      'W':  { sec: 730*86400, res: 'W', yInt: '1wk', yRng: '2y' },
+      'M':  { sec: 1825*86400, res: 'M', yInt: '1mo', yRng: '5y' },
     }[currentRes] || { sec: 86400, res: '5', yInt: '5m', yRng: '1d' };
     if (finnhubKey) {
       const to = Math.floor(Date.now() / 1000);
@@ -961,7 +961,7 @@ input { font-family: inherit; }
       if (idx.length) { data = { s:'ok', t:idx.map(i=>data.t[i]), o:idx.map(i=>data.o[i]), h:idx.map(i=>data.h[i]), l:idx.map(i=>data.l[i]), c:idx.map(i=>data.c[i]) }; }
       else { data = { s:'no_data' }; }
     }
-    const useTimestamp = cfg.res !== 'D';
+    const useTimestamp = !/^[DWM]$/.test(cfg.res);
     if (data?.s === 'ok' && data.t?.length) {
       const seen = new Set();
       const candles = data.t.map((t, i) => {
