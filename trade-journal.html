@@ -6,51 +6,73 @@
 <title>Trading Journal</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js"></script>
 <style>
+/* ── 主题变量 ── */
 :root{
-  --bg:#0a0a0a;--surf:#111;--card:#161616;--card2:#1c1c1c;
-  --border:#222;--border2:#333;
-  --text:#e8e8e8;--dim:#777;--muted:#444;
-  --accent:#c4a8ff;--accent-d:#1a1530;
-  --green:#4ade80;--red:#f87171;--gold:#fbbf24;
+  --bg:#faf9f7;--surf:#fff;--card:#fff;--card2:#f5f3f0;
+  --border:#e5e3df;--border2:#d4d1cc;
+  --text:#1c1917;--text-h:#0c0a09;--dim:#78716c;--muted:#a8a29e;
+  --accent:#7c5cfc;--accent-soft:rgba(124,92,252,.08);--accent-border:rgba(124,92,252,.2);
+  --green:#16a34a;--red:#dc2626;
   --r:8px;--r-sm:4px;
-  --mono:'SF Mono','Menlo','Consolas','Liberation Mono',monospace;
-  --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  --serif:Georgia,'Times New Roman','Noto Serif SC',serif;
+  --sans:system-ui,-apple-system,'Segoe UI','PingFang SC','Hiragino Sans GB',sans-serif;
+  --mono:'SF Mono','Menlo','Consolas',monospace;
+  --shadow:0 1px 3px rgba(0,0,0,.04);
 }
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f0f0e;--surf:#161615;--card:#1a1a18;--card2:#222220;
+    --border:#2a2928;--border2:#3a3938;
+    --text:#e7e5e0;--text-h:#f5f5f0;--dim:#78716c;--muted:#57534e;
+    --accent:#a78bfa;--accent-soft:rgba(167,139,250,.1);--accent-border:rgba(167,139,250,.2);
+    --green:#4ade80;--red:#f87171;
+    --shadow:0 1px 3px rgba(0,0,0,.2);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f0f0e;--surf:#161615;--card:#1a1a18;--card2:#222220;
+  --border:#2a2928;--border2:#3a3938;
+  --text:#e7e5e0;--text-h:#f5f5f0;--dim:#78716c;--muted:#57534e;
+  --accent:#a78bfa;--accent-soft:rgba(167,139,250,.1);--accent-border:rgba(167,139,250,.2);
+  --green:#4ade80;--red:#f87171;
+  --shadow:0 1px 3px rgba(0,0,0,.2);
+}
+
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-html,body{background:var(--bg);min-height:100vh;overflow-x:hidden;}
-body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;}
+html{background:var(--bg);min-height:100vh;}
+body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;overflow-x:hidden;}
 ::-webkit-scrollbar{width:3px;height:3px;}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 
-.wrap{max-width:520px;margin:0 auto;padding:16px;}
+.wrap{max-width:520px;margin:0 auto;padding:16px 16px 40px;}
+.hidden{display:none !important;}
 
 /* ── 顶栏 ── */
-.topbar{display:flex;align-items:center;gap:12px;padding:4px 0 16px;}
-.back{
+.topbar{display:flex;align-items:center;gap:12px;padding:4px 0 20px;}
+.topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;}
+.icon-btn{
   background:none;border:1px solid var(--border);color:var(--dim);
-  font-size:18px;width:32px;height:32px;border-radius:50%;
+  font-size:15px;width:30px;height:30px;border-radius:50%;
   cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;
+  font-family:var(--sans);
 }
-.back:hover{border-color:var(--accent);color:var(--accent);}
-.topbar h1{font-size:16px;font-weight:500;letter-spacing:.02em;}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent);}
+.topbar h1{font-family:var(--serif);font-size:18px;font-weight:400;color:var(--text-h);letter-spacing:-.01em;}
 
-/* ── 账户卡片 ── */
-.acct{
-  display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
-  margin-bottom:16px;
+/* ── 账户概览表格 ── */
+.acct-section{margin-bottom:20px;}
+.acct-title{
+  font-family:var(--serif);font-size:15px;font-weight:400;color:var(--text-h);
+  padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:0;
 }
-.acct-item{
-  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  padding:10px 12px;
-}
-.acct-label{font-size:10px;color:var(--dim);letter-spacing:.06em;margin-bottom:4px;}
-.acct-val{font-size:15px;font-family:var(--mono);font-weight:600;}
-.acct-bar{
-  display:flex;gap:16px;padding:6px 0 16px;font-size:11px;color:var(--dim);
-  font-family:var(--mono);
-}
-.acct-bar .pos{color:var(--green);}
-.acct-bar .neg{color:var(--red);}
+.acct-table{width:100%;border-collapse:collapse;}
+.acct-table tr{border-bottom:1px solid var(--border);}
+.acct-table tr:last-child{border-bottom:none;}
+.acct-table td{padding:9px 0;font-size:13px;}
+.acct-table td:first-child{color:var(--dim);width:40%;}
+.acct-table td:last-child{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:500;}
+.acct-table .val-pos{color:var(--green);}
+.acct-table .val-neg{color:var(--red);}
 
 /* ── 日历 ── */
 .cal-nav{display:flex;align-items:center;justify-content:space-between;padding:4px 0 10px;}
@@ -60,26 +82,23 @@ body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;}
   cursor:pointer;transition:all .15s;
 }
 .cal-arrow:hover{border-color:var(--accent);color:var(--accent);}
-.cal-ym{font-family:var(--mono);font-size:13px;letter-spacing:.04em;}
+.cal-ym{font-family:var(--mono);font-size:13px;letter-spacing:.04em;color:var(--dim);}
 .cal-wk{
   display:grid;grid-template-columns:repeat(7,1fr);text-align:center;
-  font-size:10px;letter-spacing:.08em;color:var(--dim);
+  font-size:10px;letter-spacing:.08em;color:var(--muted);
   padding:6px 0;border-bottom:1px solid var(--border);
 }
-.cal-wk .we{color:var(--muted);}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;padding:4px 0;}
 .cal-day{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  height:44px;cursor:pointer;border-radius:var(--r-sm);transition:background .1s;
+  height:44px;cursor:pointer;border-radius:var(--r-sm);transition:background .12s;
   position:relative;
 }
-.cal-day:hover{background:var(--card);}
-.cal-day.other{opacity:.15;cursor:default;}
+.cal-day:hover{background:var(--card2);}
+.cal-day.other{opacity:.2;cursor:default;}
 .cal-day.other:hover{background:none;}
-.cal-day.today .cal-num{background:var(--accent);color:var(--bg);font-weight:600;}
-.cal-day.sel{background:var(--accent-d);}
-.cal-day.sel .cal-num{color:var(--accent);}
-.cal-day.today.sel .cal-num{background:var(--accent);color:var(--bg);}
+.cal-day.today .cal-num{background:var(--accent);color:#fff;font-weight:600;}
+.cal-day.has:not(.today) .cal-num{color:var(--text-h);font-weight:600;}
 .cal-num{
   font-size:12px;font-family:var(--mono);font-variant-numeric:tabular-nums;
   width:26px;height:26px;display:flex;align-items:center;justify-content:center;
@@ -90,169 +109,143 @@ body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;}
   position:absolute;bottom:3px;
 }
 
-/* ── 日志面板 ── */
-.panel{margin-top:8px;display:none;}
-.panel.open{display:block;}
-.panel-hd{
-  font-size:14px;font-weight:500;padding:10px 0 8px;
-  display:flex;align-items:baseline;gap:8px;
+/* ── 详情视图 ── */
+.detail-date{
+  font-family:var(--serif);font-size:20px;font-weight:400;color:var(--text-h);
+  padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:16px;
 }
-.panel-hd-sub{font-family:var(--mono);font-size:10px;color:var(--dim);}
-.panel-empty{text-align:center;color:var(--muted);font-size:12px;padding:24px 0;}
+.detail-empty{text-align:center;color:var(--muted);font-size:13px;padding:32px 0;}
 
 /* ── 日志条目 ── */
 .entry{
   background:var(--card);border:1px solid var(--border);border-radius:var(--r);
-  margin-bottom:8px;overflow:hidden;
+  margin-bottom:12px;box-shadow:var(--shadow);overflow:hidden;
 }
-.entry-row{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:10px 14px;cursor:pointer;transition:background .1s;
-}
-.entry-row:hover{background:var(--card2);}
-.entry-time{font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:2px;}
-.entry-title{font-size:13px;font-weight:500;}
-.entry-acts{display:flex;gap:4px;flex-shrink:0;margin-left:8px;}
+.entry-head{padding:14px 16px;cursor:pointer;transition:background .1s;}
+.entry-head:hover{background:var(--card2);}
+.entry-time{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:3px;}
+.entry-title{font-family:var(--serif);font-size:15px;font-weight:400;color:var(--text-h);}
+.entry-acts{float:right;margin-top:4px;}
 .entry-btn{
-  background:var(--card2);border:1px solid var(--border);color:var(--dim);
-  font-family:var(--mono);font-size:9px;padding:3px 8px;cursor:pointer;
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:11px;padding:3px 10px;cursor:pointer;
   border-radius:var(--r-sm);transition:all .12s;
 }
-.entry-btn:hover{border-color:var(--border2);color:var(--text);}
+.entry-btn:hover{border-color:var(--accent);color:var(--accent);}
 
-/* ── 日志内容（Markdown渲染） ── */
-.entry-body{
-  border-top:1px solid var(--border);padding:16px;display:none;
-  animation:fadeUp .2s ease;
-}
-.entry-body.open{display:block;}
+/* ── Markdown渲染 ── */
+.entry-body{border-top:1px solid var(--border);padding:18px 16px;display:none;}
+.entry-body.open{display:block;animation:fadeIn .2s ease;}
 
-.md-content{font-size:13px;line-height:1.8;color:var(--text);}
-.md-content p{margin:0 0 10px;}
-.md-content strong{color:#fff;font-weight:600;}
-.md-content h1,.md-content h2,.md-content h3{color:#fff;font-weight:600;margin:18px 0 8px;line-height:1.3;}
-.md-content h1{font-size:18px;}
-.md-content h2{font-size:15px;padding-bottom:6px;border-bottom:1px solid var(--border);}
-.md-content h3{font-size:14px;}
-.md-content ol,.md-content ul{padding-left:20px;margin:0 0 10px;}
-.md-content li{margin:4px 0;}
-.md-content li p{margin:0;}
-.md-content a{color:var(--accent);text-decoration:none;}
-.md-content a:hover{text-decoration:underline;}
-.md-content code{
-  font-family:var(--mono);font-size:12px;
-  background:var(--card2);padding:1px 5px;border-radius:3px;
-}
-.md-content blockquote{
-  border-left:3px solid var(--accent);padding:4px 12px;
-  margin:0 0 10px;color:var(--dim);font-style:italic;
-}
-.md-content hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
-
-/* Markdown 表格 */
-.md-content table{
-  width:100%;border-collapse:collapse;margin:10px 0;
-  font-family:var(--mono);font-size:11px;
-}
-.md-content th,.md-content td{
-  border:1px solid var(--border);padding:6px 10px;text-align:left;
-}
-.md-content th{background:var(--card2);color:var(--dim);font-weight:500;font-size:10px;letter-spacing:.04em;}
-.md-content td{background:var(--card);}
+.md{font-size:14px;line-height:1.8;color:var(--text);}
+.md p{margin:0 0 12px;}
+.md strong{color:var(--text-h);font-weight:600;}
+.md h1,.md h2,.md h3{font-family:var(--serif);color:var(--text-h);font-weight:400;margin:20px 0 8px;line-height:1.3;}
+.md h1{font-size:18px;}
+.md h2{font-size:16px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+.md h3{font-size:15px;}
+.md ol,.md ul{padding-left:20px;margin:0 0 12px;}
+.md li{margin:4px 0;}
+.md li p{margin:0;}
+.md a{color:var(--accent);text-decoration:none;}
+.md a:hover{text-decoration:underline;}
+.md code{font-family:var(--mono);font-size:12px;background:var(--card2);padding:1px 5px;border-radius:3px;}
+.md blockquote{border-left:3px solid var(--accent);padding:4px 12px;margin:0 0 12px;color:var(--dim);font-style:italic;}
+.md hr{border:none;border-top:1px solid var(--border);margin:18px 0;}
+.md table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px;}
+.md th,.md td{border:1px solid var(--border);padding:7px 10px;text-align:left;}
+.md th{background:var(--card2);color:var(--dim);font-weight:500;font-size:12px;}
 
 /* ── Erik心得 ── */
-.erik-notes{
-  margin-top:12px;padding:12px 14px;
-  background:var(--accent-d);border:1px solid rgba(196,168,255,.15);
+.erik{
+  margin-top:14px;padding:14px 16px;
+  background:var(--accent-soft);border:1px solid var(--accent-border);
   border-radius:var(--r);
 }
-.erik-hd{font-size:11px;color:var(--accent);font-weight:500;margin-bottom:6px;letter-spacing:.04em;}
-.erik-body{font-size:12px;line-height:1.7;color:rgba(196,168,255,.8);}
+.erik-label{font-size:12px;color:var(--accent);font-weight:500;margin-bottom:6px;letter-spacing:.02em;}
+.erik-text{font-size:13px;line-height:1.8;color:var(--dim);}
 
 /* ── 编辑器 ── */
-.editor{
-  border-top:1px solid var(--border);padding:14px;display:none;
-  flex-direction:column;gap:8px;animation:fadeUp .15s ease;
-}
-.editor.open{display:flex;}
+.editor{border-top:1px solid var(--border);padding:16px;display:none;flex-direction:column;gap:10px;}
+.editor.open{display:flex;animation:fadeIn .15s ease;}
 .ed-area{
   width:100%;background:var(--surf);border:1px solid var(--border);
-  color:var(--text);font-family:var(--mono);font-size:11px;
+  color:var(--text);font-family:var(--mono);font-size:12px;
   padding:10px;outline:none;border-radius:var(--r-sm);
   resize:vertical;line-height:1.7;min-height:200px;transition:border-color .15s;
 }
 .ed-area:focus{border-color:var(--accent);}
-.ed-bar{display:flex;gap:6px;align-items:center;}
-.ed-status{font-size:10px;color:var(--dim);flex:1;}
-.ed-status.ok{color:var(--green);}
-.ed-status.err{color:var(--red);}
 
-/* ── 新建区域 ── */
-.new-sec{margin-top:16px;border-top:1px solid var(--border);padding-top:14px;}
+/* ── 新建 ── */
+.new-sec{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);}
 .new-toggle{
-  font-size:12px;color:var(--dim);background:none;border:none;
+  font-size:13px;color:var(--dim);background:none;border:none;
   cursor:pointer;padding:4px 0;transition:color .15s;width:100%;text-align:left;
 }
 .new-toggle:hover{color:var(--accent);}
-.new-form{
-  overflow:hidden;max-height:0;transition:max-height .25s ease;
-  display:flex;flex-direction:column;gap:8px;
-}
-.new-form.open{max-height:800px;margin-top:10px;}
+.new-form{overflow:hidden;max-height:0;transition:max-height .25s ease;display:flex;flex-direction:column;gap:10px;}
+.new-form.open{max-height:800px;margin-top:12px;}
 .inp{
-  width:100%;background:var(--card);border:1px solid var(--border);
-  color:var(--text);font-size:12px;padding:8px 10px;
+  width:100%;background:var(--surf);border:1px solid var(--border);
+  color:var(--text);font-size:13px;padding:9px 12px;
   outline:none;border-radius:var(--r-sm);transition:border-color .15s;
 }
 .inp:focus{border-color:var(--accent);}
 .inp::placeholder{color:var(--muted);}
-textarea.inp{font-family:var(--mono);font-size:11px;resize:vertical;line-height:1.7;min-height:160px;}
+textarea.inp{font-family:var(--mono);font-size:12px;resize:vertical;line-height:1.7;min-height:160px;}
 .btn{
-  background:var(--accent-d);border:1px solid var(--accent);color:var(--accent);
-  font-size:11px;padding:6px 16px;cursor:pointer;
-  border-radius:var(--r-sm);transition:all .15s;width:fit-content;
+  background:var(--accent-soft);border:1px solid var(--accent-border);color:var(--accent);
+  font-size:12px;padding:7px 18px;cursor:pointer;
+  border-radius:var(--r-sm);transition:all .15s;width:fit-content;font-weight:500;
 }
-.btn:hover{background:var(--accent);color:var(--bg);}
+.btn:hover{background:var(--accent);color:#fff;border-color:var(--accent);}
 .btn-row{display:flex;gap:8px;align-items:center;}
-.st{font-size:11px;color:var(--dim);min-height:16px;}
+.st{font-size:12px;color:var(--dim);min-height:16px;}
 .st.ok{color:var(--green);}
 .st.err{color:var(--red);}
 
 .tabs-row{display:flex;gap:4px;margin-bottom:4px;}
 .tab-btn{
-  font-size:10px;padding:4px 10px;border:1px solid var(--border);
-  border-radius:var(--r-sm);background:none;color:var(--dim);cursor:pointer;
-  transition:all .12s;font-family:var(--mono);
+  font-size:11px;padding:4px 12px;border:1px solid var(--border);
+  border-radius:var(--r-sm);background:none;color:var(--dim);cursor:pointer;transition:all .12s;
 }
-.tab-btn.on{background:var(--accent-d);border-color:var(--accent);color:var(--accent);}
+.tab-btn.on{background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent);}
 .tab-btn:hover{border-color:var(--accent);}
 
-.preview{
+.preview-box{
   background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);
   padding:14px;min-height:80px;display:none;
 }
-.preview.open{display:block;}
+.preview-box.open{display:block;}
 
-@keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <!-- 顶栏 -->
+
+<!-- ════ 日历视图 ════ -->
+<div class="wrap" id="view-calendar">
   <div class="topbar">
-    <button class="back" onclick="location.href='/stockpulse.html'" title="返回">&#8249;</button>
+    <button class="icon-btn" onclick="location.href='/stockpulse.html'" title="StockPulse">&#8249;</button>
     <h1>Trading Journal</h1>
+    <div class="topbar-right">
+      <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="切换主题"></button>
+    </div>
   </div>
 
-  <!-- 账户概览 -->
-  <div class="acct" id="acct">
-    <div class="acct-item"><div class="acct-label">CASH</div><div class="acct-val" id="a-cash">--</div></div>
-    <div class="acct-item"><div class="acct-label">HOLDINGS</div><div class="acct-val" id="a-hold">--</div></div>
-    <div class="acct-item"><div class="acct-label">TOTAL</div><div class="acct-val" id="a-total">--</div></div>
+  <div class="acct-section">
+    <div class="acct-title">账户概览</div>
+    <table class="acct-table" id="acct-table">
+      <tr><td>初始资金</td><td id="a-init">$1,500.00</td></tr>
+      <tr><td>现金余额</td><td id="a-cash">--</td></tr>
+      <tr><td>持仓市值</td><td id="a-hold">--</td></tr>
+      <tr><td>组合总值</td><td id="a-total">--</td></tr>
+      <tr><td>累计收益</td><td id="a-ret">--</td></tr>
+      <tr><td>SPY同期收益</td><td id="a-spy">--</td></tr>
+      <tr><td>起始日</td><td id="a-start">2026-11-02</td></tr>
+    </table>
   </div>
-  <div class="acct-bar" id="acct-bar"></div>
 
-  <!-- 日历 -->
   <div class="cal-nav">
     <button class="cal-arrow" onclick="changeMonth(-1)">&#8249;</button>
     <span class="cal-ym" id="cal-ym"></span>
@@ -260,28 +253,34 @@ textarea.inp{font-family:var(--mono);font-size:11px;resize:vertical;line-height:
   </div>
   <div class="cal-wk">
     <div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div>
-    <div class="we">SAT</div><div class="we">SUN</div>
+    <div>SAT</div><div>SUN</div>
   </div>
   <div class="cal-grid" id="cal-grid"></div>
+</div>
 
-  <!-- 日志面板 -->
-  <div class="panel" id="panel">
-    <div class="panel-hd" id="panel-hd"></div>
-    <div id="panel-list"></div>
+<!-- ════ 详情视图 ════ -->
+<div class="wrap hidden" id="view-detail">
+  <div class="topbar">
+    <button class="icon-btn" onclick="backToCalendar()" title="返回">&#8249;</button>
+    <h1 id="detail-title"></h1>
+    <div class="topbar-right">
+      <button class="icon-btn" id="theme-btn2" onclick="toggleTheme()" title="切换主题"></button>
+    </div>
   </div>
 
-  <!-- 新建 -->
+  <div id="detail-list"></div>
+
   <div class="new-sec">
-    <button class="new-toggle" onclick="toggleNew()">+ New Entry</button>
+    <button class="new-toggle" onclick="toggleNew()">+ 新建日志</button>
     <div class="new-form" id="new-form">
       <input class="inp" id="n-title" placeholder="标题（如：开盘研究、收盘复盘）">
       <div class="tabs-row">
         <button class="tab-btn on" onclick="switchTab('write',this)">编辑</button>
         <button class="tab-btn" onclick="switchTab('preview',this)">预览</button>
       </div>
-      <textarea class="inp" id="n-content" placeholder="Markdown内容...&#10;&#10;**市场环境：**&#10;&#10;**研究标的：**&#10;&#10;**操作建议：**&#10;&#10;**明天具体做什么：**"></textarea>
-      <div class="preview md-content" id="n-preview"></div>
-      <textarea class="inp" id="n-erik" placeholder="Erik's notes（可选）" style="min-height:60px;font-family:var(--sans);font-size:12px;"></textarea>
+      <textarea class="inp" id="n-content" placeholder="Markdown内容...&#10;&#10;**市场环境：**&#10;&#10;**研究标的：**&#10;&#10;**决策：**"></textarea>
+      <div class="preview-box md" id="n-preview"></div>
+      <textarea class="inp" id="n-erik" placeholder="Erik's notes（可选）" style="min-height:60px;font-family:var(--sans);font-size:13px;"></textarea>
       <div class="btn-row">
         <button class="btn" onclick="createEntry()">发布</button>
         <div class="st" id="n-st"></div>
@@ -291,260 +290,332 @@ textarea.inp{font-family:var(--mono);font-size:11px;resize:vertical;line-height:
 </div>
 
 <script>
+/* ════════════════════════════════════════════
+   Trading Journal — 虚拟炒股日志
+   初始资金 $1,500 · 起始日 2026-11-02
+   ════════════════════════════════════════════ */
+
 const API = location.origin;
-function secret(){return localStorage.getItem('gmp_pw')||'';}
-function hdr(){return{'Content-Type':'application/json','x-secret':secret()};}
+const INIT_CAPITAL = 1500;
+const START_DATE = '2026-11-02';
 
-marked.setOptions({breaks:true,gfm:true});
+function secret(){ return localStorage.getItem('gmp_pw') || ''; }
+function hdr(){ return { 'Content-Type':'application/json', 'x-secret':secret() }; }
 
-let entries={};
-const NOW=new Date();
-let curYear=NOW.getFullYear(),curMonth=NOW.getMonth();
-let selDate=null,newOpen=false,expandedIdx=-1;
-let latestAccount=null;
+marked.setOptions({ breaks:true, gfm:true });
+
+let entries = {};
+const NOW = new Date();
+let curYear = NOW.getFullYear(), curMonth = NOW.getMonth();
+let selDate = null, newOpen = false;
+
+// ── 主题 ──
+function initTheme(){
+  const saved = localStorage.getItem('tj_theme');
+  if(saved) document.documentElement.dataset.theme = saved;
+  updateThemeBtn();
+}
+function toggleTheme(){
+  const html = document.documentElement;
+  const isDark = getComputedStyle(html).getPropertyValue('--bg').trim().startsWith('#0');
+  const next = isDark ? 'light' : 'dark';
+  html.dataset.theme = next;
+  localStorage.setItem('tj_theme', next);
+  updateThemeBtn();
+}
+function updateThemeBtn(){
+  const isDark = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().startsWith('#0');
+  const icon = isDark ? '☼' : '☾';
+  const b1 = document.getElementById('theme-btn');
+  const b2 = document.getElementById('theme-btn2');
+  if(b1) b1.textContent = icon;
+  if(b2) b2.textContent = icon;
+}
 
 // ── 数据加载 ──
 function parseFilename(f){
-  const m=f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})_(.+)\.json$/);
-  if(!m)return null;
-  return{filename:f,date:m[1],time:m[2].replace('-',':'),slug:m[3]};
+  const m = f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})_(.+)\.json$/);
+  if(!m) return null;
+  return { filename:f, date:m[1], time:m[2].replace('-',':'), slug:m[3] };
 }
 
 async function loadAll(){
-  try{
-    const r=await fetch(`${API}/api/trade-journal`,{headers:hdr()});
-    const d=await r.json();
-    entries={};
-    for(const f of (d.items||[])){
-      const p=parseFilename(f);
-      if(!p)continue;
-      if(!entries[p.date])entries[p.date]=[];
+  try {
+    const r = await fetch(`${API}/api/trade-journal`, { headers:hdr() });
+    const d = await r.json();
+    entries = {};
+    for(const f of (d.items || [])){
+      const p = parseFilename(f);
+      if(!p) continue;
+      if(!entries[p.date]) entries[p.date] = [];
       entries[p.date].push(p);
     }
-    // 加载最新账户快照
-    if(d.latest_account) latestAccount=d.latest_account;
     renderAccount();
-    render();
-  }catch(e){console.error(e);}
+    renderCalendar();
+  } catch(e){ console.error(e); }
 }
 
-// ── 账户 ──
+// ── 账户概览（从 stockpulse localStorage 计算） ──
+function spGet(k, fb){
+  try { const v = localStorage.getItem('sp_' + k); return v ? JSON.parse(v) : fb; }
+  catch(e){ return fb; }
+}
+
 function fmt$(v){
-  if(v==null)return'--';
-  return'$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if(v == null) return '--';
+  return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
 }
 function fmtPct(v){
-  if(v==null)return'--';
-  const s=Number(v).toFixed(2)+'%';
-  return v>0?'+'+s:s;
+  if(v == null) return '--';
+  const s = Math.abs(v).toFixed(2) + '%';
+  return v > 0 ? '+' + s : v < 0 ? '-' + s : s;
 }
+
 function renderAccount(){
-  const a=latestAccount;
-  if(!a){document.getElementById('acct-bar').innerHTML='';return;}
-  document.getElementById('a-cash').textContent=fmt$(a.cash);
-  document.getElementById('a-hold').textContent=fmt$(a.holdings_value);
-  document.getElementById('a-total').textContent=fmt$(a.total);
-  const ret=a.return_pct,spy=a.spy_return_pct;
-  const rc=ret>0?'pos':ret<0?'neg':'';
-  const sc=spy>0?'pos':spy<0?'neg':'';
-  document.getElementById('acct-bar').innerHTML=
-    `<span>Return: <span class="${rc}">${fmtPct(ret)}</span></span>`+
-    `<span>SPY: <span class="${sc}">${fmtPct(spy)}</span></span>`+
-    (ret!=null&&spy!=null?`<span>Alpha: <span class="${ret-spy>0?'pos':'neg'}">${fmtPct(ret-spy)}</span></span>`:'');
+  const trades = spGet('trades', []);
+  const positions = spGet('positions', {});
+  const stocks = spGet('stocks', []);
+
+  // 现金 = 初始 - 买入总额 + 卖出总额
+  let cash = INIT_CAPITAL;
+  for(const t of trades){
+    if(t.type === 'buy') cash -= (t.amount || t.shares * t.price);
+    else if(t.type === 'sell') cash += (t.amount || t.shares * t.price);
+  }
+
+  // 持仓市值
+  let holdingsVal = 0;
+  for(const [tk, pos] of Object.entries(positions)){
+    const s = stocks.find(x => x.ticker === tk);
+    const price = s?.price || pos.avgCost;
+    holdingsVal += pos.shares * price;
+  }
+
+  const total = cash + holdingsVal;
+  const retPct = ((total - INIT_CAPITAL) / INIT_CAPITAL) * 100;
+
+  document.getElementById('a-cash').textContent = fmt$(cash);
+  document.getElementById('a-hold').textContent = fmt$(holdingsVal);
+  document.getElementById('a-total').textContent = fmt$(total);
+
+  const retEl = document.getElementById('a-ret');
+  retEl.textContent = fmtPct(retPct);
+  retEl.className = retPct > 0 ? 'val-pos' : retPct < 0 ? 'val-neg' : '';
+
+  // SPY 同期先显示 --，后续可接API
+  document.getElementById('a-spy').textContent = '--';
 }
 
 // ── 日历 ──
-function pad(n){return String(n).padStart(2,'0');}
-function fmtDate(y,m,d){return`${y}-${pad(m+1)}-${pad(d)}`;}
-function todayStr(){return fmtDate(NOW.getFullYear(),NOW.getMonth(),NOW.getDate());}
-function daysIn(y,m){return new Date(y,m+1,0).getDate();}
-function firstDow(y,m){const d=new Date(y,m,1).getDay();return d===0?6:d-1;}
+function pad(n){ return String(n).padStart(2, '0'); }
+function fmtDate(y, m, d){ return `${y}-${pad(m+1)}-${pad(d)}`; }
+function todayStr(){ return fmtDate(NOW.getFullYear(), NOW.getMonth(), NOW.getDate()); }
+function daysIn(y, m){ return new Date(y, m+1, 0).getDate(); }
+function firstDow(y, m){ const d = new Date(y, m, 1).getDay(); return d === 0 ? 6 : d - 1; }
 
-function render(){
-  document.getElementById('cal-ym').textContent=`${curYear}.${pad(curMonth+1)}`;
-  const grid=document.getElementById('cal-grid');
-  const days=daysIn(curYear,curMonth);
-  const first=firstDow(curYear,curMonth);
-  const prevD=daysIn(curYear,curMonth===0?11:curMonth-1);
-  const today=todayStr();
-  let h='';
-  for(let i=first-1;i>=0;i--)
-    h+=`<div class="cal-day other"><div class="cal-num">${prevD-i}</div></div>`;
-  for(let d=1;d<=days;d++){
-    const ds=fmtDate(curYear,curMonth,d);
-    const has=!!entries[ds];
-    const isT=ds===today,isS=ds===selDate;
-    let cls='cal-day';
-    if(isT)cls+=' today';if(isS)cls+=' sel';
-    const dot=has?'<div class="cal-dot"></div>':'';
-    h+=`<div class="${cls}" onclick="selectDate('${ds}')"><div class="cal-num">${d}</div>${dot}</div>`;
+function renderCalendar(){
+  document.getElementById('cal-ym').textContent = `${curYear}.${pad(curMonth + 1)}`;
+  const grid = document.getElementById('cal-grid');
+  const days = daysIn(curYear, curMonth);
+  const first = firstDow(curYear, curMonth);
+  const prevD = daysIn(curYear, curMonth === 0 ? 11 : curMonth - 1);
+  const today = todayStr();
+  let h = '';
+  for(let i = first - 1; i >= 0; i--)
+    h += `<div class="cal-day other"><div class="cal-num">${prevD - i}</div></div>`;
+  for(let d = 1; d <= days; d++){
+    const ds = fmtDate(curYear, curMonth, d);
+    const has = !!entries[ds];
+    const isT = ds === today;
+    let cls = 'cal-day';
+    if(isT) cls += ' today';
+    if(has) cls += ' has';
+    const dot = has ? '<div class="cal-dot"></div>' : '';
+    h += `<div class="${cls}" onclick="selectDate('${ds}')"><div class="cal-num">${d}</div>${dot}</div>`;
   }
-  const total=first+days;const rem=total%7;
-  if(rem>0)for(let i=1;i<=7-rem;i++)
-    h+=`<div class="cal-day other"><div class="cal-num">${i}</div></div>`;
-  grid.innerHTML=h;
-  renderPanel();
+  const total = first + days; const rem = total % 7;
+  if(rem > 0) for(let i = 1; i <= 7 - rem; i++)
+    h += `<div class="cal-day other"><div class="cal-num">${i}</div></div>`;
+  grid.innerHTML = h;
 }
 
 function changeMonth(delta){
-  curMonth+=delta;
-  if(curMonth>11){curMonth=0;curYear++;}
-  if(curMonth<0){curMonth=11;curYear--;}
-  selDate=null;expandedIdx=-1;
-  render();
+  curMonth += delta;
+  if(curMonth > 11){ curMonth = 0; curYear++; }
+  if(curMonth < 0){ curMonth = 11; curYear--; }
+  renderCalendar();
 }
 
 function selectDate(ds){
-  selDate=ds===selDate?null:ds;
-  expandedIdx=-1;
-  render();
+  selDate = ds;
+  showDetail(ds);
 }
 
-// ── 日志面板 ──
-function renderPanel(){
-  const panel=document.getElementById('panel');
-  const hd=document.getElementById('panel-hd');
-  const list=document.getElementById('panel-list');
-  if(!selDate){panel.classList.remove('open');return;}
-  panel.classList.add('open');
-  const parts=selDate.split('-').map(Number);
-  const items=entries[selDate]||[];
-  if(items.length){
-    hd.innerHTML=`${parts[1]}月${parts[2]}日 <span class="panel-hd-sub">${items.length} entries</span>`;
-    list.innerHTML=items.map((e,i)=>`
-      <div class="entry" id="ent-${i}">
-        <div class="entry-row" onclick="toggleEntry(${i})">
-          <div>
-            <div class="entry-time">${e.time}</div>
-            <div class="entry-title">${e.slug.replace(/_/g,' ')}</div>
-          </div>
-          <div class="entry-acts">
-            <button class="entry-btn" onclick="event.stopPropagation();editEntry(${i})">edit</button>
-          </div>
+// ── 详情视图 ──
+function showDetail(dateStr){
+  document.getElementById('view-calendar').classList.add('hidden');
+  document.getElementById('view-detail').classList.remove('hidden');
+  const parts = dateStr.split('-').map(Number);
+  document.getElementById('detail-title').textContent = `${parts[1]}月${parts[2]}日`;
+  newOpen = false;
+  const nf = document.getElementById('new-form');
+  if(nf) nf.classList.remove('open');
+  loadDetailEntries(dateStr);
+  window.scrollTo(0, 0);
+}
+
+function backToCalendar(){
+  document.getElementById('view-detail').classList.add('hidden');
+  document.getElementById('view-calendar').classList.remove('hidden');
+  window.scrollTo(0, 0);
+}
+
+async function loadDetailEntries(dateStr){
+  const list = document.getElementById('detail-list');
+  const items = entries[dateStr] || [];
+  if(!items.length){
+    list.innerHTML = '<div class="detail-empty">当天暂无日志</div>';
+    return;
+  }
+  list.innerHTML = items.map((e, i) => `
+    <div class="entry" id="ent-${i}">
+      <div class="entry-head" onclick="toggleBody(${i})">
+        <div class="entry-acts">
+          <button class="entry-btn" onclick="event.stopPropagation();editEntry(${i})">edit</button>
         </div>
-        <div class="entry-body" id="body-${i}"></div>
-      </div>`).join('');
-    if(expandedIdx>=0&&expandedIdx<items.length) loadEntryContent(expandedIdx);
-  }else{
-    hd.innerHTML=`${parts[1]}月${parts[2]}日`;
-    list.innerHTML='<div class="panel-empty">No entries</div>';
-  }
+        <div class="entry-time">${e.time}</div>
+        <div class="entry-title">${e.slug.replace(/_/g, ' ')}</div>
+      </div>
+      <div class="entry-body" id="body-${i}"></div>
+    </div>`).join('');
+
+  // 自动展开第一条
+  if(items.length > 0) await expandEntry(0);
 }
 
-async function toggleEntry(idx){
-  if(expandedIdx===idx){
-    document.getElementById(`body-${idx}`).classList.remove('open');
-    expandedIdx=-1;return;
+let expandedIdx = -1;
+async function toggleBody(idx){
+  const body = document.getElementById(`body-${idx}`);
+  if(!body) return;
+  if(body.classList.contains('open')){
+    body.classList.remove('open');
+    expandedIdx = -1;
+    return;
   }
-  if(expandedIdx>=0){
-    const old=document.getElementById(`body-${expandedIdx}`);
-    if(old)old.classList.remove('open');
-  }
-  expandedIdx=idx;
-  await loadEntryContent(idx);
+  // 收起其他
+  document.querySelectorAll('.entry-body.open').forEach(el => el.classList.remove('open'));
+  expandedIdx = idx;
+  await expandEntry(idx);
 }
 
-async function loadEntryContent(idx){
-  const items=entries[selDate]||[];
-  if(!items[idx])return;
-  const body=document.getElementById(`body-${idx}`);
-  if(!body)return;
-  body.innerHTML='<div style="font-size:11px;color:var(--dim);padding:4px;">loading...</div>';
+async function expandEntry(idx){
+  const items = entries[selDate] || [];
+  if(!items[idx]) return;
+  const body = document.getElementById(`body-${idx}`);
+  if(!body) return;
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px;">loading...</div>';
   body.classList.add('open');
-  try{
-    const r=await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`,{headers:hdr()});
-    const d=await r.json();
-    let html='<div class="md-content">'+marked.parse(d.content||'')+'</div>';
+  try {
+    const r = await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`, { headers:hdr() });
+    const d = await r.json();
+    let html = '<div class="md">' + marked.parse(d.content || '') + '</div>';
     if(d.erik_notes){
-      html+=`<div class="erik-notes"><div class="erik-hd">Erik's notes</div><div class="erik-body">${marked.parse(d.erik_notes)}</div></div>`;
+      html += `<div class="erik"><div class="erik-label">Erik's notes</div><div class="erik-text">${marked.parse(d.erik_notes)}</div></div>`;
     }
-    body.innerHTML=html;
-  }catch(e){body.innerHTML='<div style="color:var(--red);font-size:11px;">加载失败</div>';}
+    body.innerHTML = html;
+  } catch(e){
+    body.innerHTML = '<div style="color:var(--red);font-size:12px;">加载失败</div>';
+  }
 }
 
 // ── 编辑 ──
 async function editEntry(idx){
-  const items=entries[selDate]||[];
-  if(!items[idx])return;
-  const body=document.getElementById(`body-${idx}`);
-  if(!body)return;
+  const items = entries[selDate] || [];
+  if(!items[idx]) return;
+  const body = document.getElementById(`body-${idx}`);
+  if(!body) return;
   body.classList.add('open');
-  body.innerHTML='<div style="font-size:11px;color:var(--dim);padding:4px;">loading...</div>';
-  expandedIdx=idx;
-  try{
-    const r=await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`,{headers:hdr()});
-    const d=await r.json();
-    body.innerHTML=`
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px;">loading...</div>';
+  expandedIdx = idx;
+  try {
+    const r = await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`, { headers:hdr() });
+    const d = await r.json();
+    body.innerHTML = `
       <div class="editor open">
-        <textarea class="ed-area" id="ed-content">${esc(d.content||'')}</textarea>
-        <textarea class="ed-area" id="ed-erik" style="min-height:60px;font-family:var(--sans);font-size:12px;" placeholder="Erik's notes（可选）">${esc(d.erik_notes||'')}</textarea>
-        <div class="ed-bar">
-          <span class="ed-status" id="ed-st"></span>
+        <textarea class="ed-area" id="ed-content">${esc(d.content || '')}</textarea>
+        <textarea class="ed-area" id="ed-erik" style="min-height:60px;font-family:var(--sans);font-size:13px;" placeholder="Erik's notes">${esc(d.erik_notes || '')}</textarea>
+        <div class="btn-row">
           <button class="btn" onclick="saveEntry(${idx})">Save</button>
+          <div class="st" id="ed-st"></div>
         </div>
       </div>`;
-  }catch(e){body.innerHTML='<div style="color:var(--red);font-size:11px;">加载失败</div>';}
+  } catch(e){
+    body.innerHTML = '<div style="color:var(--red);font-size:12px;">加载失败</div>';
+  }
 }
 
 async function saveEntry(idx){
-  const items=entries[selDate]||[];
-  if(!items[idx])return;
-  const st=document.getElementById('ed-st');
-  const content=document.getElementById('ed-content').value;
-  const erik_notes=document.getElementById('ed-erik').value;
-  st.className='ed-status';st.textContent='saving...';
-  try{
-    const r=await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`,{
-      method:'PUT',headers:hdr(),body:JSON.stringify({content,erik_notes})
+  const items = entries[selDate] || [];
+  if(!items[idx]) return;
+  const st = document.getElementById('ed-st');
+  const content = document.getElementById('ed-content').value;
+  const erik_notes = document.getElementById('ed-erik').value;
+  st.className = 'st'; st.textContent = 'saving...';
+  try {
+    const r = await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`, {
+      method:'PUT', headers:hdr(), body:JSON.stringify({ content, erik_notes })
     });
-    if(!r.ok)throw new Error();
-    st.className='ed-status ok';st.textContent='saved';
-    setTimeout(()=>loadEntryContent(idx),500);
-  }catch(e){st.className='ed-status err';st.textContent='error';}
+    if(!r.ok) throw new Error();
+    st.className = 'st ok'; st.textContent = 'saved';
+    setTimeout(() => expandEntry(idx), 500);
+  } catch(e){ st.className = 'st err'; st.textContent = 'error'; }
 }
 
 // ── 新建 ──
 function toggleNew(){
-  newOpen=!newOpen;
-  document.getElementById('new-form').classList.toggle('open',newOpen);
+  newOpen = !newOpen;
+  document.getElementById('new-form').classList.toggle('open', newOpen);
 }
 
-function switchTab(tab,btn){
-  document.querySelectorAll('.tabs-row .tab-btn').forEach(b=>b.classList.remove('on'));
+function switchTab(tab, btn){
+  document.querySelectorAll('.tabs-row .tab-btn').forEach(b => b.classList.remove('on'));
   btn.classList.add('on');
-  const area=document.getElementById('n-content');
-  const prev=document.getElementById('n-preview');
-  if(tab==='preview'){
-    prev.innerHTML=marked.parse(area.value||'*nothing yet*');
-    area.style.display='none';prev.classList.add('open');
-  }else{
-    area.style.display='';prev.classList.remove('open');
+  const area = document.getElementById('n-content');
+  const prev = document.getElementById('n-preview');
+  if(tab === 'preview'){
+    prev.innerHTML = marked.parse(area.value || '*nothing yet*');
+    area.style.display = 'none'; prev.classList.add('open');
+  } else {
+    area.style.display = ''; prev.classList.remove('open');
   }
 }
 
 async function createEntry(){
-  const title=document.getElementById('n-title').value.trim();
-  const content=document.getElementById('n-content').value;
-  const erik_notes=document.getElementById('n-erik').value;
-  const st=document.getElementById('n-st');
-  if(!title){st.className='st err';st.textContent='需要标题';return;}
-  st.className='st';st.textContent='creating...';
-  try{
-    const r=await fetch(`${API}/api/trade-journal`,{
-      method:'POST',headers:hdr(),
-      body:JSON.stringify({title,content,erik_notes})
+  const title = document.getElementById('n-title').value.trim();
+  const content = document.getElementById('n-content').value;
+  const erik_notes = document.getElementById('n-erik').value;
+  const st = document.getElementById('n-st');
+  if(!title){ st.className = 'st err'; st.textContent = '需要标题'; return; }
+  st.className = 'st'; st.textContent = 'creating...';
+  try {
+    const r = await fetch(`${API}/api/trade-journal`, {
+      method:'POST', headers:hdr(),
+      body:JSON.stringify({ title, content, erik_notes })
     });
-    if(!r.ok)throw new Error();
-    st.className='st ok';st.textContent='done';
-    document.getElementById('n-title').value='';
-    document.getElementById('n-content').value='';
-    document.getElementById('n-erik').value='';
+    if(!r.ok) throw new Error();
+    st.className = 'st ok'; st.textContent = 'done';
+    document.getElementById('n-title').value = '';
+    document.getElementById('n-content').value = '';
+    document.getElementById('n-erik').value = '';
     await loadAll();
-  }catch(e){st.className='st err';st.textContent='error';}
+    if(selDate) loadDetailEntries(selDate);
+  } catch(e){ st.className = 'st err'; st.textContent = 'error'; }
 }
 
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function esc(s){ return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+// ── 启动 ──
+initTheme();
 loadAll();
 </script>
 </body>
