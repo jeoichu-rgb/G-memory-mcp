@@ -146,6 +146,7 @@ class CheckSecretMiddleware:
             or path == "/health/update"
             or path == "/location/update"
             or path == "/stockpulse.html"
+            or path == "/trade-journal.html"
             or path.startswith("/api/stockpulse/")
             or path == "/music"
             or path.startswith("/api/music/")
@@ -295,6 +296,97 @@ async def serve_stockpulse(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>stockpulse.html not found</h1>", status_code=500)
+
+@app.get("/trade-journal.html")
+async def serve_trade_journal(request: Request):
+    try:
+        with open("trade-journal.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>trade-journal.html not found</h1>", status_code=500)
+
+# ── Trade Journal API ──
+TRADE_JOURNAL_DIR = "./trade_journal"
+
+class TradeJournalCreate(_BM):
+    title: str
+    content: str = ""
+    erik_notes: str = ""
+    account: dict = None
+
+class TradeJournalUpdate(_BM):
+    content: str = ""
+    erik_notes: str = ""
+    account: dict = None
+
+@app.get("/api/trade-journal")
+async def tj_list():
+    import glob, json as _json
+    os.makedirs(TRADE_JOURNAL_DIR, exist_ok=True)
+    files = sorted(os.listdir(TRADE_JOURNAL_DIR), reverse=True)
+    items = [f for f in files if f.endswith(".json")]
+    # 找最新账户快照
+    latest_account = None
+    for f in items:
+        try:
+            with open(os.path.join(TRADE_JOURNAL_DIR, f), "r", encoding="utf-8") as fh:
+                d = _json.load(fh)
+                if d.get("account"):
+                    latest_account = d["account"]
+                    break
+        except Exception:
+            continue
+    return {"total": len(items), "items": items, "latest_account": latest_account}
+
+@app.post("/api/trade-journal")
+async def tj_create(payload: TradeJournalCreate):
+    import json as _json
+    os.makedirs(TRADE_JOURNAL_DIR, exist_ok=True)
+    now = datetime.now(SGT)
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M")
+    safe_title = payload.title.replace("/", "_").replace(" ", "_")
+    filename = f"{date_str}_{time_str}_{safe_title}.json"
+    data = {
+        "title": payload.title,
+        "date": date_str,
+        "time": time_str.replace("-", ":"),
+        "created_at": now.isoformat(),
+        "content": payload.content,
+        "erik_notes": payload.erik_notes,
+        "account": payload.account,
+    }
+    with open(os.path.join(TRADE_JOURNAL_DIR, filename), "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"status": "ok", "filename": filename}
+
+@app.get("/api/trade-journal/{filename:path}")
+async def tj_read(filename: str):
+    import json as _json
+    fp = os.path.join(TRADE_JOURNAL_DIR, filename)
+    if not os.path.exists(fp):
+        raise HTTPException(status_code=404, detail="日志不存在")
+    with open(fp, "r", encoding="utf-8") as f:
+        return _json.load(f)
+
+@app.put("/api/trade-journal/{filename:path}")
+async def tj_update(filename: str, payload: TradeJournalUpdate):
+    import json as _json
+    fp = os.path.join(TRADE_JOURNAL_DIR, filename)
+    if not os.path.exists(fp):
+        raise HTTPException(status_code=404, detail="日志不存在")
+    with open(fp, "r", encoding="utf-8") as f:
+        data = _json.load(f)
+    if payload.content is not None:
+        data["content"] = payload.content
+    if payload.erik_notes is not None:
+        data["erik_notes"] = payload.erik_notes
+    if payload.account is not None:
+        data["account"] = payload.account
+    data["updated_at"] = datetime.now(SGT).isoformat()
+    with open(fp, "w", encoding="utf-8") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"status": "ok"}
 
 @app.get("/api/stockpulse/quote")
 async def stockpulse_quote(symbol: str):
