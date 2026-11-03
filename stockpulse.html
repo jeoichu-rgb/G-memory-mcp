@@ -971,16 +971,24 @@ input { font-family: inherit; }
         if (useTimestamp) { time = t; } else { time = new Date(t * 1000).toISOString().slice(0, 10); if (seen.has(time)) return null; seen.add(time); }
         return { time, open: o, high: h, low: l, close: c };
       }).filter(Boolean);
-      if (candles.length) { empty.style.display = 'none'; renderChart($('chart-container'), candles, useTimestamp); }
+      if (candles.length) { empty.style.display = 'none'; renderChart($('chart-container'), candles, useTimestamp, currentRes === 'W'); }
       else { empty.textContent = '暂无K线数据'; }
     } else { empty.textContent = '暂无K线数据'; }
   }
 
-  function renderChart(container, data, timeVisible) {
+  function renderChart(container, data, timeVisible, dateOnly) {
+    const tsOpts = { borderColor: '#222', timeVisible: timeVisible !== false };
+    if (dateOnly) {
+      tsOpts.timeVisible = false;
+      tsOpts.tickMarkFormatter = function(t) {
+        var d = new Date(t * 1000);
+        return (d.getMonth() + 1) + '/' + d.getDate();
+      };
+    }
     chart = LightweightCharts.createChart(container, {
       layout: { background: { type: 'solid', color: '#000' }, textColor: '#666', fontFamily: 'Inter, sans-serif', fontSize: 11 },
       grid: { vertLines: { color: '#111' }, horzLines: { color: '#111' } },
-      timeScale: { borderColor: '#222', timeVisible: timeVisible !== false },
+      timeScale: tsOpts,
       rightPriceScale: { borderColor: '#222' },
       crosshair: { mode: 0, vertLine: { color: '#333', width: 1 }, horzLine: { color: '#333', width: 1 } },
       handleScroll: { vertTouchDrag: false },
