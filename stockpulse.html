@@ -597,7 +597,7 @@ input { font-family: inherit; }
           if (q && q.c > 0) {
             const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
             const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
-            Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o || null, high: q.h || null, low: q.l || null, prevClose: q.pc || null, lastUpdated: new Date().toISOString() });
+            Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null, lastUpdated: new Date().toISOString() });
             if (!s.sparkline) s.sparkline = [];
             s.sparkline.push(q.c);
             if (s.sparkline.length > 30) s.sparkline = s.sparkline.slice(-30);
@@ -885,7 +885,7 @@ input { font-family: inherit; }
       if (q && q.c > 0) {
         const chg = (q.d != null && q.d !== 0) ? q.d : (q.pc ? q.c - q.pc : 0);
         const chgPct = (q.dp != null && q.dp !== 0) ? q.dp : (q.pc ? ((q.c - q.pc) / q.pc * 100) : 0);
-        Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o || null, high: q.h || null, low: q.l || null, prevClose: q.pc || null });
+        Object.assign(s, { price: q.c, change: chg, changePercent: parseFloat(chgPct.toFixed(2)), open: q.o != null ? q.o : null, high: q.h != null ? q.h : null, low: q.l != null ? q.l : null, prevClose: q.pc != null ? q.pc : null });
         updateDetailPrice(s);
         renderDetailStats(s);
         renderList();
@@ -902,45 +902,46 @@ input { font-family: inherit; }
     if (chart) { chart.remove(); chart = null; candleSeries = null; }
     const isCrypto = stocks.find(s => s.ticker === ticker)?.category === 'crypto';
     let data = null;
+    const cfg = {
+      '15': { sec: 15*60, res: '1', yInt: '1m', yRng: '1d' },
+      '60': { sec: 60*60, res: '1', yInt: '2m', yRng: '1d' },
+      'D':  { sec: 86400, res: '5', yInt: '5m', yRng: '1d' },
+      'W':  { sec: 7*86400, res: '60', yInt: '60m', yRng: '5d' },
+      'M':  { sec: 30*86400, res: 'D', yInt: '1d', yRng: '1mo' },
+    }[currentRes] || { sec: 86400, res: '5', yInt: '5m', yRng: '1d' };
     if (finnhubKey) {
       const to = Math.floor(Date.now() / 1000);
-      const rangeSec = {15: 5*86400, 60: 30*86400, D: 180*86400, W: 365*86400, M: 730*86400}[currentRes] || 180*86400;
-      const from = to - rangeSec;
+      const from = to - cfg.sec;
       const endpoint = isCrypto ? 'crypto/candle' : 'stock/candle';
       const symbol = isCrypto ? 'BINANCE:' + ticker.replace('-USD', 'USDT') : ticker;
-      data = await fh(endpoint, { symbol, resolution: currentRes, from, to });
+      data = await fh(endpoint, { symbol, resolution: cfg.res, from, to });
     }
     if (!(data?.s === 'ok' && data?.t?.length) && !isCrypto) {
-      const resMap = {15: '15m', 60: '60m', D: '1d', W: '1wk', M: '1mo'};
-      const rangeMap = {15: '5d', 60: '1mo', D: '6mo', W: '2y', M: '5y'};
-      const yInterval = resMap[currentRes] || '1d';
-      const yRange = rangeMap[currentRes] || '6mo';
-      const ySymbol = ticker.replace('-USD', '-USD');
       try {
-        const r = await fetch('/api/stockpulse/candle?symbol=' + encodeURIComponent(ySymbol) + '&interval=' + yInterval + '&range=' + yRange);
+        const r = await fetch('/api/stockpulse/candle?symbol=' + encodeURIComponent(ticker) + '&interval=' + cfg.yInt + '&range=' + cfg.yRng);
         if (r.ok) data = await r.json();
       } catch(e) {}
     }
+    const useTimestamp = cfg.res !== 'D';
     if (data?.s === 'ok' && data.t?.length) {
-      const isIntraday = ['15','60'].includes(String(currentRes));
       const seen = new Set();
       const candles = data.t.map((t, i) => {
         const o = data.o[i], h = data.h[i], l = data.l[i], c = data.c[i];
         if (o == null || h == null || l == null || c == null) return null;
         let time;
-        if (isIntraday) { time = t; } else { time = new Date(t * 1000).toISOString().slice(0, 10); if (seen.has(time)) return null; seen.add(time); }
+        if (useTimestamp) { time = t; } else { time = new Date(t * 1000).toISOString().slice(0, 10); if (seen.has(time)) return null; seen.add(time); }
         return { time, open: o, high: h, low: l, close: c };
       }).filter(Boolean);
-      if (candles.length) { empty.style.display = 'none'; renderChart($('chart-container'), candles); }
+      if (candles.length) { empty.style.display = 'none'; renderChart($('chart-container'), candles, useTimestamp); }
       else { empty.textContent = '暂无K线数据'; }
     } else { empty.textContent = '暂无K线数据'; }
   }
 
-  function renderChart(container, data) {
+  function renderChart(container, data, timeVisible) {
     chart = LightweightCharts.createChart(container, {
       layout: { background: { type: 'solid', color: '#000' }, textColor: '#666', fontFamily: 'Inter, sans-serif', fontSize: 11 },
       grid: { vertLines: { color: '#111' }, horzLines: { color: '#111' } },
-      timeScale: { borderColor: '#222', timeVisible: ['15','60'].includes(currentRes) },
+      timeScale: { borderColor: '#222', timeVisible: timeVisible !== false },
       rightPriceScale: { borderColor: '#222' },
       crosshair: { mode: 0, vertLine: { color: '#333', width: 1 }, horzLine: { color: '#333', width: 1 } },
       handleScroll: { vertTouchDrag: false },
