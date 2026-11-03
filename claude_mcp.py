@@ -70,6 +70,8 @@ EMAIL_163_PASS  = os.getenv("EMAIL_163_PASS", "LYr64QwxLwt9P2QJ")
 
 CLAUDE_DIARY_PATH = "./claude_diary"
 os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
+TRADE_JOURNAL_PATH = "./trade_journal"
+os.makedirs(TRADE_JOURNAL_PATH, exist_ok=True)
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
 
@@ -257,6 +259,10 @@ mcp = FastMCP(
         "event_list     — 列出事件的所有更新（按时间倒序），data={event, latest(可选,数字,限制条数)}\n"
         "event_drop     — 删除整个事件，data={event}\n"
         "event_ls       — 列出所有事件名，无需 data\n"
+        "tj_write      — 写交易日志，data={title, content, erik_notes(可选), account(可选,dict)}\n"
+        "tj_read       — 读交易日志，data={date(YYYY-MM-DD,可选,默认最新)}\n"
+        "tj_list       — 列出所有交易日志，无需 data\n"
+        "tj_update     — 更新交易日志，data={filename, content(可选), erik_notes(可选), account(可选)}\n"
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -851,6 +857,77 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         except Exception as e:
             return f"gateway 不可达：{e}"
 
+    # — trade journal ——————————————————————————————————————————
+    elif cmd == "tj_write":
+        import json as _json
+        title = data.get("title", "")
+        content = data.get("content", "")
+        erik_notes = data.get("erik_notes", "")
+        account = data.get("account", None)
+        if not title:
+            return f"错误：tj_write 需要 title。收到的 data: {data}"
+        now = datetime.now(SGT)
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H-%M")
+        safe_title = title.replace("/", "_").replace(" ", "_")
+        filename = f"{date_str}_{time_str}_{safe_title}.json"
+        entry = {
+            "title": title, "date": date_str,
+            "time": time_str.replace("-", ":"),
+            "created_at": now.isoformat(),
+            "content": content, "erik_notes": erik_notes,
+            "account": account,
+        }
+        with open(os.path.join(TRADE_JOURNAL_PATH, filename), "w", encoding="utf-8") as f:
+            _json.dump(entry, f, ensure_ascii=False, indent=2)
+        return f"已写入交易日志：{filename}"
+
+    elif cmd == "tj_read":
+        import json as _json
+        target_date = data.get("date", "")
+        files = sorted([f for f in os.listdir(TRADE_JOURNAL_PATH) if f.endswith(".json")])
+        if not files:
+            return "暂无交易日志。"
+        if target_date:
+            matched = [f for f in files if f.startswith(target_date)]
+            if not matched:
+                return f"{target_date} 没有交易日志。"
+            files = matched
+        results = []
+        for fn in files[-5:]:
+            with open(os.path.join(TRADE_JOURNAL_PATH, fn), "r", encoding="utf-8") as f:
+                d = _json.load(f)
+            results.append(f"## {d.get('title','')}\n({d.get('date','')} {d.get('time','')})\n{d.get('content','')}"
+                           + (f"\n\n**Erik's notes:** {d['erik_notes']}" if d.get('erik_notes') else ""))
+        return "\n\n---\n\n".join(results)
+
+    elif cmd == "tj_list":
+        files = sorted([f for f in os.listdir(TRADE_JOURNAL_PATH) if f.endswith(".json")], reverse=True)
+        if not files:
+            return "暂无交易日志。"
+        return "\n".join(files)
+
+    elif cmd == "tj_update":
+        import json as _json
+        filename = data.get("filename", "")
+        if not filename:
+            return f"错误：tj_update 需要 filename。收到的 data: {data}"
+        fp = os.path.join(TRADE_JOURNAL_PATH, filename)
+        if not os.path.exists(fp):
+            return f"日志不存在：{filename}"
+        with open(fp, "r", encoding="utf-8") as f:
+            entry = _json.load(f)
+        if data.get("content") is not None:
+            entry["content"] = data["content"]
+        if data.get("erik_notes") is not None:
+            entry["erik_notes"] = data["erik_notes"]
+        if data.get("account") is not None:
+            entry["account"] = data["account"]
+        entry["updated_at"] = datetime.now(SGT).isoformat()
+        with open(fp, "w", encoding="utf-8") as f:
+            _json.dump(entry, f, ensure_ascii=False, indent=2)
+        return f"已更新：{filename}"
+
     # ── unknown ───────────────────────────────────────────────
     else:
         return (
@@ -865,7 +942,8 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "read_location / read_health / "
             "send_email / read_email / "
             "event_create / event_post / event_edit / event_rm / "
-            "event_list / event_drop / event_ls"
+            "event_list / event_drop / event_ls / "
+            "tj_write / tj_read / tj_list / tj_update"
         )
 
 
