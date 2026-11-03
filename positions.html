@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0">
+<title>Portfolio</title>
+<style>
+:root{
+  --bg:#faf9f7;--surf:#fff;--card:#fff;--card2:#f5f3f0;
+  --border:#e5e3df;--border2:#d4d1cc;
+  --text:#1c1917;--text-h:#0c0a09;--dim:#78716c;--muted:#a8a29e;
+  --accent:#7c5cfc;--accent-soft:rgba(124,92,252,.08);--accent-border:rgba(124,92,252,.2);
+  --green:#16a34a;--red:#dc2626;
+  --r:8px;--r-sm:4px;
+  --serif:Georgia,'Times New Roman','Noto Serif SC',serif;
+  --sans:system-ui,-apple-system,'Segoe UI','PingFang SC','Hiragino Sans GB',sans-serif;
+  --mono:'SF Mono','Menlo','Consolas',monospace;
+  --shadow:0 1px 3px rgba(0,0,0,.04);
+}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f0f0e;--surf:#161615;--card:#1a1a18;--card2:#222220;
+    --border:#2a2928;--border2:#3a3938;
+    --text:#e7e5e0;--text-h:#f5f5f0;--dim:#78716c;--muted:#57534e;
+    --accent:#a78bfa;--accent-soft:rgba(167,139,250,.1);--accent-border:rgba(167,139,250,.2);
+    --green:#4ade80;--red:#f87171;
+    --shadow:0 1px 3px rgba(0,0,0,.2);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f0f0e;--surf:#161615;--card:#1a1a18;--card2:#222220;
+  --border:#2a2928;--border2:#3a3938;
+  --text:#e7e5e0;--text-h:#f5f5f0;--dim:#78716c;--muted:#57534e;
+  --accent:#a78bfa;--accent-soft:rgba(167,139,250,.1);--accent-border:rgba(167,139,250,.2);
+  --green:#4ade80;--red:#f87171;
+  --shadow:0 1px 3px rgba(0,0,0,.2);
+}
+
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html{background:var(--bg);min-height:100vh;}
+body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;overflow-x:hidden;}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+.wrap{max-width:520px;margin:0 auto;padding:16px 16px 40px;}
+
+.topbar{display:flex;align-items:center;gap:12px;padding:4px 0 20px;}
+.topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;}
+.icon-btn{
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:15px;width:30px;height:30px;border-radius:50%;
+  cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;
+  font-family:var(--sans);
+}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent);}
+.topbar h1{font-family:var(--serif);font-size:18px;font-weight:400;color:var(--text-h);letter-spacing:-.01em;}
+
+/* ── 总览 ── */
+.summary{
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow);
+}
+.sum-label{font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px;}
+.sum-val{font-family:var(--mono);font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-h);}
+.sum-row{display:flex;gap:16px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+.sum-cell{flex:1;}
+.sum-cell-label{font-size:11px;color:var(--muted);margin-bottom:2px;}
+.sum-cell-val{font-family:var(--mono);font-size:14px;font-weight:500;font-variant-numeric:tabular-nums;}
+.val-pos{color:var(--green);}
+.val-neg{color:var(--red);}
+
+/* ── 持仓列表 ── */
+.section-title{
+  font-family:var(--serif);font-size:15px;font-weight:400;color:var(--text-h);
+  padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:0;
+}
+.pos-item{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 0;border-bottom:1px solid var(--border);
+  cursor:pointer;transition:background .1s;
+}
+.pos-item:last-child{border-bottom:none;}
+.pos-item:active{opacity:.7;}
+.pos-left{flex:1;min-width:0;}
+.pos-ticker{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text-h);}
+.pos-cat{font-size:10px;color:var(--muted);margin-left:6px;letter-spacing:.04em;}
+.pos-meta{font-size:12px;color:var(--dim);margin-top:2px;}
+.pos-right{text-align:right;flex-shrink:0;}
+.pos-val{font-family:var(--mono);font-size:14px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--text-h);}
+.pos-pnl{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;margin-top:2px;}
+
+.empty{text-align:center;color:var(--muted);font-size:13px;padding:40px 0;}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+.pos-item{animation:fadeIn .2s ease both;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <button class="icon-btn" onclick="location.href='/stockpulse.html'" title="StockPulse">&#8249;</button>
+    <h1>Portfolio</h1>
+    <div class="topbar-right">
+      <button class="icon-btn" id="theme-btn" onclick="toggleTheme()"></button>
+    </div>
+  </div>
+
+  <div class="summary" id="summary">
+    <div class="sum-label">总市值</div>
+    <div class="sum-val" id="s-total">--</div>
+    <div class="sum-row">
+      <div class="sum-cell">
+        <div class="sum-cell-label">总成本</div>
+        <div class="sum-cell-val" id="s-cost">--</div>
+      </div>
+      <div class="sum-cell">
+        <div class="sum-cell-label">总盈亏</div>
+        <div class="sum-cell-val" id="s-pnl">--</div>
+      </div>
+      <div class="sum-cell">
+        <div class="sum-cell-label">收益率</div>
+        <div class="sum-cell-val" id="s-pct">--</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">持仓明细</div>
+  <div id="list"></div>
+</div>
+
+<script>
+const CAT_LABEL = { us:'美股', crypto:'加密', index:'指数', hk:'港股', cn:'A股', fx:'外汇' };
+
+function spGet(k, fb){
+  try{ const v = localStorage.getItem('sp_' + k); return v ? JSON.parse(v) : fb; }
+  catch(e){ return fb; }
+}
+function fmt$(v){ return '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+// ── 主题 ──
+function initTheme(){
+  const saved = localStorage.getItem('tj_theme');
+  if(saved) document.documentElement.dataset.theme = saved;
+  updateThemeBtn();
+}
+function toggleTheme(){
+  const html = document.documentElement;
+  const isDark = getComputedStyle(html).getPropertyValue('--bg').trim().startsWith('#0');
+  const next = isDark ? 'light' : 'dark';
+  html.dataset.theme = next;
+  localStorage.setItem('tj_theme', next);
+  updateThemeBtn();
+}
+function updateThemeBtn(){
+  const isDark = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().startsWith('#0');
+  document.getElementById('theme-btn').textContent = isDark ? '☼' : '☾';
+}
+
+// ── 渲染 ──
+function render(){
+  const positions = spGet('positions', {});
+  const stocks = spGet('stocks', []);
+  const entries = Object.entries(positions);
+  const list = document.getElementById('list');
+
+  if(!entries.length){
+    list.innerHTML = '<div class="empty">暂无持仓</div>';
+    document.getElementById('s-total').textContent = '$0.00';
+    document.getElementById('s-cost').textContent = '$0.00';
+    document.getElementById('s-pnl').textContent = '$0.00';
+    document.getElementById('s-pct').textContent = '0.00%';
+    return;
+  }
+
+  let totalVal = 0, totalCost = 0;
+  const rows = entries.map(([tk, pos]) => {
+    const s = stocks.find(x => x.ticker === tk);
+    const price = s?.price || pos.avgCost;
+    const val = pos.shares * price;
+    const cost = pos.shares * pos.avgCost;
+    const pnl = val - cost;
+    const pct = cost > 0 ? (pnl / cost * 100) : 0;
+    totalVal += val; totalCost += cost;
+    const cat = pos.category || s?.category || 'us';
+    const sign = pnl >= 0 ? '+' : '';
+    const cls = pnl >= 0 ? 'val-pos' : 'val-neg';
+    return { tk, cat, shares: pos.shares, avgCost: pos.avgCost, price, val, pnl, pct, sign, cls };
+  });
+
+  // 按市值降序
+  rows.sort((a, b) => b.val - a.val);
+
+  list.innerHTML = rows.map((r, i) => `
+    <div class="pos-item" style="animation-delay:${i * 30}ms" onclick="location.href='/stockpulse.html#${r.tk}'">
+      <div class="pos-left">
+        <span class="pos-ticker">${r.tk}</span><span class="pos-cat">${CAT_LABEL[r.cat] || r.cat}</span>
+        <div class="pos-meta">${r.shares}股 · 均价 ${fmt$(r.avgCost)} · 现价 ${fmt$(r.price)}</div>
+      </div>
+      <div class="pos-right">
+        <div class="pos-val">${fmt$(r.val)}</div>
+        <div class="pos-pnl ${r.cls}">${r.sign}${fmt$(r.pnl)} (${r.sign}${r.pct.toFixed(1)}%)</div>
+      </div>
+    </div>`).join('');
+
+  const totalPnl = totalVal - totalCost;
+  const totalPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
+  const tSign = totalPnl >= 0 ? '+' : '';
+  const tCls = totalPnl >= 0 ? 'val-pos' : 'val-neg';
+
+  document.getElementById('s-total').textContent = fmt$(totalVal);
+  document.getElementById('s-cost').textContent = fmt$(totalCost);
+  const pnlEl = document.getElementById('s-pnl');
+  pnlEl.textContent = tSign + fmt$(totalPnl);
+  pnlEl.className = 'sum-cell-val ' + tCls;
+  const pctEl = document.getElementById('s-pct');
+  pctEl.textContent = tSign + totalPct.toFixed(2) + '%';
+  pctEl.className = 'sum-cell-val ' + tCls;
+}
+
+// ── 实时联动 ──
+window.addEventListener('storage', (e) => {
+  if(e.key && e.key.startsWith('sp_')) render();
+});
+
+initTheme();
+render();
+</script>
+</body>
+</html>

@@ -147,6 +147,7 @@ class CheckSecretMiddleware:
             or path == "/location/update"
             or path == "/stockpulse.html"
             or path == "/trade-journal.html"
+            or path == "/positions.html"
             or path.startswith("/api/stockpulse/")
             or path == "/music"
             or path.startswith("/api/music/")
@@ -304,6 +305,14 @@ async def serve_trade_journal(request: Request):
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(content="<h1>trade-journal.html not found</h1>", status_code=500)
+
+@app.get("/positions.html")
+async def serve_positions(request: Request):
+    try:
+        with open("positions.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>positions.html not found</h1>", status_code=500)
 
 # ── Trade Journal API ──
 TRADE_JOURNAL_DIR = "./trade_journal"
