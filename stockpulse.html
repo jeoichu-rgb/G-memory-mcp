@@ -394,13 +394,14 @@ input { font-family: inherit; }
   <div class="modal">
     <div class="modal-title" id="trade-title"></div>
     <div class="form-group">
-      <label class="form-label" for="trade-shares">数量（股）</label>
-      <input class="form-input" type="number" id="trade-shares" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
-      <div class="form-hint" id="trade-hint"></div>
+      <label class="form-label" for="trade-amount">金额（$）</label>
+      <input class="form-input" type="number" id="trade-amount" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+      <div class="form-hint" id="trade-hint-amt"></div>
     </div>
     <div class="form-group">
-      <label class="form-label">交易金额</label>
-      <div id="trade-amount" style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums">$0.00</div>
+      <label class="form-label" for="trade-shares">数量（股）</label>
+      <input class="form-input" type="number" id="trade-shares" min="0" step="0.0001" placeholder="0.0000" inputmode="decimal">
+      <div class="form-hint" id="trade-hint"></div>
     </div>
     <div class="form-row">
       <button class="form-cancel" id="trade-cancel">取消</button>
@@ -1049,16 +1050,31 @@ input { font-family: inherit; }
       }
     }
     $('trade-title').textContent = (type === 'buy' ? '买入 ' : '卖出 ') + currentTicker;
-    $('trade-shares').value = ''; $('trade-amount').textContent = '$0.00';
-    $('trade-hint').textContent = type === 'buy' ? '当前价格 ' + fmtPrice(s.price, s.category) : '持仓 ' + pos.shares + ' 股 · 均价 ' + fmtPrice(pos.avgCost);
+    $('trade-amount').value = ''; $('trade-shares').value = '';
+    $('trade-hint-amt').textContent = '当前价格 ' + fmtPrice(s.price, s.category);
+    $('trade-hint').textContent = type === 'sell' && pos ? '持仓 ' + pos.shares + ' 股 · 均价 ' + fmtPrice(pos.avgCost) : '';
     const cf = $('trade-confirm'); cf.className = 'form-confirm ' + type; cf.textContent = type === 'buy' ? '确认买入' : '确认卖出';
     $('trade-modal').classList.add('active');
-    setTimeout(() => $('trade-shares').focus(), 100);
+    setTimeout(() => $('trade-amount').focus(), 100);
   }
 
-  $('trade-shares').addEventListener('input', () => {
+  // 金额 ↔ 股数双向联动
+  let _tradeSync = false;
+  $('trade-amount').addEventListener('input', () => {
+    if (_tradeSync) return; _tradeSync = true;
     const s = stocks.find(x => x.ticker === currentTicker);
-    $('trade-amount').textContent = '$' + ((parseFloat($('trade-shares').value) || 0) * (s?.price || 0)).toFixed(2);
+    const price = s?.price || 0;
+    const amt = parseFloat($('trade-amount').value) || 0;
+    $('trade-shares').value = price > 0 ? (amt / price).toFixed(4) : '';
+    _tradeSync = false;
+  });
+  $('trade-shares').addEventListener('input', () => {
+    if (_tradeSync) return; _tradeSync = true;
+    const s = stocks.find(x => x.ticker === currentTicker);
+    const price = s?.price || 0;
+    const shares = parseFloat($('trade-shares').value) || 0;
+    $('trade-amount').value = (shares * price).toFixed(2);
+    _tradeSync = false;
   });
 
   function executeTrade() {

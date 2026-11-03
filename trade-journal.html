@@ -204,6 +204,15 @@ textarea.inp{font-family:var(--mono);font-size:12px;resize:vertical;line-height:
 .st.ok{color:var(--green);}
 .st.err{color:var(--red);}
 
+/* ── 可编辑单元格 ── */
+.editable{cursor:pointer;position:relative;}
+.editable:hover{color:var(--accent);}
+.cell-input{
+  width:120px;background:var(--surf);border:1px solid var(--accent);
+  color:var(--text);font-family:var(--mono);font-size:13px;
+  padding:2px 6px;outline:none;border-radius:var(--r-sm);text-align:right;
+}
+
 .tabs-row{display:flex;gap:4px;margin-bottom:4px;}
 .tab-btn{
   font-size:11px;padding:4px 12px;border:1px solid var(--border);
@@ -236,13 +245,13 @@ textarea.inp{font-family:var(--mono);font-size:12px;resize:vertical;line-height:
   <div class="acct-section">
     <div class="acct-title">账户概览</div>
     <table class="acct-table" id="acct-table">
-      <tr><td>初始资金</td><td id="a-init">$1,500.00</td></tr>
+      <tr><td>初始资金</td><td class="editable" id="a-init" onclick="editCell('init')">$1,500.00</td></tr>
       <tr><td>现金余额</td><td id="a-cash">--</td></tr>
       <tr><td>持仓市值</td><td id="a-hold">--</td></tr>
       <tr><td>组合总值</td><td id="a-total">--</td></tr>
       <tr><td>累计收益</td><td id="a-ret">--</td></tr>
       <tr><td>SPY同期收益</td><td id="a-spy">--</td></tr>
-      <tr><td>起始日</td><td id="a-start">2026-11-02</td></tr>
+      <tr><td>起始日</td><td class="editable" id="a-start" onclick="editCell('start')">2026-11-02</td></tr>
     </table>
   </div>
 
@@ -296,8 +305,8 @@ textarea.inp{font-family:var(--mono);font-size:12px;resize:vertical;line-height:
    ════════════════════════════════════════════ */
 
 const API = location.origin;
-const INIT_CAPITAL = 1500;
-const START_DATE = '2026-11-02';
+function getInitCapital(){ return parseFloat(localStorage.getItem('tj_init_capital')) || 1500; }
+function getStartDate(){ return localStorage.getItem('tj_start_date') || '2026-11-02'; }
 
 function secret(){ return localStorage.getItem('gmp_pw') || ''; }
 function hdr(){ return { 'Content-Type':'application/json', 'x-secret':secret() }; }
@@ -376,8 +385,11 @@ function renderAccount(){
   const positions = spGet('positions', {});
   const stocks = spGet('stocks', []);
 
+  const initCap = getInitCapital();
+  const startDate = getStartDate();
+
   // 现金 = 初始 - 买入总额 + 卖出总额
-  let cash = INIT_CAPITAL;
+  let cash = initCap;
   for(const t of trades){
     if(t.type === 'buy') cash -= (t.amount || t.shares * t.price);
     else if(t.type === 'sell') cash += (t.amount || t.shares * t.price);
@@ -392,8 +404,9 @@ function renderAccount(){
   }
 
   const total = cash + holdingsVal;
-  const retPct = ((total - INIT_CAPITAL) / INIT_CAPITAL) * 100;
+  const retPct = ((total - initCap) / initCap) * 100;
 
+  document.getElementById('a-init').textContent = fmt$(initCap);
   document.getElementById('a-cash').textContent = fmt$(cash);
   document.getElementById('a-hold').textContent = fmt$(holdingsVal);
   document.getElementById('a-total').textContent = fmt$(total);
@@ -402,8 +415,37 @@ function renderAccount(){
   retEl.textContent = fmtPct(retPct);
   retEl.className = retPct > 0 ? 'val-pos' : retPct < 0 ? 'val-neg' : '';
 
-  // SPY 同期先显示 --，后续可接API
   document.getElementById('a-spy').textContent = '--';
+  document.getElementById('a-start').textContent = startDate;
+}
+
+// ── 可编辑单元格 ──
+function editCell(field){
+  const el = document.getElementById(field === 'init' ? 'a-init' : 'a-start');
+  if(el.querySelector('.cell-input')) return;
+  const cur = field === 'init' ? String(getInitCapital()) : getStartDate();
+  const type = field === 'init' ? 'number' : 'date';
+  const inp = document.createElement('input');
+  inp.className = 'cell-input';
+  inp.type = type;
+  inp.value = cur;
+  if(type === 'number'){ inp.min = '0'; inp.step = '0.01'; }
+  el.textContent = '';
+  el.appendChild(inp);
+  inp.focus(); inp.select();
+
+  function commit(){
+    const v = inp.value.trim();
+    if(field === 'init'){
+      const n = parseFloat(v);
+      if(n > 0){ localStorage.setItem('tj_init_capital', n); }
+    } else {
+      if(/^\d{4}-\d{2}-\d{2}$/.test(v)){ localStorage.setItem('tj_start_date', v); }
+    }
+    renderAccount();
+  }
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('keydown', e => { if(e.key === 'Enter'){ inp.blur(); } if(e.key === 'Escape'){ renderAccount(); } });
 }
 
 // ── 日历 ──
