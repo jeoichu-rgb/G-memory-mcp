@@ -945,6 +945,13 @@ input { font-family: inherit; }
         if (r.ok) data = await r.json();
       } catch(e) {}
     }
+    // 15m/1h: 裁剪到目标时间窗口，不显示窗口外的蜡烛
+    if (data?.s === 'ok' && data?.t?.length && cfg.sec < 86400) {
+      const cutoff = Math.floor(Date.now() / 1000) - cfg.sec;
+      const idx = data.t.reduce((a, t, i) => { if (t >= cutoff) a.push(i); return a; }, []);
+      if (idx.length) { data = { s:'ok', t:idx.map(i=>data.t[i]), o:idx.map(i=>data.o[i]), h:idx.map(i=>data.h[i]), l:idx.map(i=>data.l[i]), c:idx.map(i=>data.c[i]) }; }
+      else { data = { s:'no_data' }; }
+    }
     const useTimestamp = cfg.res !== 'D';
     if (data?.s === 'ok' && data.t?.length) {
       const seen = new Set();
