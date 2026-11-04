@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Scanner MCP (supergateway stdio→SSE)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-scanner
+Environment=FINNHUB_API_KEY=dbk0cm1r01qonjmjm1p0dbk0cm1r01qonjmjm1pg
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/stock-scanner/node_modules/.bin/supergateway --port 8090 --stdio "/opt/stock-scanner/node_modules/.bin/stock-scanner-mcp --enable-workspace" --cors --healthEndpoint /health
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
