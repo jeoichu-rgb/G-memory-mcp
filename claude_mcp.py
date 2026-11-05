@@ -86,17 +86,19 @@ TJ_RESEARCH_PROMPT = (
     "- 单只不占组合过高比例，小额交易考虑手续费，可用碎股\n"
     "- 手续费计入真实收益，每次和SPY同期比较\n"
     "- 没有好机会就明确说「不交易」，持有现金是合理选择\n\n"
-    "══ tj_write 模板（表格模式：第一行表头，后面直接填值）══\n"
+    "══ tj_write 模板（表头已固定在代码，直接填值）══\n"
+    "列顺序：symbol | price | change | action | target_position | "
+    "target_shares | target_amount | limit_price | "
+    "bull_case | bear_case | catalyst | timeframe | "
+    "invalidation | hold_through_event | would_buy_now\n"
+    "（末尾不填的可以截断，中间不填的给空字符串）\n\n"
     "palace(cmd=\"tj_write\", data={\n"
     "  \"title\": \"YYYY-MM-DD 收盘报告\",\n"
     "  \"market\": {\"indices\": \"\", \"fear_greed\": \"\", \"narrative\": \"\", "
     "\"breadth\": \"\", \"sector_rotation\": \"\", \"policy\": \"\"},\n"
     "  \"positions\": [\n"
-    "    [\"symbol\",\"price\",\"change\",\"action\",\"target_position\","
-    "\"target_shares\",\"target_amount\",\"limit_price\","
-    "\"bull_case\",\"bear_case\",\"catalyst\",\"timeframe\","
-    "\"invalidation\",\"hold_through_event\",\"would_buy_now\"],\n"
-    "    [\"NIO\", \"$5.20\", \"-3.2%\", \"HOLD\", ... ]\n"
+    "    [\"NIO\", \"$5.20\", \"-3.2%\", \"HOLD\", ...],\n"
+    "    [\"AAPL\", \"$180\", \"+1.2%\", \"BUY\", ...]\n"
     "  ],\n"
     "  \"conclusion\": \"\",\n"
     "  \"spy_comparison\": \"\",\n"
@@ -104,8 +106,16 @@ TJ_RESEARCH_PROMPT = (
     "  \"erik_notes\": \"\",\n"
     "  \"account\": {\"cash\": \"\", \"total\": \"\"}\n"
     "})\n"
-    "（表头只放需要的列，不用的列删掉。所有顶层字段也可省略）\n"
+    "（所有顶层字段可省略。不填的删掉就行）\n"
 )
+
+POSITION_FIELDS = [
+    "symbol", "price", "change", "action", "target_position",
+    "target_shares", "target_amount", "limit_price",
+    "bull_case", "bear_case", "catalyst", "timeframe",
+    "invalidation", "hold_through_event", "would_buy_now",
+]
+POSITION_FIELDS_SET = set(POSITION_FIELDS)
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
 
@@ -900,19 +910,29 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         account = data.get("account", None)
         if not title:
             return f"错误：tj_write 需要 title。收到的 data: {data}"
-        # ── positions 表格模式：list of lists → 第一行表头，后面是数据行 ──
+        # ── positions 表格模式 ──
+        # 支持三种写法：
+        #   1) list of dicts  → 原样
+        #   2) list of lists, 第一行全是字段名 → 自带表头 + 数据行
+        #   3) list of lists, 第一行不是字段名 → 用 POSITION_FIELDS 默认表头
         raw_positions = data.get("positions", None)
-        if isinstance(raw_positions, list) and len(raw_positions) >= 2:
+        if isinstance(raw_positions, list) and raw_positions:
             first = raw_positions[0]
-            if isinstance(first, list) and all(isinstance(h, str) for h in first):
-                # 表格模式：first = 表头, rest = 数据行
-                headers = first
+            if isinstance(first, list):
+                # 判断第一行是表头还是数据
+                is_header = all(isinstance(h, str) and h in POSITION_FIELDS_SET for h in first)
+                if is_header:
+                    headers = first
+                    data_rows = raw_positions[1:]
+                else:
+                    headers = POSITION_FIELDS
+                    data_rows = raw_positions  # 全部都是数据行
                 parsed = []
-                for row in raw_positions[1:]:
+                for row in data_rows:
                     if isinstance(row, list):
                         parsed.append(dict(zip(headers, row)))
                     elif isinstance(row, dict):
-                        parsed.append(row)  # 混着写也兼容
+                        parsed.append(row)
                 raw_positions = parsed
         now = datetime.now(SGT)
         date_str = now.strftime("%Y-%m-%d")
