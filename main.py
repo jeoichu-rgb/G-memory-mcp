@@ -322,11 +322,22 @@ class TradeJournalCreate(BaseModel):
     content: str = ""
     erik_notes: str = ""
     account: dict = None
+    # 结构化字段
+    market: dict = None
+    positions: list = None
+    conclusion: str = None
+    spy_comparison: str = None
+    reflection: str = None
 
 class TradeJournalUpdate(BaseModel):
-    content: str = ""
-    erik_notes: str = ""
+    content: str = None
+    erik_notes: str = None
     account: dict = None
+    market: dict = None
+    positions: list = None
+    conclusion: str = None
+    spy_comparison: str = None
+    reflection: str = None
 
 @app.get("/api/trade-journal")
 async def tj_list():
@@ -364,7 +375,14 @@ async def tj_create(payload: TradeJournalCreate):
         "content": payload.content,
         "erik_notes": payload.erik_notes,
         "account": payload.account,
+        "market": payload.market,
+        "positions": payload.positions,
+        "conclusion": payload.conclusion,
+        "spy_comparison": payload.spy_comparison,
+        "reflection": payload.reflection,
     }
+    # 清除 None 值
+    data = {k: v for k, v in data.items() if v is not None}
     with open(os.path.join(TRADE_JOURNAL_DIR, filename), "w", encoding="utf-8") as f:
         _json.dump(data, f, ensure_ascii=False, indent=2)
     return {"status": "ok", "filename": filename}
@@ -386,12 +404,11 @@ async def tj_update(filename: str, payload: TradeJournalUpdate):
         raise HTTPException(status_code=404, detail="日志不存在")
     with open(fp, "r", encoding="utf-8") as f:
         data = _json.load(f)
-    if payload.content is not None:
-        data["content"] = payload.content
-    if payload.erik_notes is not None:
-        data["erik_notes"] = payload.erik_notes
-    if payload.account is not None:
-        data["account"] = payload.account
+    for key in ["content", "erik_notes", "account", "market", "positions",
+                 "conclusion", "spy_comparison", "reflection"]:
+        val = getattr(payload, key, None)
+        if val is not None:
+            data[key] = val
     data["updated_at"] = datetime.now(SGT).isoformat()
     with open(fp, "w", encoding="utf-8") as f:
         _json.dump(data, f, ensure_ascii=False, indent=2)
