@@ -86,35 +86,17 @@ TJ_RESEARCH_PROMPT = (
     "- 单只不占组合过高比例，小额交易考虑手续费，可用碎股\n"
     "- 手续费计入真实收益，每次和SPY同期比较\n"
     "- 没有好机会就明确说「不交易」，持有现金是合理选择\n\n"
-    "══ tj_write 模板（复制后填值即可）══\n"
+    "══ tj_write 模板（表格模式：第一行表头，后面直接填值）══\n"
     "palace(cmd=\"tj_write\", data={\n"
     "  \"title\": \"YYYY-MM-DD 收盘报告\",\n"
-    "  \"market\": {\n"
-    "    \"indices\": \"\",\n"
-    "    \"fear_greed\": \"\",\n"
-    "    \"narrative\": \"\",\n"
-    "    \"breadth\": \"\",\n"
-    "    \"sector_rotation\": \"\",\n"
-    "    \"policy\": \"\"\n"
-    "  },\n"
+    "  \"market\": {\"indices\": \"\", \"fear_greed\": \"\", \"narrative\": \"\", "
+    "\"breadth\": \"\", \"sector_rotation\": \"\", \"policy\": \"\"},\n"
     "  \"positions\": [\n"
-    "    {\n"
-    "      \"symbol\": \"\",\n"
-    "      \"price\": \"\",\n"
-    "      \"change\": \"\",\n"
-    "      \"action\": \"BUY/HOLD/SELL/REDUCE/ADD/不交易\",\n"
-    "      \"target_position\": \"\",\n"
-    "      \"target_shares\": \"\",\n"
-    "      \"target_amount\": \"\",\n"
-    "      \"limit_price\": \"\",\n"
-    "      \"bull_case\": \"\",\n"
-    "      \"bear_case\": \"\",\n"
-    "      \"catalyst\": \"\",\n"
-    "      \"timeframe\": \"\",\n"
-    "      \"invalidation\": \"\",\n"
-    "      \"hold_through_event\": false,\n"
-    "      \"would_buy_now\": \"\"\n"
-    "    }\n"
+    "    [\"symbol\",\"price\",\"change\",\"action\",\"target_position\","
+    "\"target_shares\",\"target_amount\",\"limit_price\","
+    "\"bull_case\",\"bear_case\",\"catalyst\",\"timeframe\","
+    "\"invalidation\",\"hold_through_event\",\"would_buy_now\"],\n"
+    "    [\"NIO\", \"$5.20\", \"-3.2%\", \"HOLD\", ... ]\n"
     "  ],\n"
     "  \"conclusion\": \"\",\n"
     "  \"spy_comparison\": \"\",\n"
@@ -122,7 +104,7 @@ TJ_RESEARCH_PROMPT = (
     "  \"erik_notes\": \"\",\n"
     "  \"account\": {\"cash\": \"\", \"total\": \"\"}\n"
     "})\n"
-    "（所有字段都可省略，不填的删掉就行）\n"
+    "（表头只放需要的列，不用的列删掉。所有顶层字段也可省略）\n"
 )
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
@@ -918,6 +900,20 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         account = data.get("account", None)
         if not title:
             return f"错误：tj_write 需要 title。收到的 data: {data}"
+        # ── positions 表格模式：list of lists → 第一行表头，后面是数据行 ──
+        raw_positions = data.get("positions", None)
+        if isinstance(raw_positions, list) and len(raw_positions) >= 2:
+            first = raw_positions[0]
+            if isinstance(first, list) and all(isinstance(h, str) for h in first):
+                # 表格模式：first = 表头, rest = 数据行
+                headers = first
+                parsed = []
+                for row in raw_positions[1:]:
+                    if isinstance(row, list):
+                        parsed.append(dict(zip(headers, row)))
+                    elif isinstance(row, dict):
+                        parsed.append(row)  # 混着写也兼容
+                raw_positions = parsed
         now = datetime.now(SGT)
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M")
@@ -931,7 +927,7 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "account": account,
             # 结构化字段
             "market": data.get("market", None),
-            "positions": data.get("positions", None),
+            "positions": raw_positions,
             "conclusion": data.get("conclusion", None),
             "spy_comparison": data.get("spy_comparison", None),
             "reflection": data.get("reflection", None),
