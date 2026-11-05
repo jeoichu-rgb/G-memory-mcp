@@ -141,6 +141,11 @@ PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
 ALARMS_PATH = Path(CC_CWD) / "alarms.json"
 LAST_MODEL_PATH = Path(CC_CWD) / "last_model.txt"
 
+# ── Thesis checker ──
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+THESIS_CHECK_HOUR = 5  # UTC+8 05:00 ≈ 美东收盘 16:00 ET (EST)
+TRADE_JOURNAL_DIR = Path(CC_CWD) / "trade_journal"
+
 # ── Stardew event push ──
 # 星露谷 MCP server（Windows :7845）检测到新游戏事件（talk/gift）时
 # POST 到 /api/stardew/event，由 stardew_event_worker 防抖合并后
@@ -2204,6 +2209,101 @@ def build_alarm_prompt(reason: str, time_str: str = "") -> str:
     )
 
 
+# ── Thesis checker (daily post-market) ──
+
+async def thesis_checker_worker():
+    """每天美股收盘后检查一次：读最新日志的 positions，
+    拿 finnhub 当前价格，交叉引用 invalidation，inject 到活跃 session。"""
+    _thesis_last_date = ""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now(SGT)
+        if now.hour != THESIS_CHECK_HOUR:
+            continue
+        today = now.strftime("%Y-%m-%d")
+        if today == _thesis_last_date:
+            continue
+        if not FINNHUB_API_KEY:
+            continue
+        if not TRADE_JOURNAL_DIR.exists():
+            continue
+        try:
+            files = sorted(f for f in os.listdir(TRADE_JOURNAL_DIR) if f.endswith(".json"))
+            if not files:
+                continue
+            with open(TRADE_JOURNAL_DIR / files[-1], "r", encoding="utf-8") as f:
+                entry = json.load(f)
+            positions = entry.get("positions", [])
+            if not positions:
+                _thesis_last_date = today
+                continue
+        except Exception as e:
+            log.error(f"thesis_checker: read journal error: {e}")
+            continue
+        # 拿 finnhub 价格
+        alerts = []
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                for p in positions:
+                    symbol = p.get("symbol", "").upper()
+                    if not symbol:
+                        continue
+                    try:
+                        resp = await client.get(
+                            f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+                        )
+                        data = resp.json()
+                        cp = data.get("c", 0)
+                        pc = data.get("pc", 0)
+                        chg = ((cp - pc) / pc * 100) if pc else 0
+                        inv = p.get("invalidation", "（未设置）")
+                        action = p.get("action", "")
+                        alerts.append(
+                            f"**{symbol}** 收盘 ${cp:.2f} ({chg:+.1f}%)\n"
+                            f"  上次操作建议：{action}\n"
+                            f"  Invalidation：{inv}"
+                        )
+                    except Exception as e:
+                        log.warning(f"thesis_checker: finnhub error {symbol}: {e}")
+                    await asyncio.sleep(1)  # finnhub rate limit
+        except Exception as e:
+            log.error(f"thesis_checker: http error: {e}")
+            continue
+        if not alerts:
+            _thesis_last_date = today
+            continue
+        prompt = (
+            f"[thesis-check] 这不是Jeoi的消息。网关自动收盘检查（每日一次）。\n"
+            f"日期：{today}，基于最新日志 {files[-1]}\n\n"
+            + "\n\n".join(alerts)
+            + "\n\n请判断每个标的的 thesis 是否仍然成立。"
+            "如需要，可以写新的交易日志（tj_write）。\n\n"
+            "FORMAT:\n"
+            "ACTION: message | silent\n"
+            "CONTENT:\n<your analysis>"
+        )
+        # inject
+        sid = peb_state.get("pebbling_session_id")
+        sess = sessions.get(sid) if sid else None
+        if (sess and sess.cc_session_id
+                and not _tmux_send_lock.locked()
+                and not _user_msg_active
+                and not getattr(sess, '_in_call', False)):
+            log.info(f"thesis_checker: injecting to session {sid}")
+            text, thinking, tools = await run_cc_oneshot(prompt, sess, max_turns=6)
+            if text:
+                act, content = parse_action(text)
+                await push_pebbling_activity("thesis_check", act, tools, thinking, sess, content=content)
+                if content:
+                    await push_pebbling_msg("thesis_check", content, sess, thinking=thinking)
+        else:
+            log.info("thesis_checker: no active session, sending TG")
+            summary = "\n".join(a.replace("**", "").replace("  ", " ") for a in alerts)
+            await send_telegram(f"📊 收盘 Thesis Check\n{summary}")
+        _thesis_last_date = today
+        log.info(f"thesis_checker: done for {today}, {len(alerts)} symbols checked")
+
+
 # ── Prompt builders ──
 
 def build_patrol_prompt(elapsed_min: int, events_str: str) -> str:
@@ -4090,6 +4190,9 @@ async def startup_load_sessions():
     asyncio.create_task(stardew_event_worker())
     if _LT_IMPORTS_OK:
         asyncio.create_task(listen_together_worker())
+    if FINNHUB_API_KEY:
+        asyncio.create_task(thesis_checker_worker())
+        log.info(f"Thesis checker started (daily {THESIS_CHECK_HOUR}:00 UTC+8)")
 
     # WeChat ClawBot gateway
     if WECHAT_ENABLED:
