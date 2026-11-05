@@ -127,6 +127,7 @@ CC CLI 在 tmux detached 中 = 真 PTY = 交互式 = 走 Pro/Max 订阅固定价
 | `main.py` | Docker（Coolify CI/CD） | 8000 | MCP SSE 端点、管理面板、Admin API、webhook |
 | `cc_ws_gateway.py` | VPS 后台进程（nohup, root） | 3000 | 聊天 WS 网关、tmux 编排、transcript tailing、后台系统 |
 | reddit-mcp-server | pm2（root） | 3001 | Reddit 读写 MCP，独立代码库 |
+| supergateway (stock-scanner) | systemd `stock-scanner`（root） | 8090 | stdio→SSE 桥接，将 stock-scanner-mcp 暴露为 SSE 端点。不走 OAuth，网关 startup 自动注入配置，换账号/重登不丢 |
 | CC CLI | tmux `cc_cli`（erik 用户） | — | 常驻大脑 |
 
 CC CLI 必须以非 root 用户运行（`--dangerously-skip-permissions` 禁止 root/sudo）。网关以 root 运行，通过 `sudo -u erik` 管理 tmux。
