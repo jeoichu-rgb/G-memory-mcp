@@ -4011,6 +4011,15 @@ async def startup_load_sessions():
             allow_list.append(palace_perm)
             log.info(f"Added {palace_perm} to allow list")
 
+        # stock-scanner via supergateway (always running on VPS :8090)
+        scanner_url = "http://localhost:8090/sse"
+        if servers.get("stock-scanner", {}).get("url") != scanner_url:
+            log.info(f"stock-scanner MCP: {servers.get('stock-scanner', {}).get('url', '(none)')} → {scanner_url}")
+        servers["stock-scanner"] = {"url": scanner_url}
+        scanner_perm = "mcp__stock-scanner"
+        if scanner_perm not in allow_list:
+            allow_list.append(scanner_perm)
+
         # Remove legacy channel MCP if present
         if "erik_channel" in servers:
             del servers["erik_channel"]
