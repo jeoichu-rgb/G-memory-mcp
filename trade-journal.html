@@ -40,7 +40,7 @@
 
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html{background:var(--bg);min-height:100vh;}
-body{color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;overflow-x:hidden;}
+body{color:var(--text);font-family:var(--serif);font-size:14px;line-height:1.6;overflow-x:hidden;}
 ::-webkit-scrollbar{width:3px;height:3px;}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 
@@ -226,6 +226,46 @@ textarea.inp{font-family:var(--mono);font-size:12px;resize:vertical;line-height:
   padding:14px;min-height:80px;display:none;
 }
 .preview-box.open{display:block;}
+
+/* ── 结构化日志 ── */
+.tj-section{margin-top:20px;padding-top:16px;border-top:1px solid var(--border);}
+.tj-section:first-child{margin-top:0;padding-top:0;border-top:none;}
+.tj-section-title{
+  font-size:16px;font-weight:400;color:var(--text-h);
+  padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:12px;
+}
+.market-indices{font-weight:600;color:var(--text-h);font-size:14px;line-height:1.6;margin-bottom:10px;}
+.market-field{margin-bottom:10px;font-size:14px;line-height:1.7;}
+.market-field strong{color:var(--text-h);font-weight:600;}
+
+.pos-card{
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r);
+  margin-bottom:16px;overflow:hidden;
+}
+.pos-header{
+  padding:12px 16px;font-size:15px;font-weight:400;color:var(--text-h);
+  border-bottom:1px solid var(--border);
+}
+.pos-action{
+  padding:8px 16px;font-size:14px;font-weight:600;color:var(--text-h);
+}
+.pos-action.buy{color:var(--green);}
+.pos-action.sell{color:var(--red);}
+.pos-action.hold{color:var(--dim);}
+
+.pos-table{width:100%;border-collapse:collapse;}
+.pos-table tr{border-bottom:1px solid var(--border);}
+.pos-table tr:last-child{border-bottom:none;}
+.pos-table td{padding:10px 16px;font-size:13px;line-height:1.6;vertical-align:top;}
+.pos-table td:first-child{color:var(--dim);width:35%;font-weight:400;}
+.pos-table td:last-child{color:var(--text);}
+
+.conclusion-box{
+  font-size:14px;line-height:1.8;color:var(--text);
+}
+.conclusion-box strong{color:var(--text-h);font-weight:600;}
+.spy-box{font-size:14px;line-height:1.7;color:var(--text);}
+.reflection-box{font-size:14px;line-height:1.7;color:var(--text);}
 
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
 </style>
@@ -550,6 +590,79 @@ async function toggleBody(idx){
   await expandEntry(idx);
 }
 
+function actionClass(a){
+  if(!a) return '';
+  const s = a.toUpperCase();
+  if(s.startsWith('BUY') || s.startsWith('ADD')) return 'buy';
+  if(s.startsWith('SELL') || s.startsWith('REDUCE')) return 'sell';
+  return 'hold';
+}
+
+function renderStructured(d){
+  let h = '';
+  // 市场环境
+  if(d.market){
+    h += '<div class="tj-section"><div class="tj-section-title">市场环境</div>';
+    if(d.market.indices) h += `<div class="market-indices">${esc(d.market.indices)}</div>`;
+    const mf = [['fear_greed','Fear & Greed'],['narrative','核心驱动'],['breadth','市场广度'],
+                ['sector_rotation','板块轮动（本周）'],['policy','政策方向变化']];
+    for(const [k,label] of mf){
+      if(d.market[k]) h += `<div class="market-field"><strong>${label}：</strong> ${esc(d.market[k])}</div>`;
+    }
+    h += '</div>';
+  }
+  // 标的分析
+  if(d.positions && d.positions.length){
+    h += '<div class="tj-section"><div class="tj-section-title">标的分析</div>';
+    for(const p of d.positions){
+      h += '<div class="pos-card">';
+      h += `<div class="pos-header">${esc(p.symbol||'')} ${esc(String(p.price||''))} (${esc(p.change||'')})</div>`;
+      h += `<div class="pos-action ${actionClass(p.action)}">操作建议：${esc(p.action||'')}</div>`;
+      h += '<table class="pos-table">';
+      const rows = [
+        ['当前价格', p.price],['推荐仓位', p.target_position],
+        ['投资金额', p.target_amount],['股数', p.target_shares],
+        ['建议限价', p.limit_price],['Bull Case', p.bull_case],
+        ['Bear Case', p.bear_case],['Catalyst', p.catalyst],
+        ['Timeframe', p.timeframe],['什么情况证明判断错了', p.invalidation],
+        ['持仓过重大事件', p.hold_through_event === true ? '是' : p.hold_through_event === false ? '否' : p.hold_through_event],
+        ['如果现在只有现金，会在当前价格买吗？', p.would_buy_now],
+      ];
+      for(const [label, val] of rows){
+        if(val != null && val !== '' && val !== undefined){
+          h += `<tr><td>${label}</td><td>${esc(String(val))}</td></tr>`;
+        }
+      }
+      h += '</table></div>';
+    }
+    h += '</div>';
+  }
+  // 自由内容（向后兼容）
+  if(d.content){
+    h += '<div class="tj-section"><div class="md">' + marked.parse(d.content) + '</div></div>';
+  }
+  // 明天具体做什么
+  if(d.conclusion){
+    h += '<div class="tj-section"><div class="tj-section-title">明天具体做什么？</div>';
+    h += '<div class="conclusion-box md">' + marked.parse(d.conclusion) + '</div></div>';
+  }
+  // 与SPY比较
+  if(d.spy_comparison){
+    h += '<div class="tj-section"><div class="tj-section-title">与SPY比较</div>';
+    h += '<div class="spy-box">' + esc(d.spy_comparison) + '</div></div>';
+  }
+  // 反思
+  if(d.reflection){
+    h += '<div class="tj-section"><div class="tj-section-title">反思</div>';
+    h += '<div class="reflection-box md">' + marked.parse(d.reflection) + '</div></div>';
+  }
+  // Erik's notes
+  if(d.erik_notes){
+    h += `<div class="erik"><div class="erik-label">Erik's notes</div><div class="erik-text md">${marked.parse(d.erik_notes)}</div></div>`;
+  }
+  return h;
+}
+
 async function expandEntry(idx){
   const items = entries[selDate] || [];
   if(!items[idx]) return;
@@ -560,11 +673,17 @@ async function expandEntry(idx){
   try {
     const r = await fetch(`${API}/api/trade-journal/${encodeURIComponent(items[idx].filename)}`, { headers:hdr() });
     const d = await r.json();
-    let html = '<div class="md">' + marked.parse(d.content || '') + '</div>';
-    if(d.erik_notes){
-      html += `<div class="erik"><div class="erik-label">Erik's notes</div><div class="erik-text">${marked.parse(d.erik_notes)}</div></div>`;
+    // 结构化日志：有 market 或 positions 字段
+    const isStructured = d.market || (d.positions && d.positions.length);
+    if(isStructured){
+      body.innerHTML = renderStructured(d);
+    } else {
+      let html = '<div class="md">' + marked.parse(d.content || '') + '</div>';
+      if(d.erik_notes){
+        html += `<div class="erik"><div class="erik-label">Erik's notes</div><div class="erik-text md">${marked.parse(d.erik_notes)}</div></div>`;
+      }
+      body.innerHTML = html;
     }
-    body.innerHTML = html;
   } catch(e){
     body.innerHTML = '<div style="color:var(--red);font-size:12px;">加载失败</div>';
   }

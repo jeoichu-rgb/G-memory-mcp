@@ -73,6 +73,28 @@ os.makedirs(CLAUDE_DIARY_PATH, exist_ok=True)
 TRADE_JOURNAL_PATH = "./trade_journal"
 os.makedirs(TRADE_JOURNAL_PATH, exist_ok=True)
 
+# 交易日志研究 prompt（硬编码，每次 tj_read 附带返回）
+TJ_RESEARCH_PROMPT = (
+    "📋 每日研究模板\n"
+    "═══════════════\n"
+    "目标：独立研究美股，给出下一交易日操作建议。Jeoi负责审核和下单。\n\n"
+    "规则：\n"
+    "- 投资周期1-3个月，不做日内，不用杠杆/期权\n"
+    "- 优先考虑：估值、营收增长、FCF、资产负债表、利润率、公司指引、行业趋势、催化剂\n"
+    "- 主动寻找被低估的公司，不只追热门\n"
+    "- 每次独立重新评估持仓，不因之前推荐过就强行看多\n"
+    "- 单只不占组合过高比例，小额交易考虑手续费，可用碎股\n"
+    "- 手续费计入真实收益，每次和SPY同期比较\n"
+    "- 没有好机会就明确说「不交易」，持有现金是合理选择\n\n"
+    "结构化字段（tj_write data）：\n"
+    "  market: {indices, fear_greed, narrative, breadth, sector_rotation, policy}\n"
+    "  positions: [{symbol, price, change, action(BUY/HOLD/SELL/REDUCE/ADD/不交易),\n"
+    "    target_position, target_amount, target_shares, limit_price,\n"
+    "    bull_case, bear_case, catalyst, timeframe, invalidation,\n"
+    "    hold_through_event(bool), would_buy_now}]\n"
+    "  conclusion, spy_comparison, reflection, erik_notes, account\n"
+)
+
 GATEWAY_URL = os.getenv("GATEWAY_URL", "https://chat.erikssheep.uk")
 
 def _evt_api(method, path, **kwargs):
@@ -877,7 +899,15 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             "created_at": now.isoformat(),
             "content": content, "erik_notes": erik_notes,
             "account": account,
+            # 结构化字段
+            "market": data.get("market", None),
+            "positions": data.get("positions", None),
+            "conclusion": data.get("conclusion", None),
+            "spy_comparison": data.get("spy_comparison", None),
+            "reflection": data.get("reflection", None),
         }
+        # 清除 None 值
+        entry = {k: v for k, v in entry.items() if v is not None}
         with open(os.path.join(TRADE_JOURNAL_PATH, filename), "w", encoding="utf-8") as f:
             _json.dump(entry, f, ensure_ascii=False, indent=2)
         return f"已写入交易日志：{filename}"
@@ -887,19 +917,63 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         target_date = data.get("date", "")
         files = sorted([f for f in os.listdir(TRADE_JOURNAL_PATH) if f.endswith(".json")])
         if not files:
-            return "暂无交易日志。"
+            return "暂无交易日志。\n\n" + TJ_RESEARCH_PROMPT
         if target_date:
             matched = [f for f in files if f.startswith(target_date)]
             if not matched:
-                return f"{target_date} 没有交易日志。"
+                return f"{target_date} 没有交易日志。\n\n" + TJ_RESEARCH_PROMPT
             files = matched
         results = []
         for fn in files[-5:]:
             with open(os.path.join(TRADE_JOURNAL_PATH, fn), "r", encoding="utf-8") as f:
                 d = _json.load(f)
-            results.append(f"## {d.get('title','')}\n({d.get('date','')} {d.get('time','')})\n{d.get('content','')}"
-                           + (f"\n\n**Erik's notes:** {d['erik_notes']}" if d.get('erik_notes') else ""))
-        return "\n\n---\n\n".join(results)
+            parts = [f"## {d.get('title','')}", f"({d.get('date','')} {d.get('time','')})"]
+            # 市场环境
+            mkt = d.get("market")
+            if mkt:
+                parts.append("\n### 市场环境")
+                for key, label in [("indices",""), ("fear_greed","Fear & Greed"),
+                                   ("narrative","核心驱动"), ("breadth","市场广度"),
+                                   ("sector_rotation","板块轮动"), ("policy","政策方向")]:
+                    if mkt.get(key):
+                        parts.append(f"**{label}：** {mkt[key]}" if label else f"**{mkt[key]}**")
+            # 标的分析
+            pos_list = d.get("positions")
+            if pos_list:
+                parts.append("\n### 标的分析")
+                for p in pos_list:
+                    parts.append(f"\n**{p.get('symbol','')}** {p.get('price','')} ({p.get('change','')}) — {p.get('action','')}")
+                    for label, key in [("推荐仓位","target_position"), ("投资金额","target_amount"),
+                                       ("股数","target_shares"), ("建议限价","limit_price"),
+                                       ("Bull Case","bull_case"), ("Bear Case","bear_case"),
+                                       ("Catalyst","catalyst"), ("Timeframe","timeframe"),
+                                       ("Invalidation","invalidation"), ("持仓过事件","hold_through_event"),
+                                       ("如果只有现金会买吗","would_buy_now")]:
+                        val = p.get(key)
+                        if val is not None:
+                            if isinstance(val, bool):
+                                val = "是" if val else "否"
+                            parts.append(f"- **{label}：** {val}")
+            # 自由内容（兼容旧格式）
+            if d.get("content"):
+                parts.append(f"\n{d['content']}")
+            # 结论
+            if d.get("conclusion"):
+                parts.append(f"\n### 明天具体做什么\n{d['conclusion']}")
+            # SPY比较
+            if d.get("spy_comparison"):
+                parts.append(f"\n### 与SPY比较\n{d['spy_comparison']}")
+            # 反思
+            if d.get("reflection"):
+                parts.append(f"\n### 反思\n{d['reflection']}")
+            # Erik's notes
+            if d.get("erik_notes"):
+                parts.append(f"\n**Erik's notes:** {d['erik_notes']}")
+            results.append("\n".join(parts))
+        output = "\n\n---\n\n".join(results)
+        # 附上研究模板
+        output += "\n\n═══════════════\n" + TJ_RESEARCH_PROMPT
+        return output
 
     elif cmd == "tj_list":
         files = sorted([f for f in os.listdir(TRADE_JOURNAL_PATH) if f.endswith(".json")], reverse=True)
@@ -917,12 +991,10 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
             return f"日志不存在：{filename}"
         with open(fp, "r", encoding="utf-8") as f:
             entry = _json.load(f)
-        if data.get("content") is not None:
-            entry["content"] = data["content"]
-        if data.get("erik_notes") is not None:
-            entry["erik_notes"] = data["erik_notes"]
-        if data.get("account") is not None:
-            entry["account"] = data["account"]
+        for key in ["content", "erik_notes", "account", "market", "positions",
+                     "conclusion", "spy_comparison", "reflection"]:
+            if data.get(key) is not None:
+                entry[key] = data[key]
         entry["updated_at"] = datetime.now(SGT).isoformat()
         with open(fp, "w", encoding="utf-8") as f:
             _json.dump(entry, f, ensure_ascii=False, indent=2)
