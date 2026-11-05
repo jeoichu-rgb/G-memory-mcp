@@ -106,7 +106,7 @@ TJ_RESEARCH_PROMPT = (
     "  \"erik_notes\": \"\",\n"
     "  \"account\": {\"cash\": \"\", \"total\": \"\"}\n"
     "})\n"
-    "（所有顶层字段可省略。不填的删掉就行）\n"
+    "（所有顶层字段可省略。positions 行内不填的给空字符串\"\"占位，末尾的可截断）\n"
 )
 
 POSITION_FIELDS = [
