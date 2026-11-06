@@ -4178,27 +4178,33 @@ async def startup_load_sessions():
         log.info(f"MCP config written to settings.local.json: "
                  f"{list(local.get('mcpServers', {}).keys())}")
 
-        # Also write MCP config to global ~/.claude/settings.json — CC CLI fully
-        # trusts global settings, no approval needed even with stdin=DEVNULL.
-        global_path = Path(f"/home/{CC_USER}/.claude/settings.json")
-        try:
-            global_settings = {}
-            if global_path.exists():
-                global_settings = json.loads(global_path.read_text(encoding="utf-8"))
-            global_settings["mcpServers"] = settings.get("mcpServers", {})
-            global_perms = global_settings.setdefault("permissions", {})
-            global_perms["allow"] = list(set(
-                global_perms.get("allow", []) + perms.get("allow", [])
-            ))
-            global_perms["deny"] = perms["deny"]
-            global_settings["hooks"] = settings.get("hooks", {})
-            global_path.parent.mkdir(parents=True, exist_ok=True)
-            global_path.write_text(
-                json.dumps(global_settings, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            log.info(f"MCP config written to global ~/.claude/settings.json")
-        except Exception as e:
-            log.warning(f"Failed to write global settings: {e}")
+        # Write MCP config to global ~/.claude/settings.json for both erik AND
+        # root — Coolify terminal defaults to root, and `su erik` without `-`
+        # keeps HOME=/root, so CC CLI reads root's global config.
+        mcp_payload = settings.get("mcpServers", {})
+        hooks_payload = settings.get("hooks", {})
+        for global_path in [
+            Path(f"/home/{CC_USER}/.claude/settings.json"),
+            Path("/root/.claude/settings.json"),
+        ]:
+            try:
+                global_settings = {}
+                if global_path.exists():
+                    global_settings = json.loads(global_path.read_text(encoding="utf-8"))
+                global_settings["mcpServers"] = mcp_payload
+                global_perms = global_settings.setdefault("permissions", {})
+                global_perms["allow"] = list(set(
+                    global_perms.get("allow", []) + perms.get("allow", [])
+                ))
+                global_perms["deny"] = perms["deny"]
+                global_settings["hooks"] = hooks_payload
+                global_path.parent.mkdir(parents=True, exist_ok=True)
+                global_path.write_text(
+                    json.dumps(global_settings, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                log.info(f"MCP config written to {global_path}")
+            except Exception as e:
+                log.warning(f"Failed to write {global_path}: {e}")
     except Exception as e:
         log.warning(f"Failed to inject deny list: {e}")
 
