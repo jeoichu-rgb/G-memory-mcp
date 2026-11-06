@@ -4111,10 +4111,35 @@ async def startup_load_sessions():
             allow_list.append(palace_perm)
             log.info(f"Added {palace_perm} to allow list")
 
-        # stock-scanner via supergateway (always running on VPS :8090)
+        # stock-scanner via supergateway (:8090) — healthcheck + auto-restart
         scanner_url = "http://localhost:8090/sse"
-        if servers.get("stock-scanner", {}).get("url") != scanner_url:
-            log.info(f"stock-scanner MCP: {servers.get('stock-scanner', {}).get('url', '(none)')} → {scanner_url}")
+        scanner_healthy = False
+        try:
+            r = httpx.get("http://localhost:8090/health", timeout=4)
+            scanner_healthy = r.status_code < 500
+        except Exception:
+            pass
+        if not scanner_healthy:
+            log.warning("stock-scanner healthcheck failed, restarting systemd service …")
+            try:
+                subprocess.run(
+                    ["systemctl", "restart", "stock-scanner"],
+                    timeout=15, capture_output=True,
+                )
+                import time; time.sleep(3)
+                try:
+                    r2 = httpx.get("http://localhost:8090/health", timeout=4)
+                    scanner_healthy = r2.status_code < 500
+                except Exception:
+                    pass
+                if scanner_healthy:
+                    log.info("stock-scanner restarted successfully")
+                else:
+                    log.warning("stock-scanner still unhealthy after restart")
+            except Exception as e:
+                log.warning(f"Failed to restart stock-scanner: {e}")
+        else:
+            log.info("stock-scanner healthcheck OK")
         servers["stock-scanner"] = {"url": scanner_url}
         scanner_perm = "mcp__stock-scanner"
         if scanner_perm not in allow_list:
