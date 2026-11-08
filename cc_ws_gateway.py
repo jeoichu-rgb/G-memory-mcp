@@ -343,7 +343,7 @@ SUBSCRIPTION_RUNTIME = "subscription"
 OPENROUTER_RUNTIME = "openrouter"
 OPENROUTER_MODEL_PREFIX = "openrouter:"
 OPENROUTER_MODEL_ID = "anthropic/claude-opus-4.6"
-OPENROUTER_CLAUDE_MODEL = f"~{OPENROUTER_MODEL_ID}[1m]"
+OPENROUTER_CLAUDE_MODEL = f"~{OPENROUTER_MODEL_ID}"
 SUBSCRIPTION_CONFIG_DIR = Path(f"/home/{CC_USER}/.claude")
 OPENROUTER_CONFIG_DIR = Path(
     os.getenv("OPENROUTER_CLAUDE_CONFIG_DIR", f"/home/{CC_USER}/.claude-openrouter")
@@ -365,8 +365,8 @@ def _claude_model_id(model: str) -> str:
     is_openrouter = value.startswith(OPENROUTER_MODEL_PREFIX)
     if is_openrouter:
         value = value[len(OPENROUTER_MODEL_PREFIX):]
-        # Claude Code's documented gateway model reference carries `~` and
-        # `[1m]`; Claude Code resolves those hints before calling OpenRouter.
+        # Claude Code's gateway reference carries `~`.  Strip a saved `[1m]`
+        # value from an earlier build so existing sessions move to 200k too.
         canonical = value.lstrip("~")
         if canonical.endswith("[1m]"):
             canonical = canonical[:-4]
@@ -1061,7 +1061,7 @@ def _usage_ws_payload(session, turn_usage, turn_cost, context_usage=None):
         "model": _claude_model_id(session.model),
         "cache_hit_rate": round(_cache_hit_rate(turn_usage), 1),
         "cost_estimated": runtime == OPENROUTER_RUNTIME,
-        "context_window": 1_000_000 if runtime == OPENROUTER_RUNTIME else 200_000,
+        "context_window": 200_000,
         "session_usage": {
             "total_input": session.total_input,
             "total_output": session.total_output,
