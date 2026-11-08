@@ -204,4 +204,3 @@ def merge_custom_headers(existing: str, session_id: str,
     if proxy_secret and not seen_proxy_secret:
         pairs.append(("x-g-memory-proxy-secret", proxy_secret))
     return "\n".join(f"{name}: {value}" for name, value in pairs)
-
