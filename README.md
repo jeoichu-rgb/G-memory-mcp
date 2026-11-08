@@ -120,6 +120,20 @@ Stop hook (回复结束后触发 thinking_hook.py):
 
 CC CLI 在 tmux detached 中 = 真 PTY = 交互式 = 走 Pro/Max 订阅固定价。
 
+### OpenRouter API 通道（可选）
+
+聊天页模型下拉框中的 `API · Opus 4.6 · 1M` 是一条独立通道；原有订阅通道、OAuth 配置和用量卡保持不变。两条通道仍共用同一个前端、记忆后端和 tmux，切换时网关会用源 transcript 的绝对路径恢复上下文，不需要另建仓库或先 Forge。
+
+在 VPS 的 `/opt/G-memory-mcp/.env` 添加 API Key 后重启网关：
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+# 可选；API 通道默认只挂载以下两个 MCP，并用 ToolSearch 按需加载 schema
+OPENROUTER_MCP_SERVERS=claude_ai_Erik_tools,claude_ai_coreading
+```
+
+API 通道使用隔离的 `/home/erik/.claude-openrouter` 配置与 transcript 目录，模型固定为 OpenRouter 的 Claude Opus 4.6（1M context），支持前端 effort 选择。每条 API 回复显示 token、缓存命中率和估算费用；Dashboard 的 OpenRouter 卡通过 `/api/v1/key` 显示 Key 的精确累计用量。未配置 Key 时选择 API 只会返回明确错误，不会关闭正在运行的订阅通道。
+
 ### 部署
 
 | 服务 | 运行方式 | 端口 | 职责 |

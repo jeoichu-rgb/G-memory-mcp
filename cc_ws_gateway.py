@@ -14,6 +14,7 @@ import os
 import logging
 import subprocess
 import getpass
+import shlex
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -122,6 +123,19 @@ DENY_TOOLS = [
     "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate",
     "TaskOutput", "PowerShell",
 ]
+
+# ToolSearch stays denied for the existing subscription profile, preserving
+# its behaviour exactly.  The OpenRouter profile removes only this one deny
+# rule and enables Claude Code's deferred tool discovery explicitly.
+SHARED_DENY_TOOLS = [name for name in DENY_TOOLS if name != "ToolSearch"]
+
+# Claude Opus 4.6 list prices on OpenRouter.  They are deliberately
+# environment-overridable so the per-message "约" amount can be corrected
+# without a code deploy if pricing changes.
+OPENROUTER_INPUT_PER_M = float(os.getenv("OPENROUTER_INPUT_PER_M", "5"))
+OPENROUTER_OUTPUT_PER_M = float(os.getenv("OPENROUTER_OUTPUT_PER_M", "25"))
+OPENROUTER_CACHE_READ_PER_M = float(os.getenv("OPENROUTER_CACHE_READ_PER_M", "0.5"))
+OPENROUTER_CACHE_WRITE_PER_M = float(os.getenv("OPENROUTER_CACHE_WRITE_PER_M", "6.25"))
 
 # DeepSeek API for context summarization (same key as claude_memory.py)
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -325,10 +339,195 @@ class _ChannelReq:
 _ch_req: _ChannelReq | None = None
 
 # ── Transcript tailer (thinking + tool calls from CC CLI JSONL) ──
-CC_TRANSCRIPT_DIR = Path(f"/home/{CC_USER}/.claude/projects") / CC_CWD.replace("/", "-")
+SUBSCRIPTION_RUNTIME = "subscription"
+OPENROUTER_RUNTIME = "openrouter"
+OPENROUTER_MODEL_PREFIX = "openrouter:"
+OPENROUTER_MODEL_ID = "anthropic/claude-opus-4.6"
+OPENROUTER_CLAUDE_MODEL = f"~{OPENROUTER_MODEL_ID}[1m]"
+SUBSCRIPTION_CONFIG_DIR = Path(f"/home/{CC_USER}/.claude")
+OPENROUTER_CONFIG_DIR = Path(
+    os.getenv("OPENROUTER_CLAUDE_CONFIG_DIR", f"/home/{CC_USER}/.claude-openrouter")
+)
+OPENROUTER_MCP_CONFIG_PATH = OPENROUTER_CONFIG_DIR / "mcp.json"
+_PROJECT_TRANSCRIPT_SLUG = CC_CWD.replace("/", "-")
+_TMUX_RUNTIME_FILE = Path(CC_CWD) / ".tmux_runtime"
+
+
+def _runtime_for_model(model: str) -> str:
+    return (OPENROUTER_RUNTIME
+            if (model or "").startswith(OPENROUTER_MODEL_PREFIX)
+            else SUBSCRIPTION_RUNTIME)
+
+
+def _claude_model_id(model: str) -> str:
+    """Turn a frontend route value into the model id sent to Claude Code."""
+    value = (model or "claude-sonnet-4-6").strip()
+    is_openrouter = value.startswith(OPENROUTER_MODEL_PREFIX)
+    if is_openrouter:
+        value = value[len(OPENROUTER_MODEL_PREFIX):]
+        # Claude Code's documented gateway model reference carries `~` and
+        # `[1m]`; Claude Code resolves those hints before calling OpenRouter.
+        canonical = value.lstrip("~")
+        if canonical.endswith("[1m]"):
+            canonical = canonical[:-4]
+        if canonical == OPENROUTER_MODEL_ID:
+            return OPENROUTER_CLAUDE_MODEL
+    return value
+
+
+def _config_dir_for_runtime(runtime: str) -> Path:
+    return (OPENROUTER_CONFIG_DIR if runtime == OPENROUTER_RUNTIME
+            else SUBSCRIPTION_CONFIG_DIR)
+
+
+def _transcript_dir_for_runtime(runtime: str) -> Path:
+    return _config_dir_for_runtime(runtime) / "projects" / _PROJECT_TRANSCRIPT_SLUG
+
+
+def _load_active_runtime() -> str:
+    try:
+        value = _TMUX_RUNTIME_FILE.read_text(encoding="utf-8").strip()
+        if value in (SUBSCRIPTION_RUNTIME, OPENROUTER_RUNTIME):
+            return value
+    except OSError:
+        pass
+    return SUBSCRIPTION_RUNTIME
+
+
+_active_runtime = _load_active_runtime()
+CC_TRANSCRIPT_DIR = _transcript_dir_for_runtime(_active_runtime)
 _transcript_path_cache = None
 REPLY_TOOL_NAMES = {"reply", "reply_chunk",
                     "mcp__erik_channel__reply", "mcp__erik_channel__reply_chunk"}
+
+
+def _set_active_runtime(runtime: str):
+    """Point transcript discovery at the profile currently owning tmux."""
+    global _active_runtime, CC_TRANSCRIPT_DIR, _transcript_path_cache
+    if runtime not in (SUBSCRIPTION_RUNTIME, OPENROUTER_RUNTIME):
+        runtime = SUBSCRIPTION_RUNTIME
+    _active_runtime = runtime
+    CC_TRANSCRIPT_DIR = _transcript_dir_for_runtime(runtime)
+    _transcript_path_cache = None
+    try:
+        _TMUX_RUNTIME_FILE.write_text(runtime, encoding="utf-8")
+    except OSError as exc:
+        log.warning(f"tmux runtime persist failed: {exc}")
+
+
+def _transcript_path(runtime: str, cc_session_id: str | None) -> Path | None:
+    if not cc_session_id or cc_session_id in ("channel", "tmux"):
+        return None
+    path = _transcript_dir_for_runtime(runtime) / f"{cc_session_id}.jsonl"
+    return path if path.exists() else None
+
+
+def _find_session_transcript(session) -> Path | None:
+    """Find the transcript backing a session without relying on mtimes."""
+    preferred = getattr(session, "transcript_runtime", None)
+    order = [preferred, getattr(session, "runtime", None),
+             _active_runtime, SUBSCRIPTION_RUNTIME, OPENROUTER_RUNTIME]
+    seen = set()
+    for runtime in order:
+        if runtime in seen or runtime not in (SUBSCRIPTION_RUNTIME, OPENROUTER_RUNTIME):
+            continue
+        seen.add(runtime)
+        path = _transcript_path(runtime, getattr(session, "cc_session_id", None))
+        if path:
+            return path
+    return None
+
+
+def _openrouter_api_key() -> str:
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
+
+
+def _ensure_openrouter_runtime_config(settings: dict | None = None,
+                                      permissions: dict | None = None,
+                                      hooks: dict | None = None) -> Path:
+    """Write an isolated, 0600 Claude profile for the API channel.
+
+    The key lives only in the VPS runtime profile, never in this repository or
+    the tmux command line.  --strict-mcp-config then limits this channel to a
+    small configurable server set while ENABLE_TOOL_SEARCH defers schemas.
+    """
+    key = _openrouter_api_key()
+    if not key:
+        raise RuntimeError(
+            "OpenRouter API 尚未配置：请在服务器 .env 写入 OPENROUTER_API_KEY 后重启服务"
+        )
+
+    project_settings = settings or read_claude_settings()
+    local_settings = read_claude_local_settings()
+    all_servers = {
+        **project_settings.get("mcpServers", {}),
+        **local_settings.get("mcpServers", {}),
+    }
+    allowed_names = [name.strip() for name in os.getenv(
+        "OPENROUTER_MCP_SERVERS",
+        "claude_ai_Erik_tools,claude_ai_coreading",
+    ).split(",") if name.strip()]
+    api_servers = {name: all_servers[name] for name in allowed_names
+                   if name in all_servers}
+
+    source_perms = permissions or project_settings.get("permissions", {})
+    source_allow = source_perms.get("allow", [])
+    api_allow = [p for p in source_allow if not p.startswith("mcp__")]
+    for name in api_servers:
+        broad_perm = f"mcp__{name}"
+        if broad_perm not in api_allow:
+            api_allow.append(broad_perm)
+
+    OPENROUTER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    api_settings_path = OPENROUTER_CONFIG_DIR / "settings.json"
+    api_settings = {}
+    try:
+        if api_settings_path.exists():
+            api_settings = json.loads(api_settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        api_settings = {}
+    api_settings["env"] = {
+        **api_settings.get("env", {}),
+        "OPENROUTER_API_KEY": key,
+        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_API_KEY": "",
+        "ENABLE_TOOL_SEARCH": "true",
+        "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+        "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": OPENROUTER_CLAUDE_MODEL,
+        "CLAUDE_CODE_SUBAGENT_MODEL": OPENROUTER_CLAUDE_MODEL,
+    }
+    api_settings["showThinkingSummaries"] = True
+    api_settings["mcpServers"] = api_servers
+    api_settings["permissions"] = {
+        **api_settings.get("permissions", {}),
+        "allow": api_allow,
+        "deny": SHARED_DENY_TOOLS,
+    }
+    api_settings["hooks"] = hooks if hooks is not None else project_settings.get("hooks", {})
+
+    api_settings_path.write_text(
+        json.dumps(api_settings, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    OPENROUTER_MCP_CONFIG_PATH.write_text(
+        json.dumps({"mcpServers": api_servers}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(OPENROUTER_CONFIG_DIR, 0o700)
+        os.chmod(api_settings_path, 0o600)
+        os.chmod(OPENROUTER_MCP_CONFIG_PATH, 0o600)
+        if getpass.getuser() != CC_USER:
+            subprocess.run(
+                ["chown", "-R", f"{CC_USER}:{CC_USER}", str(OPENROUTER_CONFIG_DIR)],
+                check=False, capture_output=True, timeout=10,
+            )
+    except OSError as exc:
+        log.warning(f"OpenRouter profile permissions: {exc}")
+    log.info(f"OpenRouter profile ready: MCP={list(api_servers)}")
+    return api_settings_path
 
 
 def _find_active_transcript():
@@ -403,9 +602,15 @@ class TranscriptTailer:
                 self._offset = self._path.stat().st_size
             except Exception:
                 self._offset = 0
-            self._start_offset = self._offset
-            self._task = asyncio.create_task(self._run())
             log.info(f"tailer started: {self._path.name} @{self._offset}")
+        else:
+            # A cross-profile --resume forks the old transcript into the new
+            # CLAUDE_CONFIG_DIR only after Claude Code receives the message.
+            # Keep polling even though no target file exists at start.
+            self._offset = 0
+            log.info(f"tailer started: waiting in {CC_TRANSCRIPT_DIR}")
+        self._start_offset = self._offset
+        self._task = asyncio.create_task(self._run())
 
     async def wait_done(self, timeout=300):
         deadline = time_mod.monotonic() + timeout
@@ -792,6 +997,47 @@ def _read_turn_usage(path, start_offset, since=None) -> tuple:
     return total, cost, last
 
 
+def _cache_hit_rate(usage: dict) -> float:
+    input_total = sum(usage.get(k, 0) or 0 for k in (
+        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"
+    ))
+    if input_total <= 0:
+        return 0.0
+    return (usage.get("cache_read_input_tokens", 0) or 0) * 100.0 / input_total
+
+
+def _estimate_openrouter_cost(usage: dict) -> float:
+    per_million = (
+        (usage.get("input_tokens", 0) or 0) * OPENROUTER_INPUT_PER_M
+        + (usage.get("output_tokens", 0) or 0) * OPENROUTER_OUTPUT_PER_M
+        + (usage.get("cache_read_input_tokens", 0) or 0) * OPENROUTER_CACHE_READ_PER_M
+        + (usage.get("cache_creation_input_tokens", 0) or 0) * OPENROUTER_CACHE_WRITE_PER_M
+    )
+    return per_million / 1_000_000
+
+
+def _resolve_turn_cost(session, usage: dict, reported_cost: float) -> float:
+    """Prefer transcript cost; estimate only for the OpenRouter profile."""
+    if reported_cost and reported_cost > 0:
+        return reported_cost
+    if getattr(session, "runtime", _runtime_for_model(session.model)) == OPENROUTER_RUNTIME:
+        return _estimate_openrouter_cost(usage)
+    return reported_cost or 0.0
+
+
+def _message_usage_meta(session, usage: dict, cost: float) -> dict | None:
+    if getattr(session, "runtime", _runtime_for_model(session.model)) != OPENROUTER_RUNTIME:
+        return None
+    return {
+        "runtime": OPENROUTER_RUNTIME,
+        "model": _claude_model_id(session.model),
+        "usage": usage,
+        "cost": cost,
+        "cache_hit_rate": round(_cache_hit_rate(usage), 1),
+        "approximate": True,
+    }
+
+
 def _accumulate_session_usage(session, turn_usage, turn_cost):
     """Add turn usage to session cumulative totals."""
     session.total_input += turn_usage.get("input_tokens", 0)
@@ -806,10 +1052,16 @@ def _usage_ws_payload(session, turn_usage, turn_cost, context_usage=None):
     API call's usage — the frontend context bar reads context_size as the
     real current window, so handing it the per-turn sum inflates it by
     the number of calls in the turn."""
+    runtime = getattr(session, "runtime", _runtime_for_model(session.model))
     return {
         "usage": turn_usage,
         "turn_usage": turn_usage,
         "cost": turn_cost,
+        "runtime": runtime,
+        "model": _claude_model_id(session.model),
+        "cache_hit_rate": round(_cache_hit_rate(turn_usage), 1),
+        "cost_estimated": runtime == OPENROUTER_RUNTIME,
+        "context_window": 1_000_000 if runtime == OPENROUTER_RUNTIME else 200_000,
         "session_usage": {
             "total_input": session.total_input,
             "total_output": session.total_output,
@@ -926,6 +1178,8 @@ def save_session_meta(session: "Session"):
         "preview": session.preview,
         "model": session.model,
         "effort": session.effort,
+        "runtime": session.runtime,
+        "transcript_runtime": session.transcript_runtime,
         "cc_session_id": session.cc_session_id,
         "created_at": session.created_at.isoformat(),
         "last_active": session.last_active.isoformat(),
@@ -1034,6 +1288,10 @@ def load_all_sessions() -> list["Session"]:
             session.preview = meta.get("preview", "")
             session.model = meta.get("model", "claude-sonnet-4-6")
             session.effort = meta.get("effort", "medium")
+            session.runtime = meta.get("runtime") or _runtime_for_model(session.model)
+            session.transcript_runtime = (
+                meta.get("transcript_runtime") or session.runtime
+            )
             session.cc_session_id = meta.get("cc_session_id")
             session.first_msg_seen = meta.get("first_msg_seen", False)
             if meta.get("created_at"):
@@ -1672,7 +1930,15 @@ def _model_match(actual: str, target: str) -> bool:
     Empty/unknown on either side counts as a match (no false drift alarms)."""
     if not actual or not target:
         return True
-    a, t = actual.lower().strip(), target.lower().strip()
+    def _normalise(value: str) -> str:
+        value = _claude_model_id(value).lower().strip().lstrip("~")
+        if value.endswith("[1m]"):
+            value = value[:-4]
+        if value.startswith("anthropic/"):
+            value = value.split("/", 1)[1]
+        return value.replace(".", "-").replace("_", "-")
+
+    a, t = _normalise(actual), _normalise(target)
     return a == t or a.startswith(t) or t.startswith(a)
 
 
@@ -2592,6 +2858,7 @@ async def run_cc_oneshot(
         log.info(f"oneshot {label} ({len(text)} chars, {len(tools)} tools): {text[:200]}")
 
         turn_usage, turn_cost, last_usage = _read_turn_usage(transcript, start_offset)
+        turn_cost = _resolve_turn_cost(session, turn_usage, turn_cost)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
             if active_ws:
@@ -3560,23 +3827,49 @@ async def listen_together_worker():
 #  TMUX + CHANNEL
 # ══════════════════════════════════════════════
 
-async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None):
-    resume_flag = f" --resume {resume_id}" if resume_id else ""
-    cli_cmd = (
-        f'claude --dangerously-skip-permissions --verbose '
-        f'--system-prompt "{CUSTOM_SYSTEM_PROMPT}" '
-        f'--model {model}'
-        f'{resume_flag}'
-    )
+async def tmux_start(model: str = "claude-sonnet-4-6", resume_id: str = None,
+                     effort: str = "medium", resume_path: Path | str | None = None):
+    runtime = _runtime_for_model(model)
+    actual_model = _claude_model_id(model)
+    if runtime == OPENROUTER_RUNTIME:
+        # Preflight before touching tmux.  The API key is written to a private
+        # settings file, never placed in argv where `ps` could expose it.
+        _ensure_openrouter_runtime_config()
+
+    cli_args = [
+        "claude", "--dangerously-skip-permissions", "--verbose",
+        "--system-prompt", CUSTOM_SYSTEM_PROMPT,
+        "--model", actual_model,
+    ]
+    if runtime == OPENROUTER_RUNTIME:
+        if effort in ("low", "medium", "high", "xhigh", "max"):
+            cli_args += ["--effort", effort]
+        cli_args += ["--strict-mcp-config", "--mcp-config",
+                     str(OPENROUTER_MCP_CONFIG_PATH)]
+    resume_ref = str(resume_path) if resume_path else resume_id
+    if resume_ref:
+        cli_args += ["--resume", resume_ref]
+
+    cli_cmd = " ".join(shlex.quote(part) for part in cli_args)
+    if runtime == OPENROUTER_RUNTIME:
+        cli_cmd = (f"env CLAUDE_CONFIG_DIR={shlex.quote(str(OPENROUTER_CONFIG_DIR))} "
+                   f"{cli_cmd}")
     cmd = (
-        f"{_SU_PFX}tmux new-session -d -s {TMUX_SESSION} -c {CC_CWD} "
-        f"'{cli_cmd}'"
+        f"{_SU_PFX}tmux new-session -d -s {shlex.quote(TMUX_SESSION)} "
+        f"-c {shlex.quote(CC_CWD)} {shlex.quote(cli_cmd)}"
     )
     env = {**os.environ, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
     proc = await asyncio.create_subprocess_shell(cmd, cwd=CC_CWD, env=env)
-    await proc.wait()
-    _set_tmux_cc_id(resume_id)  # None = fresh session, id unknown until CC writes
-    log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} (model={model}, resume={resume_id})")
+    rc = await proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"Claude Code tmux 启动失败（exit {rc}）")
+    _set_active_runtime(runtime)
+    # A cross-profile absolute resume forks to a new id in the target profile;
+    # leave the id unknown until the tailer observes that target transcript.
+    _set_tmux_cc_id(resume_id if resume_id and not resume_path else None)
+    log.info(f"tmux '{TMUX_SESSION}' started as {CC_USER} "
+             f"(runtime={runtime}, model={actual_model}, "
+             f"resume={'path' if resume_path else resume_id})")
 
 
 async def tmux_send_message(text: str):
@@ -3620,12 +3913,20 @@ async def tmux_send_slash_cmd(cmd: str):
 
 async def tmux_switch_model(model: str):
     """Send /model command and auto-confirm the interactive prompt."""
-    await tmux_send_slash_cmd(f"/model {model}")
+    actual_model = _claude_model_id(model)
+    await tmux_send_slash_cmd(f"/model {actual_model}")
     await asyncio.sleep(1.5)
     p = await asyncio.create_subprocess_shell(
         f"{_SU_PFX}tmux send-keys -t {TMUX_SESSION} Enter")
     await p.wait()
-    log.info(f"tmux model confirmed: {model}")
+    log.info(f"tmux model confirmed: {actual_model}")
+
+
+async def tmux_switch_effort(effort: str):
+    """Apply reasoning effort live for the OpenRouter API profile."""
+    if effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise ValueError(f"unsupported effort: {effort}")
+    await tmux_send_slash_cmd(f"/effort {effort}")
 
 
 async def tmux_stop():
@@ -3649,7 +3950,8 @@ def tmux_get_status() -> dict:
         running = r.returncode == 0
     except Exception:
         running = False
-    return {"running": running, "tmux_session": TMUX_SESSION}
+    return {"running": running, "tmux_session": TMUX_SESSION,
+            "runtime": _active_runtime}
 
 
 def _get_cc_session_id_from_transcript() -> str | None:
@@ -3672,11 +3974,33 @@ async def restart_cc_for_session(session: "Session", ws=None):
         except Exception:
             pass
 
+    target_runtime = getattr(session, "runtime", _runtime_for_model(session.model))
+    source_runtime = getattr(session, "transcript_runtime", target_runtime)
+    resume_id = (session.cc_session_id
+                 if session.cc_session_id and session.cc_session_id not in ("channel", "tmux")
+                 else None)
+    resume_path = None
+    if resume_id and source_runtime != target_runtime:
+        resume_path = _find_session_transcript(session)
+        if not resume_path:
+            raise RuntimeError(
+                f"找不到 {source_runtime} 通道的 session transcript，未切换通道"
+            )
+
+    # Validate/write the API profile before killing a healthy subscription
+    # tmux, so a missing key is a reversible frontend error.
+    if target_runtime == OPENROUTER_RUNTIME:
+        _ensure_openrouter_runtime_config()
+
     await tmux_stop()
     await asyncio.sleep(2)
 
-    resume_id = session.cc_session_id if session.cc_session_id and session.cc_session_id not in ("channel", "tmux") else None
-    await tmux_start(model=session.model, resume_id=resume_id)
+    await tmux_start(
+        model=session.model,
+        resume_id=resume_id if not resume_path else None,
+        resume_path=resume_path,
+        effort=session.effort,
+    )
     await asyncio.sleep(8)
     log.info("CC CLI restarted, waiting for init")
 
@@ -3729,7 +4053,8 @@ def _has_fresh_assistant(path: Path, since: datetime) -> bool:
     return False
 
 
-async def verify_forged_session(new_cc_id: str, model: str) -> dict:
+async def verify_forged_session(new_cc_id: str, model: str,
+                                effort: str = "medium") -> dict:
     """Resume the forged JSONL and prove it's alive before anyone switches to it.
 
     CC CLI may fork the resumed events into a fresh transcript or append in
@@ -3746,7 +4071,7 @@ async def verify_forged_session(new_cc_id: str, model: str) -> dict:
     new_path = CC_TRANSCRIPT_DIR / new_name
     base_size = new_path.stat().st_size if new_path.exists() else 0
 
-    await tmux_start(model=model, resume_id=new_cc_id)
+    await tmux_start(model=model, resume_id=new_cc_id, effort=effort)
     await asyncio.sleep(8)
 
     try:
@@ -3984,6 +4309,11 @@ class Session:
         self.preview = ""
         self.model = "claude-sonnet-4-6"
         self.effort = "medium"
+        self.runtime = SUBSCRIPTION_RUNTIME
+        # The selected runtime may change before the next message.  Keep the
+        # runtime that owns cc_session_id separately so cross-profile resume
+        # can always locate the source transcript.
+        self.transcript_runtime = SUBSCRIPTION_RUNTIME
         # Route Guard (forge guide §7): when the user last explicitly set the
         # model — drift inside the grace window after that is a deliberate
         # switch settling in, not server-side rerouting. Fresh sessions start
@@ -4044,6 +4374,7 @@ class Session:
             "preview": self.preview,
             "time": time_str,
             "last_active": self.last_active.isoformat(),
+            "runtime": self.runtime,
         }
 
     def reset_accumulator(self):
@@ -4069,7 +4400,10 @@ async def startup_load_sessions():
     try:
         settings = read_claude_settings()
         perms = settings.setdefault("permissions", {})
-        perms["deny"] = DENY_TOOLS
+        # Project scope is shared by both profiles.  ToolSearch is denied in
+        # the subscription's global scope below, while the API profile can
+        # enable it without changing any other subscription behaviour.
+        perms["deny"] = SHARED_DENY_TOOLS
         if "Read" not in perms.get("allow", []):
             perms.setdefault("allow", []).insert(0, "Read")
         # Remove Bash from allow if present (legacy)
@@ -4161,7 +4495,7 @@ async def startup_load_sessions():
         }]
 
         write_claude_settings(settings)
-        log.info(f"Injected deny list: {len(DENY_TOOLS)} tools blocked, Stop hook configured")
+        log.info(f"Injected shared deny list: {len(SHARED_DENY_TOOLS)} tools blocked, Stop hook configured")
 
         # CC CLI treats project settings.json MCP servers as untrusted (needs
         # interactive approval). Write MCP config to settings.local.json which
@@ -4196,7 +4530,8 @@ async def startup_load_sessions():
                 global_perms["allow"] = list(set(
                     global_perms.get("allow", []) + perms.get("allow", [])
                 ))
-                global_perms["deny"] = perms["deny"]
+                # Keep the existing subscription profile's ToolSearch deny.
+                global_perms["deny"] = DENY_TOOLS
                 global_settings["hooks"] = hooks_payload
                 global_path.parent.mkdir(parents=True, exist_ok=True)
                 global_path.write_text(
@@ -4205,6 +4540,18 @@ async def startup_load_sessions():
                 log.info(f"MCP config written to {global_path}")
             except Exception as e:
                 log.warning(f"Failed to write {global_path}: {e}")
+
+        # API profile is additive and isolated.  A missing key is normal until
+        # Jeoi registers one; it must not prevent the subscription from booting.
+        if _openrouter_api_key():
+            try:
+                _ensure_openrouter_runtime_config(
+                    settings=settings, permissions=perms, hooks=hooks_payload
+                )
+            except Exception as e:
+                log.warning(f"Failed to prepare OpenRouter profile: {e}")
+        else:
+            log.info("OpenRouter profile pending: OPENROUTER_API_KEY not set")
     except Exception as e:
         log.warning(f"Failed to inject deny list: {e}")
 
@@ -4373,6 +4720,8 @@ async def websocket_endpoint(ws: WebSocket):
                 session = Session(sid)
                 session.model = pending_model
                 session.effort = pending_effort
+                session.runtime = _runtime_for_model(pending_model)
+                session.transcript_runtime = session.runtime
                 sessions[sid] = session
                 current_session = session
                 save_session_meta(session)
@@ -4475,9 +4824,18 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": "当前session没有transcript记录"})
                     continue
+                if src_session.runtime != src_session.transcript_runtime:
+                    await ws.send_json({
+                        "event": "session:forge_result",
+                        "ok": False,
+                        "error": "通道刚切换但尚未落盘：先发送一条消息，再创建缓存断点",
+                    })
+                    continue
                 route_guard = bool(data.get("route_guard"))
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
+                    # Forge reads/writes the source profile's transcript dir.
+                    _set_active_runtime(src_session.transcript_runtime)
                     # Stop CC CLI before forging to prevent concurrent writes
                     if await tmux_is_running():
                         await tmux_stop()
@@ -4497,7 +4855,9 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "session:forge_progress",
                                         "stage": "verifying",
                                         "message": "裁剪完成，正在验证新session…"})
-                    verdict = await verify_forged_session(result["new_id"], src_session.model)
+                    verdict = await verify_forged_session(
+                        result["new_id"], src_session.model, src_session.effort
+                    )
                     if not verdict["ok"]:
                         await ws.send_json({"event": "session:forge_result",
                                             "ok": False, "error": verdict["error"]})
@@ -4508,6 +4868,8 @@ async def websocket_endpoint(ws: WebSocket):
                     session = Session(sid)
                     session.model = src_session.model
                     session.effort = src_session.effort
+                    session.runtime = src_session.runtime
+                    session.transcript_runtime = _active_runtime
                     # real_id is the transcript CC is verifiably writing to
                     # (resume may have forked) — adopting it here means the
                     # first real message needs no restart at all.
@@ -4560,6 +4922,8 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session = Session(sid)
                     current_session.model = pending_model
                     current_session.effort = pending_effort
+                    current_session.runtime = _runtime_for_model(pending_model)
+                    current_session.transcript_runtime = current_session.runtime
                     sessions[sid] = current_session
                     save_session_meta(current_session)
                     await ws.send_json(
@@ -4765,15 +5129,26 @@ async def websocket_endpoint(ws: WebSocket):
                     pending_model = model
                     if current_session:
                         current_session.model = model
+                        current_session.runtime = _runtime_for_model(model)
                         # Explicit switch — opens the Route Guard grace window
                         current_session.model_set_at = time_mod.time()
                         current_session._drift_count = 0
                         save_session_meta(current_session)
                     _save_last_model(model)
-                    if await tmux_is_running():
+                    # A channel change is applied on the next message by a
+                    # profile restart + absolute transcript resume.  Only a
+                    # model change inside the already-running profile is safe
+                    # to send as /model.
+                    owns_tmux = bool(
+                        current_session
+                        and current_session.cc_session_id
+                        and current_session.cc_session_id == _tmux_cc_id
+                    )
+                    if (await tmux_is_running() and owns_tmux
+                            and current_session.runtime == _active_runtime):
                         async with _tmux_send_lock:
                             await tmux_switch_model(model)
-                    log.info(f"Model → {model}")
+                    log.info(f"Model → {model} (runtime={_runtime_for_model(model)})")
 
             elif event == "config:effort":
                 effort = data.get("effort", "")
@@ -4782,6 +5157,15 @@ async def websocket_endpoint(ws: WebSocket):
                     if current_session:
                         current_session.effort = effort
                         save_session_meta(current_session)
+                        owns_tmux = bool(
+                            current_session.cc_session_id
+                            and current_session.cc_session_id == _tmux_cc_id
+                        )
+                        if (await tmux_is_running() and owns_tmux
+                                and current_session.runtime == OPENROUTER_RUNTIME
+                                and _active_runtime == OPENROUTER_RUNTIME):
+                            async with _tmux_send_lock:
+                                await tmux_switch_effort(effort)
                     log.info(f"Effort → {effort}")
 
             elif event == "chat:respond":
@@ -4933,8 +5317,9 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "cli:reconnect":
                 try:
                     model = current_session.model if current_session else _load_last_model()
+                    effort = current_session.effort if current_session else "medium"
                     await tmux_stop()
-                    await tmux_start(model=model)
+                    await tmux_start(model=model, effort=effort)
                     await ws.send_json({"event": "system:error",
                                         "message": "tmux restarting..."})
                     status = tmux_get_status()
@@ -5298,9 +5683,12 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
     try:
         need_restart = False
+        target_runtime = getattr(session, "runtime", _runtime_for_model(session.model))
         if not await tmux_is_running():
             need_restart = True
         else:
+            if _active_runtime != target_runtime:
+                need_restart = True
             # Ask the gateway's own record of what tmux is running — NOT the
             # freshest transcript mtime, which any forge/script write can fake.
             current_cc_id = _tmux_cc_id
@@ -5326,6 +5714,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
 
         turn_usage, turn_cost, last_usage = _read_turn_usage(
             tailer._path, tailer._start_offset, since=tailer._started_at)
+        turn_cost = _resolve_turn_cost(session, turn_usage, turn_cost)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
 
@@ -5334,6 +5723,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
         if real_id:
             _set_tmux_cc_id(real_id)
+            session.transcript_runtime = _active_runtime
         if real_id and real_id != session.cc_session_id:
             log.info(f"CC session ID updated: {session.cc_session_id} -> {real_id}")
             session.cc_session_id = real_id
@@ -5444,11 +5834,14 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         _reply_source = "voice_call" if session._in_call else None
 
         if session._current_text or session._current_thinking:
+            usage_meta = (_message_usage_meta(session, turn_usage, turn_cost)
+                          if any(turn_usage.values()) else None)
             append_message(
                 session.id, "assistant", session._current_text,
                 thinking=session._current_thinking,
                 tools=session._current_tools if session._current_tools else None,
                 source=_reply_source,
+                **({"usage_meta": usage_meta} if usage_meta else {}),
             )
             for kind, n, emoji in erik_reactions:
                 if kind == "#":
@@ -6155,6 +6548,55 @@ async def usage_limits(force: int = 0):
             "windows": windows, "raw": raw}
     _USAGE_CACHE["ts"] = now
     _USAGE_CACHE["data"] = data
+    return data
+
+
+# OpenRouter key spend is separate from the existing Claude subscription card.
+# GET /api/v1/key reports exact billed dollars for this key; message-level cost
+# remains an estimate because transcript timing and provider settlement differ.
+_OPENROUTER_USAGE_CACHE = {"ts": 0.0, "data": None}
+
+
+@app.get("/api/usage/openrouter")
+async def openrouter_usage(force: int = 0):
+    now = time_mod.time()
+    if (not force and _OPENROUTER_USAGE_CACHE["data"]
+            and now - _OPENROUTER_USAGE_CACHE["ts"] < _USAGE_CACHE_SECS):
+        return _OPENROUTER_USAGE_CACHE["data"]
+    key = _openrouter_api_key()
+    if not key:
+        return {"ok": False, "configured": False,
+                "error": "OPENROUTER_API_KEY not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/key",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+    except Exception as exc:
+        return {"ok": False, "configured": True,
+                "error": f"OpenRouter usage api unreachable: {exc}"}
+    if response.status_code != 200:
+        return {"ok": False, "configured": True,
+                "error": f"OpenRouter usage api {response.status_code}: "
+                         f"{response.text[:200]}"}
+    raw = response.json().get("data") or {}
+    data = {
+        "ok": True,
+        "configured": True,
+        "label": raw.get("label", "OpenRouter API"),
+        "usage": raw.get("usage", 0),
+        "usage_daily": raw.get("usage_daily", 0),
+        "usage_weekly": raw.get("usage_weekly", 0),
+        "usage_monthly": raw.get("usage_monthly", 0),
+        "limit": raw.get("limit"),
+        "limit_remaining": raw.get("limit_remaining"),
+        "limit_reset": raw.get("limit_reset"),
+        "is_free_tier": raw.get("is_free_tier", False),
+        "expires_at": raw.get("expires_at"),
+    }
+    _OPENROUTER_USAGE_CACHE["ts"] = now
+    _OPENROUTER_USAGE_CACHE["data"] = data
     return data
 
 

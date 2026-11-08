@@ -1007,6 +1007,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
           <option value="claude-haiku-4-5">Haiku 4.5</option>
           <option value="claude-opus-4-8">Opus 4.8</option>
+          <option value="openrouter:anthropic/claude-opus-4.6">API · Opus 4.6 · 1M</option>
         </select>
         <select id="effortSelect" onchange="switchEffort()">
           <option value="low">Low</option>
@@ -1329,6 +1330,24 @@ let contextUsed = 0;
 let contextTotal = 200000;
 let compactionCount = 0;
 
+const OPENROUTER_MODEL_PREFIX = 'openrouter:';
+const SUBSCRIPTION_CONTEXT_TOKENS = 200000;
+const OPENROUTER_CONTEXT_TOKENS = 1000000;
+
+function isOpenRouterModel(model) {
+  return String(model || '').startsWith(OPENROUTER_MODEL_PREFIX);
+}
+
+function setActiveModel(model) {
+  if (!model) return;
+  const select = document.getElementById('modelSelect');
+  select.value = model;
+  contextTotal = isOpenRouterModel(model)
+    ? OPENROUTER_CONTEXT_TOKENS
+    : SUBSCRIPTION_CONTEXT_TOKENS;
+  renderContextBar();
+}
+
 /* ══════════════════════════════════════
    THEME
 ══════════════════════════════════════ */
@@ -1484,10 +1503,10 @@ function handleWSMessage(data) {
       break;
 
     case 'session:history':
-      renderHistory(data.messages || []);
       if (data.model) {
-        document.getElementById('modelSelect').value = data.model;
+        setActiveModel(data.model);
       }
+      renderHistory(data.messages || []);
       if (data.effort) {
         document.getElementById('effortSelect').value = data.effort;
       }
@@ -1498,12 +1517,12 @@ function handleWSMessage(data) {
       break;
 
     case 'config:defaults':
-      if (data.model) document.getElementById('modelSelect').value = data.model;
+      if (data.model) setActiveModel(data.model);
       break;
 
     case 'config:model_changed':
       if (data.model) {
-        document.getElementById('modelSelect').value = data.model;
+        setActiveModel(data.model);
         showError('Model switched to ' + data.model);
       }
       break;
@@ -1847,23 +1866,10 @@ function finalizeMessage(data) {
   // Show per-message usage (turn_usage = this turn's cumulative API cost)
   const turnUsage = data.turn_usage || data.usage;
   if (currentBubble && turnUsage) {
-    const u = turnUsage;
-    const inp = u.input_tokens || 0;
-    const out = u.output_tokens || 0;
-    const cacheRead = u.cache_read_input_tokens || 0;
-    const cacheCreate = u.cache_creation_input_tokens || 0;
-    const cost = data.cost || 0;
-
-    let parts = [];
-    parts.push(`↑${fmtTokens(inp)}`);
-    if (cacheRead) parts.push(`cache ${fmtTokens(cacheRead)}`);
-    if (cacheCreate) parts.push(`+cache ${fmtTokens(cacheCreate)}`);
-    parts.push(`↓${fmtTokens(out)}`);
-    if (cost) parts.push(`$${cost.toFixed(4)}`);
-
+    const usageText = formatMessageUsage(data);
     const usageEl = document.createElement('div');
     usageEl.className = 'msg-usage';
-    usageEl.textContent = parts.join(' · ');
+    usageEl.textContent = usageText;
     currentBubble.appendChild(usageEl);
   }
 
@@ -1885,6 +1891,54 @@ function finalizeMessage(data) {
 function fmtTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
   return n.toString();
+}
+
+function usageValues(source) {
+  const meta = source?.usage_meta || {};
+  const u = source?.turn_usage || source?.usage || meta.turn_usage || meta.usage || meta;
+  return {
+    input: Number(u.input_tokens || 0),
+    output: Number(u.output_tokens || 0),
+    cacheRead: Number(u.cache_read_input_tokens || 0),
+    cacheCreate: Number(u.cache_creation_input_tokens || 0),
+    cost: Number(source?.cost ?? meta.cost ?? meta.cost_usd ?? 0),
+    channel: source?.channel || source?.runtime || meta.channel || meta.runtime || '',
+    model: source?.model || meta.model || '',
+  };
+}
+
+function isOpenRouterUsage(source) {
+  const v = usageValues(source);
+  if (v.channel) return v.channel === 'openrouter' || v.channel === 'api';
+  if (v.model) return isOpenRouterModel(v.model);
+  return isOpenRouterModel(document.getElementById('modelSelect').value);
+}
+
+function approximateOpenRouterCost(v) {
+  if (Number.isFinite(v.cost) && v.cost > 0) return v.cost;
+  // Opus 4.6 standard pricing approximation: input $5/M, output $25/M,
+  // cache read $0.50/M, 5-minute cache write $6.25/M.
+  return (v.input * 5 + v.output * 25 + v.cacheRead * 0.5 + v.cacheCreate * 6.25) / 1000000;
+}
+
+function formatMessageUsage(source) {
+  const v = usageValues(source);
+  if (isOpenRouterUsage(source)) {
+    const totalInput = v.input + v.cacheRead + v.cacheCreate;
+    const cachePct = totalInput > 0
+      ? Math.max(0, Math.min(100, Math.round(v.cacheRead / totalInput * 100)))
+      : 0;
+    const approximateCost = approximateOpenRouterCost(v);
+    return `↑${fmtTokens(v.input)} · ↓${fmtTokens(v.output)} · 缓存 ${cachePct}% · 约 $${approximateCost.toFixed(4)}`;
+  }
+
+  // Preserve the existing subscription display exactly.
+  const parts = [`↑${fmtTokens(v.input)}`];
+  if (v.cacheRead) parts.push(`cache ${fmtTokens(v.cacheRead)}`);
+  if (v.cacheCreate) parts.push(`+cache ${fmtTokens(v.cacheCreate)}`);
+  parts.push(`↓${fmtTokens(v.output)}`);
+  if (v.cost) parts.push(`$${v.cost.toFixed(4)}`);
+  return parts.join(' · ');
 }
 
 function clearMessages() {
@@ -2009,13 +2063,17 @@ function renderHistory(messages) {
           </div>`;
         });
       }
+      const usageHtml = msg.usage_meta
+        ? `<div class="msg-usage">${escapeHtml(formatMessageUsage({ usage_meta: msg.usage_meta }))}</div>`
+        : '';
       row.innerHTML = `
         <div class="bubble">
           <div class="msg-meta-blocks">${metaHtml}</div>
           <span class="msg-text">${renderMarkdown(msg.content || '')}</span>
           <span class="msg-time">${time}</span>
           <button class="msg-copy" onclick="copyMsg(this)">⧉</button>
-      <div class="reactions"></div>
+          <div class="reactions"></div>
+          ${usageHtml}
         </div>`;
     }
     msgArea.appendChild(row);
@@ -2295,6 +2353,7 @@ function backToSidebar() {
 ══════════════════════════════════════ */
 function switchModel() {
   const model = document.getElementById('modelSelect').value;
+  setActiveModel(model);
   wsSend('config:model', { model });
 }
 
