@@ -16,7 +16,13 @@ from tts_mcp import tts_mcp_app, tts_mcp_http_app
 from netease_mcp import netease_mcp_app, netease_mcp_http_app
 import hmac
 import hashlib
-from claude_memory import claude_add_core_memory, claude_add_dynamic_memory, claude_search_memory
+from claude_memory import (
+    claude_add_core_memory,
+    claude_add_dynamic_memory,
+    claude_search_memory,
+    claude_list_pending_core,
+    claude_merge_pending_core,
+)
 from datetime import datetime, timezone, timedelta
 SGT = timezone(timedelta(hours=8))
 
@@ -1718,6 +1724,18 @@ async def admin_read_diary(filename: str):
 async def admin_save_diary(filename: str, payload: DiaryEditPayload):
     ok = claude_write_diary_by_filename(filename, payload.content)
     return {"status": "ok" if ok else "error"}
+
+
+@app.get("/admin/pending-memory")
+async def admin_list_pending_memory():
+    items = claude_list_pending_core()
+    return {"total": len(items), "items": items}
+
+
+@app.post("/admin/pending-memory/merge")
+async def admin_merge_pending_memory():
+    """Commit Session-local core-memory changes at the boundary."""
+    return claude_merge_pending_core()
 
 # 切分日记 → 动态库（面板【切分】按钮，同步等 DS，def 走线程池不卡事件循环）
 from claude_memory import claude_split_diary_to_dynamic

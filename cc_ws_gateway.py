@@ -27,12 +27,21 @@ if _env_file.exists():
             os.environ.setdefault(_k.strip(), _v.strip())
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 import time as time_mod
 import re
 import random
+import copy
+import hashlib
+import hmac
+
+from openrouter_cache import (
+    OpenRouterCacheConfig,
+    merge_custom_headers,
+    prepare_openrouter_payload,
+)
 
 try:
     import desire_engine as de
@@ -135,7 +144,21 @@ SHARED_DENY_TOOLS = [name for name in DENY_TOOLS if name != "ToolSearch"]
 OPENROUTER_INPUT_PER_M = float(os.getenv("OPENROUTER_INPUT_PER_M", "5"))
 OPENROUTER_OUTPUT_PER_M = float(os.getenv("OPENROUTER_OUTPUT_PER_M", "25"))
 OPENROUTER_CACHE_READ_PER_M = float(os.getenv("OPENROUTER_CACHE_READ_PER_M", "0.5"))
-OPENROUTER_CACHE_WRITE_PER_M = float(os.getenv("OPENROUTER_CACHE_WRITE_PER_M", "6.25"))
+OPENROUTER_CACHE_CONFIG = OpenRouterCacheConfig.from_env()
+# Anthropic's 1h cache write is 2x normal input; 5m is 1.25x.
+_DEFAULT_CACHE_WRITE_PER_M = (
+    OPENROUTER_INPUT_PER_M * (2.0 if OPENROUTER_CACHE_CONFIG.ttl == "1h" else 1.25)
+)
+OPENROUTER_CACHE_WRITE_PER_M = float(os.getenv(
+    "OPENROUTER_CACHE_WRITE_PER_M", str(_DEFAULT_CACHE_WRITE_PER_M)
+))
+
+# One user message + one assistant response = one turn. Tool rounds, inherited
+# context, forge verification and background activity never increment it.
+SESSION_MAX_TURNS = int(os.getenv("SESSION_MAX_TURNS", "70"))
+FORGE_RETAIN_TOKENS = int(os.getenv("FORGE_RETAIN_TOKENS", "15000"))
+SESSION_DIARY_DIR = Path(CC_CWD) / "session_diaries"
+SESSION_DIARY_DIR.mkdir(parents=True, exist_ok=True)
 
 # DeepSeek API for context summarization (same key as claude_memory.py)
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -442,6 +465,125 @@ def _openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
+def _openrouter_proxy_secret() -> str:
+    configured = os.getenv("OPENROUTER_PROXY_SECRET", "").strip()
+    if configured:
+        return configured
+    key = _openrouter_api_key()
+    if not key:
+        return ""
+    return hashlib.sha256(
+        f"g-memory-openrouter-proxy:{key}".encode("utf-8")
+    ).hexdigest()
+
+
+_PROXY_HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "host",
+    "content-length", "x-g-memory-proxy-secret",
+}
+
+
+@app.api_route(
+    "/openrouter/{upstream_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def openrouter_cache_proxy(upstream_path: str, request: Request):
+    """Forward Claude Code to OpenRouter while applying the cache contract.
+
+    Claude Code keeps ownership of system/tools/history construction. This
+    pass-through changes only OpenRouter routing metadata and cache-control
+    directives, so the native agent loop and transcript format stay intact.
+    """
+    proxy_secret = _openrouter_proxy_secret()
+    supplied_secret = request.headers.get("x-g-memory-proxy-secret", "")
+    if not proxy_secret or not hmac.compare_digest(supplied_secret, proxy_secret):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    key = _openrouter_api_key()
+    if not key:
+        return JSONResponse(
+            {"error": "OPENROUTER_API_KEY not configured"}, status_code=503
+        )
+
+    raw_body = await request.body()
+    body = raw_body
+    breakpoint_count = 0
+    content_type = request.headers.get("content-type", "")
+    if raw_body and "json" in content_type.lower():
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and any(
+            upstream_path.rstrip("/").endswith(suffix)
+            for suffix in ("/messages", "/chat/completions", "/responses")
+        ):
+            payload, breakpoint_count = prepare_openrouter_payload(
+                payload, OPENROUTER_CACHE_CONFIG
+            )
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+    headers = {
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() not in _PROXY_HOP_HEADERS
+    }
+    headers["authorization"] = f"Bearer {key}"
+    headers.pop("x-api-key", None)
+    headers["x-session-id"] = OPENROUTER_CACHE_CONFIG.session_id
+    headers.setdefault("http-referer", os.getenv(
+        "OPENROUTER_HTTP_REFERER", "https://erikssheep.uk"
+    ))
+    headers.setdefault("x-title", os.getenv("OPENROUTER_APP_TITLE", "G-memory"))
+
+    query = request.url.query
+    upstream_url = (
+        f"{OPENROUTER_CACHE_CONFIG.upstream_base_url}/{upstream_path.lstrip('/')}"
+        + (f"?{query}" if query else "")
+    )
+    client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
+    try:
+        upstream_request = client.build_request(
+            request.method, upstream_url, headers=headers, content=body
+        )
+        upstream = await client.send(upstream_request, stream=True)
+    except Exception as exc:
+        await client.aclose()
+        log.warning(f"OpenRouter cache proxy failed: {type(exc).__name__}: {exc}")
+        return JSONResponse(
+            {"error": "OpenRouter upstream unavailable"}, status_code=502
+        )
+
+    response_headers = {
+        name: value
+        for name, value in upstream.headers.items()
+        if name.lower() not in _PROXY_HOP_HEADERS
+    }
+
+    async def _stream_upstream():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    if breakpoint_count:
+        log.info(
+            "OpenRouter cache request: session=%s ttl=%s breakpoints=%s provider=%s",
+            OPENROUTER_CACHE_CONFIG.session_id,
+            OPENROUTER_CACHE_CONFIG.ttl,
+            breakpoint_count,
+            ",".join(OPENROUTER_CACHE_CONFIG.provider_only) or "router-default",
+        )
+    return StreamingResponse(
+        _stream_upstream(),
+        status_code=upstream.status_code,
+        headers=response_headers,
+    )
+
+
 def _ensure_openrouter_runtime_config(settings: dict | None = None,
                                       permissions: dict | None = None,
                                       hooks: dict | None = None) -> Path:
@@ -486,20 +628,30 @@ def _ensure_openrouter_runtime_config(settings: dict | None = None,
             api_settings = json.loads(api_settings_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         api_settings = {}
+    previous_env = api_settings.get("env", {})
     api_settings["env"] = {
-        **api_settings.get("env", {}),
+        **previous_env,
         "OPENROUTER_API_KEY": key,
-        "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        "ANTHROPIC_BASE_URL": OPENROUTER_CACHE_CONFIG.proxy_base_url,
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_CUSTOM_HEADERS": merge_custom_headers(
+            previous_env.get("ANTHROPIC_CUSTOM_HEADERS", ""),
+            OPENROUTER_CACHE_CONFIG.session_id,
+            _openrouter_proxy_secret(),
+        ),
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
         "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        # Session rotation owns compression. Keep raw dialogue intact until the
+        # 70-turn boundary instead of letting CC summarize mid-session.
+        "DISABLE_AUTO_COMPACT": "1",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": OPENROUTER_CLAUDE_MODEL,
         "CLAUDE_CODE_SUBAGENT_MODEL": OPENROUTER_CLAUDE_MODEL,
     }
     api_settings["showThinkingSummaries"] = True
+    api_settings["precomputeCompactionEnabled"] = False
     api_settings["mcpServers"] = api_servers
     api_settings["permissions"] = {
         **api_settings.get("permissions", {}),
@@ -1071,6 +1223,9 @@ def _usage_ws_payload(session, turn_usage, turn_cost, context_usage=None):
         },
         "context_size": context_usage or turn_usage,
         "compaction_count": session.compaction_count,
+        "turn_count": session.turn_count,
+        "session_max_turns": SESSION_MAX_TURNS,
+        "boundary_due": session.boundary_due,
     }
 
 
@@ -1181,6 +1336,10 @@ def save_session_meta(session: "Session"):
         "runtime": session.runtime,
         "transcript_runtime": session.transcript_runtime,
         "cc_session_id": session.cc_session_id,
+        "turn_count": session.turn_count,
+        "boundary_due": session.boundary_due,
+        "inherited_from": session.inherited_from,
+        "session_diary_path": session.session_diary_path,
         "created_at": session.created_at.isoformat(),
         "last_active": session.last_active.isoformat(),
         "first_msg_seen": session.first_msg_seen,
@@ -1293,6 +1452,10 @@ def load_all_sessions() -> list["Session"]:
                 meta.get("transcript_runtime") or session.runtime
             )
             session.cc_session_id = meta.get("cc_session_id")
+            session.turn_count = int(meta.get("turn_count", 0) or 0)
+            session.boundary_due = bool(meta.get("boundary_due", False))
+            session.inherited_from = meta.get("inherited_from")
+            session.session_diary_path = meta.get("session_diary_path", "")
             session.first_msg_seen = meta.get("first_msg_seen", False)
             if meta.get("created_at"):
                 try:
@@ -1308,6 +1471,17 @@ def load_all_sessions() -> list["Session"]:
                 session.last_active = datetime.fromtimestamp(f.stat().st_mtime, tz=SGT)
             # Fallback: derive last_active from last message timestamp
             messages = data.get("messages", [])
+            if "turn_count" not in meta:
+                pending_user = False
+                completed = 0
+                for msg in messages:
+                    if msg.get("role") == "user":
+                        pending_user = True
+                    elif msg.get("role") == "assistant" and pending_user:
+                        completed += 1
+                        pending_user = False
+                session.turn_count = completed
+                session.boundary_due = completed >= SESSION_MAX_TURNS
             if messages and not meta.get("last_active"):
                 last_msg = messages[-1]
                 if last_msg.get("timestamp"):
@@ -1456,6 +1630,135 @@ async def generate_context_summary(session_id: str) -> list[dict]:
     save_context_store(store)
     log.info(f"Generated {len(items)} context summaries for session {session_id}")
     return items
+
+
+def _session_diary_chunks(messages: list[dict], max_chars: int = 50000) -> list[str]:
+    """Render every real gateway message, split only at message boundaries."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    for msg in messages:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        speaker = "Jeoi" if role == "user" else "Erik"
+        rendered = f"[{msg.get('timestamp', '')}] {speaker}:\n{content}\n"
+        if current and current_chars + len(rendered) > max_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_chars = 0
+        current.append(rendered)
+        current_chars += len(rendered)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def generate_session_diary(session: "Session") -> tuple[str, str]:
+    """Write one boundary diary from the complete gateway session history.
+
+    Long sessions are reduced in chunks only after the session is over. There
+    is no rolling summary or context replacement inside the live session.
+    """
+    if session.session_diary_path:
+        existing = Path(session.session_diary_path)
+        if existing.exists():
+            try:
+                return existing.read_text(encoding="utf-8"), str(existing)
+            except OSError:
+                pass
+
+    history = load_history(session.id)
+    chunks = _session_diary_chunks(history.get("messages", []))
+    if not chunks:
+        return "", ""
+
+    notes: list[str] = []
+    if len(chunks) == 1:
+        diary_material = chunks[0]
+    else:
+        for idx, chunk in enumerate(chunks, 1):
+            note_prompt = f"""这是一个已经结束的 Session 的第 {idx}/{len(chunks)} 段原始对话。
+只根据原文，提取完整的事件、决定、重要原话线索、关系变化，以及 Erik 在回复中明确表现出的主观感受。
+不要写成最终日记，不要编造，不要省掉冲突或微妙情绪。
+
+原始对话：
+{chunk}"""
+            note = await call_deepseek(note_prompt)
+            if not note:
+                return "", ""
+            notes.append(f"【第{idx}段材料】\n{note}")
+        diary_material = "\n\n".join(notes)
+
+    diary_prompt = f"""下面是 Jeoi 与 Erik 一个完整 Session 的材料。现在 Session 已结束，请写唯一一篇总日记。
+
+要求：
+- 第一人称以 Erik 的口吻写，但不得编造材料里没有的心理活动
+- 必须同时保留“发生了什么”和“Erik 的感受 / 主观体验”
+- 覆盖整个 Session，不按每20轮切片，不写技术性的缓存、token、工具过程
+- 重要决定、关系变化、未完事项要保留
+- 语言自然，允许有细节和情绪，不要写成项目周报
+- 严格使用以下三个标题：
+【发生了什么】
+【我的感受 / 主观体验】
+【留给下一个 Session】
+
+材料：
+{diary_material}"""
+    diary = (await call_deepseek(diary_prompt)).strip()
+    if not diary:
+        return "", ""
+
+    stamp = datetime.now(SGT).strftime("%Y-%m-%d_%H-%M")
+    path = SESSION_DIARY_DIR / f"{stamp}_session_{session.id}.md"
+    document = (
+        f"# Session 总日记 · {session.id}\n"
+        f"> 轮数：{session.turn_count} | 结束：{datetime.now(SGT).isoformat()}\n\n"
+        f"{diary}\n"
+    )
+    path.write_text(document, encoding="utf-8")
+    session.session_diary_path = str(path)
+    save_session_meta(session)
+
+    # Keep the existing diary UI/archive in sync. The local boundary file is
+    # still authoritative for forge if the admin service is temporarily down.
+    try:
+        async with httpx.AsyncClient(timeout=20, verify=False) as client:
+            response = await client.post(
+                f"{ADMIN_API}/admin/diary",
+                headers={"x-secret": PALACE_SECRET},
+                json={
+                    "title": f"Session总日记 {session.id}",
+                    "content": diary,
+                    "mood": "平静",
+                },
+            )
+            if response.status_code >= 300:
+                log.warning(
+                    f"Session diary archive returned {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+    except Exception as exc:
+        log.warning(f"Session diary archive failed: {exc}")
+
+    log.info(f"Session diary generated: {path.name} ({len(diary)} chars)")
+    return document, str(path)
+
+
+async def merge_pending_core_at_boundary() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=30, verify=False) as client:
+            response = await client.post(
+                f"{ADMIN_API}/admin/pending-memory/merge",
+                headers={"x-secret": PALACE_SECRET},
+            )
+        if response.status_code >= 300:
+            return {"error": f"HTTP {response.status_code}: {response.text[:200]}"}
+        data = response.json()
+        return data if isinstance(data, dict) else {"error": "invalid merge response"}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # ══════════════════════════════════════════════
@@ -1942,8 +2245,10 @@ def _model_match(actual: str, target: str) -> bool:
     return a == t or a.startswith(t) or t.startswith(a)
 
 
-def forge_session(old_cc_session_id: str, retain_tokens: int = 20000,
-                  target_model: str = None) -> dict:
+def forge_session(old_cc_session_id: str,
+                  retain_tokens: int = FORGE_RETAIN_TOKENS,
+                  target_model: str = None,
+                  inherited_diary: str = "") -> dict:
     """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 
     Recipe (manually verified 2026-07-08): new session id, sessionId aligned
@@ -2262,6 +2567,29 @@ def forge_session(old_cc_session_id: str, retain_tokens: int = 20000,
             retained = grabbed + retained
             token_count += sum(
                 _estimate_tokens(json.dumps(e, ensure_ascii=False)) for e in grabbed)
+
+    # Session-boundary inherited context belongs before the untouched recent
+    # dialogue. It is a synthetic bootstrap user event inside the CC
+    # transcript only, so it never appears in gateway history and never counts
+    # as one of the new session's 1..70 turns. Consecutive user messages are
+    # valid in the Anthropic Messages API and avoid manufacturing an "OK"
+    # assistant reply solely for bootstrapping.
+    if inherited_diary.strip():
+        diary_event = copy.deepcopy(retained[0])
+        diary_event["uuid"] = str(uuid.uuid4())
+        diary_event["parentUuid"] = None
+        diary_event["timestamp"] = datetime.now(timezone.utc).isoformat()
+        diary_event.pop("toolUseResult", None)
+        diary_event["message"] = copy.deepcopy(diary_event.get("message") or {})
+        diary_event["message"]["role"] = "user"
+        diary_event["message"]["content"] = (
+            "═══ inherited_context · 上一 Session 总日记（非Jeoi新消息） ═══\n"
+            + inherited_diary.strip()
+            + "\n═══ inherited_context 结束；下面接 Forge 保留的最近原始对话 ═══"
+        )
+        diary_event["message"].pop("usage", None)
+        retained.insert(0, diary_event)
+        token_count += _estimate_tokens(json.dumps(diary_event, ensure_ascii=False))
 
     # Time range from retained events
     ts_first = _extract_ts(retained[0])
@@ -2861,14 +3189,14 @@ async def run_cc_oneshot(
         turn_cost = _resolve_turn_cost(session, turn_usage, turn_cost)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
-            if active_ws:
-                try:
-                    payload = _usage_ws_payload(session, turn_usage, turn_cost,
-                                                context_usage=last_usage)
-                    payload["event"] = "system:usage"
-                    await active_ws.send_json(payload)
-                except Exception:
-                    pass
+        if active_ws:
+            try:
+                payload = _usage_ws_payload(session, turn_usage, turn_cost,
+                                            context_usage=last_usage)
+                payload["event"] = "system:usage"
+                await active_ws.send_json(payload)
+            except Exception:
+                pass
 
         return text, "".join(thinking_parts), tools
     except Exception as e:
@@ -4336,6 +4664,12 @@ class Session:
         self.total_cache_read = 0
         self.total_cache_create = 0
         self.total_cost = 0.0
+        # Gateway chat turns only. Inherited diary/forge context, bootstrap
+        # verification, tool sub-rounds and background activity do not count.
+        self.turn_count = 0
+        self.boundary_due = False
+        self.inherited_from: str | None = None
+        self.session_diary_path = ""
         # Compaction tracking
         self.compaction_count = 0
         self.last_context_size = 0
@@ -4375,6 +4709,9 @@ class Session:
             "time": time_str,
             "last_active": self.last_active.isoformat(),
             "runtime": self.runtime,
+            "turn_count": self.turn_count,
+            "session_max_turns": SESSION_MAX_TURNS,
+            "boundary_due": self.boundary_due,
         }
 
     def reset_accumulator(self):
@@ -4749,6 +5086,9 @@ async def websocket_endpoint(ws: WebSocket):
                         "messages": history.get("messages", []),
                         "model": current_session.model,
                         "effort": current_session.effort,
+                        "turn_count": current_session.turn_count,
+                        "session_max_turns": SESSION_MAX_TURNS,
+                        "boundary_due": current_session.boundary_due,
                     })
                     # Clear pending queue — these messages are now in session:history
                     if peb_state.get("pending_messages"):
@@ -4834,6 +5174,19 @@ async def websocket_endpoint(ws: WebSocket):
                 route_guard = bool(data.get("route_guard"))
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
+                    await ws.send_json({
+                        "event": "session:forge_progress",
+                        "stage": "diary",
+                        "message": "正在写本 Session 总日记…",
+                    })
+                    diary_content, diary_path = await generate_session_diary(src_session)
+                    if not diary_content:
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": False,
+                            "error": "总日记生成失败，已保留原 Session，未开始 Forge",
+                        })
+                        continue
                     # Forge reads/writes the source profile's transcript dir.
                     _set_active_runtime(src_session.transcript_runtime)
                     # Stop CC CLI before forging to prevent concurrent writes
@@ -4842,7 +5195,10 @@ async def websocket_endpoint(ws: WebSocket):
                         await asyncio.sleep(1)
                     result = forge_session(
                         old_cc_id,
-                        target_model=src_session.model if route_guard else None)
+                        retain_tokens=FORGE_RETAIN_TOKENS,
+                        target_model=src_session.model if route_guard else None,
+                        inherited_diary=diary_content,
+                    )
                     if "error" in result:
                         await ws.send_json({"event": "session:forge_result",
                                             "ok": False, "error": result["error"]})
@@ -4862,6 +5218,23 @@ async def websocket_endpoint(ws: WebSocket):
                         await ws.send_json({"event": "session:forge_result",
                                             "ok": False, "error": verdict["error"]})
                         continue
+                    # A verified transcript is ready, but the old Session is
+                    # authoritative until pending memory commits. This keeps a
+                    # failed Forge from mutating Core Memory mid-session.
+                    await ws.send_json({
+                        "event": "session:forge_progress",
+                        "stage": "memory",
+                        "message": "正在合并待整合核心记忆…",
+                    })
+                    memory_merge = await merge_pending_core_at_boundary()
+                    if memory_merge.get("error"):
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": False,
+                            "error": "核心记忆边界合并失败，已保留原 Session："
+                                     + memory_merge["error"],
+                        })
+                        continue
                     # Old session keeps its cc_session_id — its transcript is
                     # untouched, so switching back to it still works.
                     sid = uuid.uuid4().hex[:8]
@@ -4870,6 +5243,8 @@ async def websocket_endpoint(ws: WebSocket):
                     session.effort = src_session.effort
                     session.runtime = src_session.runtime
                     session.transcript_runtime = _active_runtime
+                    session.inherited_from = src_session.id
+                    session.first_msg_seen = True
                     # real_id is the transcript CC is verifiably writing to
                     # (resume may have forked) — adopting it here means the
                     # first real message needs no restart at all.
@@ -4886,6 +5261,9 @@ async def websocket_endpoint(ws: WebSocket):
                         "events": result["events"],
                         "tokens": result["tokens"],
                         "time_range": result["time_range"],
+                        "diary_path": diary_path,
+                        "retained_tokens": FORGE_RETAIN_TOKENS,
+                        "memory_merged": memory_merge.get("merged", 0),
                         "verified": True,
                     })
                     sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
@@ -5126,6 +5504,16 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "config:model":
                 model = data.get("model", "")
                 if model:
+                    if (current_session and current_session.turn_count > 0
+                            and (current_session.runtime == OPENROUTER_RUNTIME
+                                 or _runtime_for_model(model) == OPENROUTER_RUNTIME)):
+                        await ws.send_json({
+                            "event": "config:locked",
+                            "message": "API Session 已开始；模型到下一个 Session 边界再切换",
+                            "model": current_session.model,
+                            "effort": current_session.effort,
+                        })
+                        continue
                     pending_model = model
                     if current_session:
                         current_session.model = model
@@ -5153,6 +5541,15 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "config:effort":
                 effort = data.get("effort", "")
                 if effort:
+                    if (current_session and current_session.turn_count > 0
+                            and current_session.runtime == OPENROUTER_RUNTIME):
+                        await ws.send_json({
+                            "event": "config:locked",
+                            "message": "API Session 已开始；thinking / effort 到下一个 Session 边界再切换",
+                            "model": current_session.model,
+                            "effort": current_session.effort,
+                        })
+                        continue
                     pending_effort = effort
                     if current_session:
                         current_session.effort = effort
@@ -5332,6 +5729,12 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event == "context:generate":
                 if current_session:
+                    if current_session.runtime == OPENROUTER_RUNTIME:
+                        await ws.send_json({
+                            "event": "context:error",
+                            "message": "API 长窗不做 Session 内摘要；到边界会写总日记并 Forge 15k",
+                        })
+                        continue
                     await ws.send_json({"event": "context:generating"})
                     try:
                         items = await generate_context_summary(current_session.id)
@@ -5717,7 +6120,6 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         turn_cost = _resolve_turn_cost(session, turn_usage, turn_cost)
         if any(turn_usage.values()):
             _accumulate_session_usage(session, turn_usage, turn_cost)
-
         # Always sync session ID to whatever transcript the tailer ended on
         # (handles context compression creating a new transcript mid-turn)
         real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
@@ -5873,6 +6275,19 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                     pass
                 log.info(f"Voice message: {vm['duration']}s")
         session._streamed_voice_urls = set()
+
+        completed_chat_turn = bool(
+            session._current_text or session._current_thinking or voice_messages
+        )
+        if completed_chat_turn:
+            session.turn_count += 1
+            session.boundary_due = session.turn_count >= SESSION_MAX_TURNS
+            save_session_meta(session)
+            if session.boundary_due:
+                log.info(
+                    "Manual Session boundary due: %s turns=%s",
+                    session.id, session.turn_count,
+                )
 
         if session._current_text or session._current_thinking or voice_messages:
             if session._current_text:

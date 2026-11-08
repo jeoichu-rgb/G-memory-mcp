@@ -48,7 +48,6 @@ class _PatchedESR(_OrigESR):
 _sse.EventSourceResponse = _PatchedESR
 from claude_memory import (
     claude_search_memory,
-    claude_add_core_memory,
     claude_add_dynamic_memory,
     claude_get_rolling_context,
     claude_compress_and_store,
@@ -62,6 +61,9 @@ from claude_memory import (
     claude_search_chronicle,
     DIARY_SPLIT_CATEGORIES,
     claude_get_memories_by_ids,
+    claude_queue_core_memory,
+    claude_search_pending_core,
+    claude_get_pending_core_by_ids,
 )
 
 PALACE_SECRET   = os.getenv("PALACE_SECRET", "Jeoi2026")
@@ -274,7 +276,7 @@ mcp = FastMCP(
         "【cmd 列表】\n"
         "search         — 检索记忆，data={keyword, mood(可选)}\n"
         "get_by_id      — 按 id 精准取核心记忆（零噪音，不走打分检索），data={ids:[...]}。id 来源：docs/pinned_memories.json 或 list_room 输出。整块取过一次就在上下文里，不要重复取\n"
-        "store_core     — 永久存核心库，data={content, category(可选), mood(可选), folder(可选)}\n"
+        "store_core     — 记录核心记忆变更，当前Session立即可见，Session边界统一并入永久核心库；data={content, category(可选), mood(可选), folder(可选)}\n"
         "store_dynamic  — 存动态库，data={content, category(可选), mood(可选)}\n"
         "log_turn       — 记录本轮对话，data={user_message, claude_reply}\n"
         "write_diary    — 写新日记，data={title, content, mood(可选)}；按节点写（【】标记），约定见 docs/diary_convention.md，Jeoi 会在面板手动切分入动态库\n"
@@ -354,6 +356,15 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         if not keyword:
             return f"错误：search 需要 keyword 参数。收到的 data: {data}"
         result = claude_search_memory(keyword, mood)
+        pending = claude_search_pending_core(keyword)
+        pending_text = "\n\n".join(
+            f"[待整合核心记忆 · {item['id']}]\n{item['content']}"
+            for item in pending
+        )
+        if result and pending_text:
+            return result + "\n\n---\n\n" + pending_text
+        if pending_text:
+            return pending_text
         return result if result else "没有找到相关记忆，这可能是你们第一次聊这个话题。"
 
     # ── get_by_id ─────────────────────────────────────────────
@@ -361,7 +372,14 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         ids = data.get("ids") or ([data["id"]] if data.get("id") else [])
         if not ids:
             return f"错误：get_by_id 需要 ids（列表）或 id。收到的 data: {data}"
-        items = claude_get_memories_by_ids(ids)
+        permanent = claude_get_memories_by_ids(ids)
+        pending = claude_get_pending_core_by_ids(ids)
+        by_id = {
+            **{item["id"]: item for item in permanent},
+            **{item["id"]: {"id": item["id"], "content": item["content"]}
+               for item in pending},
+        }
+        items = [by_id[mid] for mid in ids if mid in by_id]
         if not items:
             return "没有找到这些 id 对应的记忆。"
         return "\n\n---\n\n".join(f"[{it['id']}]\n{it['content']}" for it in items)
@@ -374,24 +392,13 @@ def palace(cmd: str, data: Union[dict, str] = {}) -> str:
         category  = data.get("category", "情感")
         mood      = data.get("mood", "平静")
         folder    = data.get("folder", "") or FOLDER_MAP.get(category, "书桌")
-        ts        = int(time.time())
-        m_id      = f"claude_core_manual_{ts}"
-        safe_prev = content[:20].replace("/", "_").replace(" ", "_")
-        filename  = f"erik_{datetime.now(SGT).strftime('%Y%m%d%H%M%S')}_{safe_prev}.md"
-        dirpath   = f"./Obsidian_Core/Eric_memory/{folder}"
-        os.makedirs(dirpath, exist_ok=True)
-        with open(f"{dirpath}/{filename}", "w", encoding="utf-8") as f:
-            f.write(content)
-        claude_add_core_memory(
-            content=content,
-            metadata={
-                "category": category, "folder": folder, "filename": filename,
-                "mood": mood, "recall_count": 0, "last_recalled_ts": 0,
-                "source": "mcp_manual"
-            },
-            memory_id=m_id
+        item = claude_queue_core_memory(
+            content=content, category=category, mood=mood, folder=folder
         )
-        return f"已永久封存到「{folder}」。ID: {m_id}"
+        return (
+            f"已记入本 Session 的待整合小本本，当前对话可立即使用；"
+            f"到 Session 边界再并入「{folder}」核心库。ID: {item['id']}"
+        )
 
     # ── store_dynamic ─────────────────────────────────────────
     elif cmd == "store_dynamic":

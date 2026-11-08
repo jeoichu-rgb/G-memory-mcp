@@ -1473,6 +1473,12 @@ function handleWSMessage(data) {
       }
       break;
 
+    case 'config:locked':
+      if (data.model) setActiveModel(data.model);
+      if (data.effort) document.getElementById('effortSelect').value = data.effort;
+      showError(data.message || '当前 Session 的模型配置已锁定');
+      break;
+
     case 'stream:text':
     case 'stream:delta':
       appendStreamText(data.text || data.delta || '');
@@ -1889,6 +1895,12 @@ function finalizeMessage(data) {
   if (data.compacted) {
     showCompactionToast();
   }
+  // 70 turns is a manual Session boundary. Never Forge or switch windows
+  // automatically; Jeoi decides when to press the Forge button.
+  if (data.boundary_due && data.runtime === 'openrouter') {
+    const fs = document.getElementById('forgeStatus');
+    if (fs) fs.textContent = `当前窗已到 ${data.turn_count || 0} 轮，请手动 Forge`;
+  }
 }
 
 function fmtTokens(n) {
@@ -1919,9 +1931,9 @@ function isOpenRouterUsage(source) {
 
 function approximateOpenRouterCost(v) {
   if (Number.isFinite(v.cost) && v.cost > 0) return v.cost;
-  // Opus 4.6 standard pricing approximation: input $5/M, output $25/M,
-  // cache read $0.50/M, 5-minute cache write $6.25/M.
-  return (v.input * 5 + v.output * 25 + v.cacheRead * 0.5 + v.cacheCreate * 6.25) / 1000000;
+  // Opus 4.6 approximation with the gateway's explicit 1-hour cache:
+  // input $5/M, output $25/M, cache read $0.50/M, write $10/M (2x).
+  return (v.input * 5 + v.output * 25 + v.cacheRead * 0.5 + v.cacheCreate * 10) / 1000000;
 }
 
 function formatMessageUsage(source) {
@@ -2280,6 +2292,7 @@ function renderSessions() {
       </div>
       <div class="session-meta">
         <div class="session-time">${s.time || ''}</div>
+        <div class="session-time">${Number(s.turn_count || 0)}/${Number(s.session_max_turns || 70)}</div>
         <button class="session-delete" onclick="event.stopPropagation();deleteSession('${s.id}')" title="删除">✕</button>
       </div>
     </div>
@@ -2295,9 +2308,12 @@ function newSession() {
 function forgeSession(routeGuard = false) {
   if (!currentSessionId) return;
   const fs = document.getElementById('forgeStatus');
-  if (fs) fs.textContent = '裁剪中…';
+  if (fs) fs.textContent = '正在写总日记并 Forge…';
   // 裁剪源 = 前端当前显示的 session，后端不再自己猜
-  wsSend('session:forge', { sessionId: currentSessionId, route_guard: routeGuard });
+  wsSend('session:forge', {
+    sessionId: currentSessionId,
+    route_guard: routeGuard,
+  });
 }
 
 function startCall() {

@@ -1,7 +1,11 @@
 import os
 import math
 import time
+import json
+import threading
+import uuid
 from datetime import datetime
+from pathlib import Path
 from openai import OpenAI
 from memory_core import GeminiEmbeddingFunction
 import chromadb
@@ -37,6 +41,8 @@ claude_chronicle = _client.get_or_create_collection(
 # ── 日志路径 ─────────────────────────────────────────────────────────────
 CLAUDE_BUFFER      = "./logs/claude_daily_buffer.txt"
 CLAUDE_ROLLING     = "./logs/claude_rolling_summary.md"
+PENDING_CORE_PATH  = Path("./logs/pending_core_memory.json")
+_PENDING_CORE_LOCK = threading.Lock()
 os.makedirs("./logs", exist_ok=True)
 
 # ── DeepSeek（压缩用，和G那边共用同一个key）────────────────────────────
@@ -107,6 +113,113 @@ def claude_add_core_memory(content: str, metadata: dict, memory_id: str):
 def claude_add_dynamic_memory(content: str, metadata: dict, memory_id: str):
     """写入Claude动态记忆库"""
     claude_dynamic.add(documents=[content], metadatas=[metadata], ids=[memory_id])
+
+
+def _load_pending_core_unlocked() -> list[dict]:
+    if not PENDING_CORE_PATH.exists():
+        return []
+    try:
+        data = json.loads(PENDING_CORE_PATH.read_text(encoding="utf-8"))
+        return data.get("items", []) if isinstance(data, dict) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_pending_core_unlocked(items: list[dict]):
+    PENDING_CORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PENDING_CORE_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps({"items": items}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(PENDING_CORE_PATH)
+
+
+def claude_queue_core_memory(content: str, category: str = "情感",
+                             mood: str = "平静", folder: str = "书桌") -> dict:
+    """Queue a core-memory change until the next chat Session boundary."""
+    now = datetime.now()
+    item = {
+        "id": f"pending_core_{int(time.time())}_{uuid.uuid4().hex[:8]}",
+        "content": content,
+        "category": category,
+        "mood": mood,
+        "folder": folder,
+        "queued_at": now.isoformat(),
+    }
+    with _PENDING_CORE_LOCK:
+        items = _load_pending_core_unlocked()
+        items.append(item)
+        _save_pending_core_unlocked(items)
+    return item
+
+
+def claude_list_pending_core() -> list[dict]:
+    with _PENDING_CORE_LOCK:
+        return list(_load_pending_core_unlocked())
+
+
+def claude_get_pending_core_by_ids(ids: list[str]) -> list[dict]:
+    wanted = set(ids)
+    return [item for item in claude_list_pending_core() if item.get("id") in wanted]
+
+
+def claude_search_pending_core(keyword: str, limit: int = 5) -> list[dict]:
+    tokens = {t.strip().lower() for t in jieba.cut_for_search(keyword) if t.strip()}
+    scored = []
+    for item in claude_list_pending_core():
+        haystack = " ".join((
+            item.get("content", ""), item.get("category", ""),
+            item.get("folder", ""), item.get("mood", ""),
+        )).lower()
+        score = sum(1 for token in tokens if token and token in haystack)
+        if keyword.lower() in haystack:
+            score += 2
+        if score:
+            scored.append((score, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:limit]]
+
+
+def claude_merge_pending_core() -> dict:
+    """Atomically drain queued changes into the permanent Core collection."""
+    with _PENDING_CORE_LOCK:
+        items = _load_pending_core_unlocked()
+        if not items:
+            return {"merged": 0, "ids": []}
+
+        merged_ids = []
+        for item in items:
+            content = item.get("content", "").strip()
+            if not content:
+                continue
+            memory_id = item["id"].replace("pending_core_", "claude_core_boundary_", 1)
+            folder = item.get("folder") or "书桌"
+            safe_prev = content[:20].replace("/", "_").replace(" ", "_")
+            stamp = item.get("queued_at", "").replace("-", "").replace(":", "")[:15]
+            filename = f"erik_{stamp or int(time.time())}_{safe_prev}.md"
+            dirpath = Path("./Obsidian_Core/Eric_memory") / folder
+            dirpath.mkdir(parents=True, exist_ok=True)
+            (dirpath / filename).write_text(content, encoding="utf-8")
+            metadata = {
+                "category": item.get("category", "情感"),
+                "folder": folder,
+                "filename": filename,
+                "mood": item.get("mood", "平静"),
+                "recall_count": 0,
+                "last_recalled_ts": 0,
+                "source": "session_boundary",
+                "is_permanent": True,
+            }
+            # Upsert makes a retry safe if the process stopped after Chroma was
+            # updated but before the pending file was cleared.
+            claude_core.upsert(
+                documents=[content], metadatas=[metadata], ids=[memory_id]
+            )
+            merged_ids.append(memory_id)
+
+        _save_pending_core_unlocked([])
+        return {"merged": len(merged_ids), "ids": merged_ids}
 
 
 def claude_update_metadata(memory_id: str, new_metadata: dict):

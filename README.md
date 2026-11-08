@@ -130,9 +130,15 @@ CC CLI 在 tmux detached 中 = 真 PTY = 交互式 = 走 Pro/Max 订阅固定价
 OPENROUTER_API_KEY=sk-or-v1-...
 # 可选；API 通道默认只挂载以下两个 MCP，并用 ToolSearch 按需加载 schema
 OPENROUTER_MCP_SERVERS=claude_ai_Erik_tools,claude_ai_coreading
+# 同一条长期主聊天跨 UI Session 共用这个 sticky routing key
+OPENROUTER_SESSION_ID=jeoi-erik-main
+# 默认 1h；可改 5m
+OPENROUTER_CACHE_TTL=1h
 ```
 
-API 通道使用隔离的 `/home/erik/.claude-openrouter` 配置与 transcript 目录，模型固定为 OpenRouter 的 Claude Opus 4.6（200k context），支持前端 effort 选择。每条 API 回复显示 token、缓存命中率和估算费用；Dashboard 的 OpenRouter 卡通过 `/api/v1/key` 显示 Key 的精确累计用量。未配置 Key 时选择 API 只会返回明确错误，不会关闭正在运行的订阅通道。
+API 通道使用隔离的 `/home/erik/.claude-openrouter` 配置与 transcript 目录，模型固定为 OpenRouter 的 Claude Opus 4.6（200k context）。Claude Code 的请求先经过网关内置的 `/openrouter/*` 透明代理：保留 CC 原生 system/tools/history 和工具循环，只补 OpenRouter 的稳定 `session_id`、`provider.only=["anthropic"]`、`allow_fallbacks=true`，去掉会绕开 sticky routing 的 `provider.order/sort`。缓存严格使用两个显式 1h 断点：固定 system 末尾 + 倒数第 2 条无附件、非 tool-result 的真实 user；不使用顶层自动 `cache_control`。Session 第一轮后模型和 effort 锁定，到边界才允许换，避免拆成另一套缓存。每条 API 回复显示 token、缓存命中率和估算费用；Dashboard 的 OpenRouter 卡通过 `/api/v1/key` 显示 Key 的精确累计用量。未配置 Key 时选择 API 只会返回明确错误，不会关闭正在运行的订阅通道。
+
+API 长窗的生命周期固定为：当前 Session 保留完整原文，不做中途 DS 摘要；完成 70 个 `user + assistant` 回合后只显示边界提醒，等待 Jeoi 手动点击 Forge，绝不自动换窗。手动 Forge 后执行：写一次 Session 总日记 → Forge 最近约 15k token 原始 transcript → 合并 `pending core memory` → 创建新窗。日记、Forge 继承区、工具子轮、后台 oneshot 和现有 Forge 验证都不计回合。新 transcript 的顺序是 `CC system/tools/CLAUDE.md → 上一 Session 总日记 → Forge 15k 原文 → 新 Session 对话`。
 
 ### 部署
 
@@ -264,23 +270,23 @@ CC 内置 autocompact，网关加渐进式阈值（0次→30%，1次→40%，2�
 点击"✂ 带上下文新窗"
   → 网关读当前 session 的 transcript JSONL
     /home/erik/.claude/projects/-opt-G-memory-mcp/<session-id>.jsonl
-  → 从尾部往前保留 ~20k token 的 user/assistant 事件原文
+  → 从尾部往前保留 ~15k token 的 user/assistant 事件原文
   → 超过 600 字符的工具返回压缩成首尾摘要
   → 头部插入 forge marker（含时间范围 + 保留轮数）
   → 写成新 JSONL（chown 给 erik）
   → 创建新前端 session，cc_session_id 指向新 JSONL
   → 下次发消息时 CC CLI 自动 --resume 进裁剪后的 transcript
-  → CLAUDE.md + MCP schema 由 CC 自动加载（~20k）
+  → CLAUDE.md + MCP schema 由 CC 自动加载
   → 📎 照常注入日记和记忆
 ```
 
-**调整保留量：** `cc_ws_gateway.py` 中 `forge_session()` 函数的 `retain_tokens` 参数（默认 20000）。token 估算是 JSON 字符数 ÷ 3，20k token ≈ 最近 8-12 轮完整对话。注意加上 CC 固定开销（~20k）后不要超过模型上下文窗口的一半。
+**调整保留量：** 环境变量 `FORGE_RETAIN_TOKENS`（默认 15000），由 `cc_ws_gateway.py` 的 `forge_session()` 使用。Forge 按完整 transcript 事件和合法 user 边界裁剪，不截断单条 message。
 
 **与其他功能的关系：**
 
 - 📎 记忆注入：不冲突，forge 保留的是对话结构，📎 注入的是记忆/日记文本
-- DS 上下文摘要：功能重叠但不冲突，forge 更好（原文 vs 摘要），可以同时开
-- Compaction：forge 是跨 session 的，compaction 是 session 内的，互不影响
+- DS 上下文摘要：订阅通道仍可手动使用；API 长窗禁用 Session 内摘要
+- Compaction：API profile 关闭自动 compaction；70 轮只提醒，由 Jeoi 手动 Forge
 - 记忆宫殿：forge 覆盖最近几轮的"温度"，宫殿覆盖长期记忆，互补
 
 **踩过的坑（2026-07-08 修复，手工 forge 脚本翻车复盘）：**
@@ -357,8 +363,8 @@ MCP 工具调用没有客户端超时——palace 侧 SSE 半开连接会让 CC 
 - **记忆自动注入**：📎 开关，检索记忆+日记注入消息前缀
 - **固定注入词条表**：触发词命中按词条整块注入（记忆 id 或仓库文件），跳过模糊检索，每 session 每词条一次
 - **转录停滞看门狗**：mid-turn 停滞超 240s 自动发 Esc，营救被 MCP 半开连接卡死的 CC
-- **上下文摘要**：DeepSeek 总结对话，新 session 自动注入
-- **Session Forge**：裁剪旧 transcript 尾部 ~20k token 对话原文到新 session，--resume 续航无温度断裂
+- **上下文摘要**：订阅通道可手动用；API 长窗不做 Session 内摘要
+- **Session Forge**：边界日记 + 旧 transcript 尾部 ~15k token 原文到新 session，--resume 续航无温度断裂
 - **图片上传**：base64 → 临时文件 → CC Read → 阅后即焚
 - **渐进式压缩**：检测 compaction、动态阈值、前端提示
 - **两层后台系统（Pebbling） + 番茄钟 + 欲望系统**
