@@ -8,6 +8,8 @@ without reimplementing Claude Code's agent/tool loop.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
+import hashlib
 import os
 from typing import Any
 
@@ -74,6 +76,18 @@ def _strip_cache_directives(value: Any) -> None:
 
 def _directive(ttl: str) -> dict[str, str]:
     return {"type": "ephemeral", "ttl": ttl}
+
+
+def sticky_session_id(logical_session_id: str, namespace: str = "g-memory") -> str:
+    """Return one stable, non-identifying OpenRouter route key per chat.
+
+    The logical id is the root gateway session.  A Forge may replace the
+    Claude transcript id, but it must keep this route key so follow-up calls
+    continue to land on the provider node holding the warm cache.
+    """
+    logical = (logical_session_id or "main").strip()
+    digest = hashlib.sha256(logical.encode("utf-8")).hexdigest()[:32]
+    return f"{namespace}:{digest}"
 
 
 def _set_system_breakpoint(payload: dict[str, Any], ttl: str) -> bool:
@@ -338,6 +352,90 @@ def prepare_openrouter_payload(
         )
     )
     return payload, breakpoint_count
+
+
+def _has_cache_control(value: Any) -> bool:
+    if isinstance(value, dict):
+        if isinstance(value.get("cache_control"), dict):
+            return True
+        return any(_has_cache_control(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_has_cache_control(child) for child in value)
+    return False
+
+
+def build_keepalive_payload(
+    prepared_payload: dict[str, Any],
+    prompt: str = (
+        "[cache-keepalive] This is not a user message. Do not use tools. "
+        "Reply with a single period."
+    ),
+) -> dict[str, Any] | None:
+    """Build a cache-refresh request without mutating conversation history.
+
+    Only the prefix through the last explicit cache breakpoint is replayed.
+    A tiny uncached suffix is then added so the provider performs a normal,
+    valid Messages request.  Existing model, tools, thinking/effort and token
+    parameters are preserved deliberately: changing them can put a heartbeat
+    in a different cache universe.  In particular this function never writes
+    ``max_tokens=0`` or ``max_completion_tokens=0``.
+    """
+    if not isinstance(prepared_payload, dict):
+        return None
+
+    result = copy.deepcopy(prepared_payload)
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+
+    last_cached_index = -1
+    for index, message in enumerate(messages):
+        if _has_cache_control(message):
+            last_cached_index = index
+
+    system_cached = _has_cache_control(result.get("system"))
+    if last_cached_index < 0 and not system_cached:
+        return None
+
+    kept = copy.deepcopy(messages[:last_cached_index + 1])
+    keepalive_block = {"type": "text", "text": prompt}
+
+    if kept and isinstance(kept[-1], dict) and kept[-1].get("role") == "user":
+        # Keep consecutive user content inside the same message.  The new text
+        # sits after the cached block, so it does not alter the cached prefix.
+        content = kept[-1].get("content")
+        if isinstance(content, str):
+            kept[-1]["content"] = [
+                {"type": "text", "text": content}, keepalive_block,
+            ]
+        elif isinstance(content, list):
+            content.append(keepalive_block)
+        else:
+            kept[-1]["content"] = [keepalive_block]
+    else:
+        continuation: list[dict[str, Any]] = []
+        # If the cached assistant tail contains tool_use blocks, close them
+        # with synthetic results before adding text.  This keeps the request
+        # valid while leaving every cached byte untouched.
+        if kept and isinstance(kept[-1], dict):
+            content = kept[-1].get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if (isinstance(block, dict)
+                            and block.get("type") == "tool_use"
+                            and block.get("id")):
+                        continuation.append({
+                            "type": "tool_result",
+                            "tool_use_id": block["id"],
+                            "content": "Not executed during cache keepalive.",
+                            "is_error": True,
+                        })
+        continuation.append(keepalive_block)
+        kept.append({"role": "user", "content": continuation})
+
+    result["messages"] = kept
+    result["stream"] = False
+    return result
 
 
 def merge_custom_headers(existing: str, session_id: str,

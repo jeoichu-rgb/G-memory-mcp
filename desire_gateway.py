@@ -296,9 +296,24 @@ def classify_and_pulse(state, message_text):
 
     old_intent_key = state.intent.get("drive_key") if state.intent else None
 
-    top = tags[0]["drive"]
-    de.pulse(state, top, source=message_text[:35])
-    de.add_thought(state, message_text[:60], top, now=state.tick_count)
+    # Multi-label conversation growth: one sentence may carry attachment,
+    # curiosity and libido at once.  Confidence distributes one normal pulse
+    # across the tags, so keyword overlap does not multiply the total energy.
+    pulse_budget = max(
+        (de.DRIVE_CONFIG[tag["drive"]]["pulse_delta"] for tag in tags),
+        default=0.18,
+    )
+    remaining = pulse_budget
+    for tag in tags:
+        drive = tag["drive"]
+        raw = min(remaining, pulse_budget * max(0.0, tag.get("confidence", 0)))
+        if raw <= 0:
+            continue
+        de.pulse(state, drive, delta=raw, source=message_text[:35])
+        de.add_thought(state, message_text[:60], drive, now=state.tick_count)
+        remaining -= raw
+        if remaining <= 1e-9:
+            break
     de.tick(state, separation_secs=0, is_conversation=True)
     de.save_state(state)
 
@@ -353,6 +368,13 @@ PROACTIVE_COOLDOWNS = {"curiosity": 3000}
 PROACTIVE_SILENCE_SECS = {"attachment": 1200, "libido": 1800}
 
 
+def libido_silent_blocked(now=None) -> bool:
+    """UTC+8 00:30-08:30: no silent libido drift or autonomous turn."""
+    now = now or datetime.now(SGT)
+    minutes = now.hour * 60 + now.minute
+    return 30 <= minutes < 8 * 60 + 30
+
+
 def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: float = 600, jeoi_away_secs: float = 0):
     """Pick the best drive for proactive push, independent of state.intent.
     Evaluates all drives above BG threshold, excluding those on cooldown or
@@ -366,6 +388,8 @@ def pick_proactive_intent(state, cooldowns: dict, now: float, cooldown_secs: flo
     candidates = []
     for k in de.DRIVE_KEYS:
         if k == "fatigue":
+            continue
+        if k == "libido" and libido_silent_blocked():
             continue
         if state.refractory.get(k, 0) > 0:
             continue
@@ -481,6 +505,9 @@ def build_desire_injection(state, is_conversation=False) -> str:
 def should_override_pebbling(state) -> bool:
     """Return True if desire intent should replace the pebbling lottery."""
     if not DESIRE_AVAILABLE or not state:
+        return False
+    if (state.intent and state.intent.get("drive_key") == "libido"
+            and libido_silent_blocked()):
         return False
     return state.intent is not None
 
@@ -753,7 +780,11 @@ def do_tick(state, t_jeoi=None, passive_mode=False):
         return
     import time as _t
     sep = _t.time() - t_jeoi if t_jeoi else 0
-    de.tick(state, separation_secs=sep, passive_mode=passive_mode)
+    frozen = {"libido"} if libido_silent_blocked() else set()
+    de.tick(
+        state, separation_secs=sep, passive_mode=passive_mode,
+        frozen_drifts=frozen,
+    )
     de.save_state(state)
 
 

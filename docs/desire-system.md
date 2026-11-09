@@ -409,6 +409,13 @@ pebbling_worker 每 60 秒运行一次 `de.tick()`，独立于任何对话。
 - 执念自我强化，可能在消息间隙触发意图
 - 系统在沉默时也有脉搏
 
+UTC+8 00:30–08:30 的静默 tick 会冻结 libido drift，且 libido 不得开启
+静默主动轮或覆写 pebbling；真实亲密对话的关键词 pulse 和对话注入不受影响。
+被动/主动开关只决定是否允许独立主动轮，不再改变 drift cap。
+
+OpenRouter API Session 的纯缓存保活、50 分钟共享调用时钟以及
+keepalive → desire → pebbling 仲裁见 `api-session-scheduler.md`。
+
 ---
 
 ## 前端面板

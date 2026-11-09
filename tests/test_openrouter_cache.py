@@ -3,8 +3,10 @@ import unittest
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    build_keepalive_payload,
     merge_custom_headers,
     prepare_openrouter_payload,
+    sticky_session_id,
 )
 
 
@@ -192,6 +194,61 @@ class OpenRouterCacheTests(unittest.TestCase):
             "Accept-Language: zh-CN\nx-session-id: stable\n"
             "x-g-memory-proxy-secret: new-secret",
         )
+
+    def test_sticky_session_survives_transcript_forge(self):
+        root = sticky_session_id("gateway-root")
+        self.assertEqual(root, sticky_session_id("gateway-root"))
+        self.assertNotEqual(root, sticky_session_id("another-chat"))
+        self.assertLessEqual(len(root), 256)
+
+    def test_keepalive_replays_only_cached_prefix(self):
+        prepared, _ = prepare_openrouter_payload(
+            {
+                "model": "anthropic/claude-opus-4.6",
+                "max_tokens": 8192,
+                "thinking": {"type": "adaptive"},
+                "system": "stable",
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "reply"},
+                    {"role": "user", "content": "live request"},
+                ],
+            },
+            self.config(),
+        )
+        heartbeat = build_keepalive_payload(prepared)
+        self.assertIsNotNone(heartbeat)
+        self.assertFalse(heartbeat["stream"])
+        self.assertEqual(heartbeat["max_tokens"], 8192)
+        self.assertEqual(heartbeat["thinking"], {"type": "adaptive"})
+        self.assertEqual(len(heartbeat["messages"]), 3)
+        self.assertEqual(heartbeat["messages"][1]["role"], "assistant")
+        self.assertIn("cache-keepalive", heartbeat["messages"][2]["content"][0]["text"])
+        self.assertNotIn("live request", str(heartbeat["messages"]))
+
+    def test_keepalive_closes_cached_tool_use_without_zero_token_hack(self):
+        payload = {
+            "model": "anthropic/claude-opus-4.6",
+            "max_tokens": 4096,
+            "system": [{
+                "type": "text", "text": "stable",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }],
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "search", "input": {}},
+                    {"type": "text", "text": "checking",
+                     "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+                ],
+            }],
+        }
+        heartbeat = build_keepalive_payload(payload)
+        blocks = heartbeat["messages"][-1]["content"]
+        self.assertEqual(blocks[0]["type"], "tool_result")
+        self.assertEqual(blocks[0]["tool_use_id"], "tool-1")
+        self.assertNotIn("max_completion_tokens", heartbeat)
+        self.assertEqual(heartbeat["max_tokens"], 4096)
 
 
 if __name__ == "__main__":

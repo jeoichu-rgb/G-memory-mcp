@@ -235,7 +235,9 @@ def tick_thoughts(state):
     return events
 
 
-def tick_drives(state, separation_secs=0, passive_mode=False):
+def tick_drives(state, separation_secs=0, passive_mode=False,
+                frozen_drifts=None):
+    frozen_drifts = set(frozen_drifts or ())
     events = []
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
@@ -244,9 +246,12 @@ def tick_drives(state, separation_secs=0, passive_mode=False):
     for k in DRIVE_KEYS:
         cfg = DRIVE_CONFIG[k]
         dr = cfg.get("drift", 0)
-        cap = 1.0 if passive_mode else cfg.get("drift_cap", 0)
+        # Passive/active controls whether a drive may open an autonomous turn;
+        # it must not change the underlying physics or silently lift caps.
+        cap = cfg.get("drift_cap", 0)
         delay = cfg.get("drift_delay", 0)
-        if dr > 0 and cap > 0 and separation_secs >= delay:
+        if (k not in frozen_drifts and dr > 0 and cap > 0
+                and separation_secs >= delay):
             state.floors[k] = min(state.floors.get(k, cfg["home"]) + dr, cap)
     for src, tgt, coeff, mode in COUPLING_EDGES:
         if mode == "level":
@@ -316,8 +321,12 @@ def pick_intent(state, is_conversation=False):
     return Intent(INTENT_MAP.get(best, ""), best, scores[best], reason, trail)
 
 
-def tick(state, separation_secs=0, is_conversation=False, passive_mode=False):
-    de = tick_drives(state, separation_secs=separation_secs, passive_mode=passive_mode)
+def tick(state, separation_secs=0, is_conversation=False, passive_mode=False,
+         frozen_drifts=None):
+    de = tick_drives(
+        state, separation_secs=separation_secs, passive_mode=passive_mode,
+        frozen_drifts=frozen_drifts,
+    )
     te = tick_thoughts(state)
     # Trail cleanup: clear stale trails for drives at baseline with no active thoughts
     for k in DRIVE_KEYS:

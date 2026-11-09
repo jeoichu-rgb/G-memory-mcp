@@ -36,12 +36,16 @@ import random
 import copy
 import hashlib
 import hmac
+from dataclasses import replace
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    build_keepalive_payload,
     merge_custom_headers,
     prepare_openrouter_payload,
+    sticky_session_id,
 )
+from api_scheduler_diag import write_event as api_diag
 
 try:
     import desire_engine as de
@@ -173,6 +177,8 @@ SNAP_DIR.mkdir(exist_ok=True)
 PATROL_SCHEDULE = [5, 10, 20]  # minutes after Jeoi's last msg → always call CC
 PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
+API_SCHEDULER_INTERVAL = int(os.getenv("API_SCHEDULER_INTERVAL", "3000"))
+API_KEEPALIVE_MISS_LIMIT = int(os.getenv("API_KEEPALIVE_MISS_LIMIT", "2"))
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
 ALARMS_PATH = Path(CC_CWD) / "alarms.json"
@@ -272,6 +278,10 @@ desire_st = None
 _desire_last_tick = 0.0
 _desire_last_proactive: dict[str, float] = {}
 _user_msg_active = False  # True while run_claude is processing a user message
+_api_request_gateway_session_id: str | None = None
+# In-memory only: after a process restart the remote cache is not trusted until
+# a real API request supplies a fresh, normalized prefix again.
+_api_keepalive_snapshots: dict[str, dict] = {}
 _recent_libido_memories: list[str] = []
 
 # ── Channel + tmux ──
@@ -345,6 +355,7 @@ def load_last_good() -> dict | None:
 
 
 _tmux_send_lock = asyncio.Lock()
+_api_scheduler_lock = asyncio.Lock()
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
 
@@ -477,6 +488,51 @@ def _openrouter_proxy_secret() -> str:
     ).hexdigest()
 
 
+def _api_scheduler_state() -> dict:
+    state = peb_state.setdefault("api_scheduler", {})
+    defaults = {
+        "active": False,
+        "gateway_session_id": None,
+        "logical_session_id": None,
+        "sticky_session_id": None,
+        "api_key_id": None,
+        "last_api_request_at": 0.0,
+        "keepalive_misses": 0,
+        "keepalive_breaker": False,
+        "last_job": None,
+        "last_job_at": 0.0,
+        "last_keepalive_hit": None,
+        "last_keepalive_cached_tokens": 0,
+        "last_keepalive_usage": {},
+        "last_keepalive_error": None,
+    }
+    for key, value in defaults.items():
+        state.setdefault(key, value)
+    return state
+
+
+def _current_api_sticky_id() -> str:
+    state = _api_scheduler_state()
+    if (_api_request_gateway_session_id
+            and state.get("gateway_session_id") == _api_request_gateway_session_id
+            and state.get("sticky_session_id")):
+        return state["sticky_session_id"]
+    return OPENROUTER_CACHE_CONFIG.session_id
+
+
+def _record_api_request_success(sticky_id: str, started_at: float,
+                                job: str | None = None):
+    state = _api_scheduler_state()
+    if state.get("sticky_session_id") != sticky_id:
+        return
+    state["last_api_request_at"] = started_at
+    peb_state["t_cache"] = started_at
+    if job:
+        state["last_job"] = job
+        state["last_job_at"] = started_at
+    save_peb_state()
+
+
 _PROXY_HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host",
@@ -509,6 +565,8 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     raw_body = await request.body()
     body = raw_body
     breakpoint_count = 0
+    prepared_payload = None
+    sticky_id = _current_api_sticky_id()
     content_type = request.headers.get("content-type", "")
     if raw_body and "json" in content_type.lower():
         try:
@@ -519,9 +577,13 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
             upstream_path.rstrip("/").endswith(suffix)
             for suffix in ("/messages", "/chat/completions", "/responses")
         ):
-            payload, breakpoint_count = prepare_openrouter_payload(
-                payload, OPENROUTER_CACHE_CONFIG
+            request_cache_config = replace(
+                OPENROUTER_CACHE_CONFIG, session_id=sticky_id,
             )
+            payload, breakpoint_count = prepare_openrouter_payload(
+                payload, request_cache_config
+            )
+            prepared_payload = payload
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
     headers = {
@@ -531,7 +593,7 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     }
     headers["authorization"] = f"Bearer {key}"
     headers.pop("x-api-key", None)
-    headers["x-session-id"] = OPENROUTER_CACHE_CONFIG.session_id
+    headers["x-session-id"] = sticky_id
     headers.setdefault("http-referer", os.getenv(
         "OPENROUTER_HTTP_REFERER", "https://erikssheep.uk"
     ))
@@ -542,6 +604,7 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
         f"{OPENROUTER_CACHE_CONFIG.upstream_base_url}/{upstream_path.lstrip('/')}"
         + (f"?{query}" if query else "")
     )
+    request_started_at = time_mod.time()
     client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
     try:
         upstream_request = client.build_request(
@@ -551,6 +614,11 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     except Exception as exc:
         await client.aclose()
         log.warning(f"OpenRouter cache proxy failed: {type(exc).__name__}: {exc}")
+        api_diag(
+            "OR_PROXY_TRANSPORT_ERROR", level="error",
+            error=f"{type(exc).__name__}: {exc}",
+            upstream_path=upstream_path, sticky_session_id=sticky_id,
+        )
         return JSONResponse(
             {"error": "OpenRouter upstream unavailable"}, status_code=502
         )
@@ -560,6 +628,36 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
         for name, value in upstream.headers.items()
         if name.lower() not in _PROXY_HOP_HEADERS
     }
+
+    api_diag(
+        "OR_PROXY_OK" if upstream.status_code < 400 else "OR_PROXY_HTTP_ERROR",
+        level="info" if upstream.status_code < 400 else "error",
+        status=upstream.status_code,
+        upstream_path=upstream_path,
+        sticky_session_id=sticky_id,
+        breakpoints=breakpoint_count,
+        elapsed_ms=round((time_mod.time() - request_started_at) * 1000),
+        request_id=(
+            upstream.headers.get("x-request-id")
+            or upstream.headers.get("openrouter-generation-id")
+        ),
+    )
+
+    if upstream.status_code < 400 and prepared_payload is not None:
+        snapshot_headers = {
+            name: value for name, value in headers.items()
+            if name.lower() in {
+                "anthropic-version", "anthropic-beta", "content-type",
+                "accept", "user-agent", "http-referer", "x-title",
+            }
+        }
+        _api_keepalive_snapshots[sticky_id] = {
+            "payload": prepared_payload,
+            "upstream_path": upstream_path,
+            "query": request.url.query,
+            "headers": snapshot_headers,
+        }
+        _record_api_request_success(sticky_id, request_started_at)
 
     async def _stream_upstream():
         try:
@@ -572,7 +670,7 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     if breakpoint_count:
         log.info(
             "OpenRouter cache request: session=%s ttl=%s breakpoints=%s provider=%s",
-            OPENROUTER_CACHE_CONFIG.session_id,
+            sticky_id,
             OPENROUTER_CACHE_CONFIG.ttl,
             breakpoint_count,
             ",".join(OPENROUTER_CACHE_CONFIG.provider_only) or "router-default",
@@ -582,6 +680,123 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
         status_code=upstream.status_code,
         headers=response_headers,
     )
+
+
+def _cache_read_tokens(usage: dict) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    direct = usage.get("cache_read_input_tokens", 0) or 0
+    details = usage.get("prompt_tokens_details") or {}
+    nested = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+    input_details = usage.get("input_tokens_details") or {}
+    cache_read = (
+        input_details.get("cache_read", 0)
+        if isinstance(input_details, dict) else 0
+    )
+    return int(direct or nested or cache_read or 0)
+
+
+async def run_api_cache_keepalive(session: "Session") -> dict:
+    """Refresh the active API cache without touching the CC transcript."""
+    state = _api_scheduler_state()
+    sticky_id = state.get("sticky_session_id")
+    snapshot = _api_keepalive_snapshots.get(sticky_id)
+    if not sticky_id or not snapshot or state.get("keepalive_breaker"):
+        return {"attempted": False, "success": False, "hit": False}
+
+    payload = build_keepalive_payload(snapshot.get("payload"))
+    if not payload:
+        return {"attempted": False, "success": False, "hit": False}
+    payload["session_id"] = sticky_id
+
+    headers = dict(snapshot.get("headers") or {})
+    headers["authorization"] = f"Bearer {_openrouter_api_key()}"
+    headers["x-session-id"] = sticky_id
+    headers["content-type"] = "application/json"
+    headers["accept"] = "application/json"
+    headers.setdefault("http-referer", os.getenv(
+        "OPENROUTER_HTTP_REFERER", "https://erikssheep.uk"
+    ))
+    headers.setdefault("x-title", os.getenv("OPENROUTER_APP_TITLE", "G-memory"))
+    path = str(snapshot.get("upstream_path") or "v1/messages").lstrip("/")
+    url = f"{OPENROUTER_CACHE_CONFIG.upstream_base_url}/{path}"
+    if snapshot.get("query"):
+        url += "?" + str(snapshot["query"])
+    started_at = time_mod.time()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(420.0, connect=30.0)) as client:
+            response = await client.post(url, headers=headers, json=payload)
+    except Exception as exc:
+        log.warning(f"API cache keepalive transport error: {type(exc).__name__}: {exc}")
+        state["last_keepalive_error"] = f"{type(exc).__name__}: {exc}"
+        save_peb_state()
+        api_diag(
+            "KEEPALIVE_TRANSPORT_ERROR", level="error",
+            error=state["last_keepalive_error"],
+            sticky_session_id=sticky_id, upstream_path=path,
+        )
+        return {"attempted": True, "success": False, "hit": False,
+                "error": str(exc)}
+
+    if response.status_code >= 400:
+        log.warning("API cache keepalive failed: HTTP %s %s",
+                    response.status_code, response.text[:300])
+        state["last_keepalive_error"] = f"HTTP {response.status_code}"
+        save_peb_state()
+        api_diag(
+            "KEEPALIVE_HTTP_ERROR", level="error",
+            status=response.status_code,
+            response=response.text[:300],
+            sticky_session_id=sticky_id, upstream_path=path,
+        )
+        return {"attempted": True, "success": False, "hit": False,
+                "status": response.status_code}
+
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
+    usage = data.get("usage") if isinstance(data, dict) else {}
+    usage = usage if isinstance(usage, dict) else {}
+    cached = _cache_read_tokens(usage)
+    hit = cached > 0
+    if hit:
+        state["keepalive_misses"] = 0
+    else:
+        state["keepalive_misses"] = int(state.get("keepalive_misses", 0)) + 1
+        if state["keepalive_misses"] >= API_KEEPALIVE_MISS_LIMIT:
+            state["keepalive_breaker"] = True
+            log.warning("API cache keepalive breaker opened after %s misses",
+                        state["keepalive_misses"])
+            api_diag(
+                "KEEPALIVE_BREAKER_OPEN", level="warning",
+                misses=state["keepalive_misses"],
+                sticky_session_id=sticky_id,
+            )
+    state["last_api_request_at"] = started_at
+    peb_state["t_cache"] = started_at
+    state["last_job"] = "keepalive"
+    state["last_job_at"] = started_at
+    state["last_keepalive_hit"] = hit
+    state["last_keepalive_cached_tokens"] = cached
+    state["last_keepalive_usage"] = usage
+    state["last_keepalive_error"] = None
+    save_peb_state()
+    log.info("API cache keepalive: hit=%s cached=%s miss_count=%s breaker=%s",
+             hit, cached, state["keepalive_misses"], state["keepalive_breaker"])
+    api_diag(
+        "KEEPALIVE_HIT" if hit else "KEEPALIVE_CACHE_MISS",
+        level="info" if hit else "warning",
+        cached_tokens=cached,
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+        input_tokens=usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+        output_tokens=usage.get("output_tokens", usage.get("completion_tokens", 0)),
+        misses=state["keepalive_misses"],
+        breaker=state["keepalive_breaker"],
+        sticky_session_id=sticky_id,
+    )
+    return {"attempted": True, "success": True, "hit": hit,
+            "usage": usage, "cached_tokens": cached}
 
 
 def _ensure_openrouter_runtime_config(settings: dict | None = None,
@@ -1239,12 +1454,34 @@ def load_peb_state() -> dict:
         "pebbling_history": [],
         "pending_messages": [],
         "desire_proactive": False,
+        "api_scheduler": {
+            "active": False,
+            "gateway_session_id": None,
+            "logical_session_id": None,
+            "sticky_session_id": None,
+            "api_key_id": None,
+            "last_api_request_at": 0.0,
+            "keepalive_misses": 0,
+            "keepalive_breaker": False,
+            "last_job": None,
+            "last_job_at": 0.0,
+            "last_keepalive_hit": None,
+            "last_keepalive_cached_tokens": 0,
+            "last_keepalive_usage": {},
+            "last_keepalive_error": None,
+        },
     }
     if PEBBLING_STATE_PATH.exists():
         try:
             data = json.loads(PEBBLING_STATE_PATH.read_text(encoding="utf-8"))
             for k, v in defaults.items():
                 data.setdefault(k, v)
+            api_defaults = defaults["api_scheduler"]
+            if not isinstance(data.get("api_scheduler"), dict):
+                data["api_scheduler"] = {}
+            api_state = data["api_scheduler"]
+            for k, v in api_defaults.items():
+                api_state.setdefault(k, v)
             # Clean up entries > 48h
             cutoff = time_mod.time() - 48 * 3600
             data["pebbling_history"] = [t for t in data["pebbling_history"] if t > cutoff]
@@ -3099,6 +3336,7 @@ async def run_cc_oneshot(
     if not await tmux_is_running():
         log.warning("run_cc_oneshot: tmux not running")
         return "", "", []
+    _set_api_request_context(session)
     try:
         transcript = _find_active_transcript()
         if not transcript:
@@ -3632,6 +3870,235 @@ async def run_pebbling_action(
     return action
 
 
+async def _run_scheduled_desire(session: "Session", intent: dict) -> bool:
+    """Run one desire turn selected by the API scheduler."""
+    global desire_st, _desire_last_proactive
+    drive_key = intent["drive_key"]
+    desire_st.intent = intent
+    elapsed_h = (
+        time_mod.time() - peb_state.get("t_jeoi", time_mod.time())
+    ) / 3600
+    if drive_key == "curiosity":
+        seeds = dg.pop_all_curiosity_seeds()
+        if seeds:
+            prompt = dg.build_curiosity_seed_prompt(seeds, elapsed_h)
+            if active_ws:
+                for seed in seeds:
+                    try:
+                        await active_ws.send_json({
+                            "event": "curiosity:seed_consumed",
+                            "seed_id": seed["id"],
+                        })
+                    except Exception:
+                        pass
+        else:
+            prompt = dg.build_desire_proactive_prompt(desire_st)
+    elif drive_key == "libido":
+        memory_text, memory_date = await fetch_unique_intimate_memory()
+        if memory_text:
+            prompt = dg.build_libido_memory_prompt(
+                memory_text, memory_date, elapsed_h,
+                desire_reason=intent.get("reason", ""), state=desire_st,
+            )
+        else:
+            prompt = dg.build_desire_proactive_prompt(desire_st)
+    else:
+        prompt = dg.build_desire_proactive_prompt(desire_st)
+
+    _desire_last_proactive[drive_key] = time_mod.time()
+    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+    if text:
+        action, content = parse_action(text)
+        await push_pebbling_activity(
+            "desire", action, tools, thinking, session, content=content
+        )
+        if content:
+            await push_pebbling_msg(
+                "desire", content, session, thinking=thinking
+            )
+        if action == "message" and content:
+            dg.satisfy_after_response(desire_st, drive_key, source="API调度")
+        else:
+            dg.partial_satisfy_after_response(
+                desire_st, drive_key, source="API调度"
+            )
+        api_diag(
+            "DESIRE_RUN_OK",
+            gateway_session_id=session.id,
+            drive=drive_key, action=action,
+            content=bool(content), tools=tools,
+        )
+        return True
+    dg.partial_satisfy_after_response(
+        desire_st, drive_key, source="API调度无输出"
+    )
+    api_diag(
+        "DESIRE_RUN_EMPTY", level="warning",
+        gateway_session_id=session.id, drive=drive_key,
+    )
+    return False
+
+
+def _api_pebbling_due(now: float) -> tuple[bool, int, float]:
+    history = [
+        t for t in peb_state.get("pebbling_history", [])
+        if now - t < 86400
+    ]
+    peb_state["pebbling_history"] = history
+    elapsed_jeoi = now - peb_state.get("t_jeoi", now)
+    actual = len(history)
+    expected = min(int(elapsed_jeoi / PEBBLING_INTERVAL), PEBBLING_MAX_24H)
+    return expected > actual, actual, elapsed_jeoi
+
+
+async def run_api_scheduler_if_due(session: "Session") -> bool:
+    """One strict 50-minute API slot: keepalive > desire > pebbling."""
+    global desire_st
+    state = _api_scheduler_state()
+    now = time_mod.time()
+    if (not state.get("active")
+            or state.get("gateway_session_id") != session.id
+            or session.runtime != OPENROUTER_RUNTIME):
+        return False
+    last_request = float(state.get("last_api_request_at", 0) or 0)
+    if not last_request or now - last_request < API_SCHEDULER_INTERVAL:
+        return False
+    if (_api_scheduler_lock.locked() or _tmux_send_lock.locked()
+            or _user_msg_active or session._in_call):
+        return False
+
+    async with _api_scheduler_lock:
+        now = time_mod.time()
+        last_request = float(state.get("last_api_request_at", 0) or 0)
+        if (not last_request or now - last_request < API_SCHEDULER_INTERVAL
+                or _tmux_send_lock.locked() or _user_msg_active
+                or session._in_call):
+            return False
+
+        away = now - peb_state.get("t_jeoi", now)
+        desire_intent = None
+        if (DESIRE_ENABLED and desire_st
+                and peb_state.get("desire_proactive")):
+            desire_intent = dg.pick_proactive_intent(
+                desire_st, _desire_last_proactive, now,
+                jeoi_away_secs=away,
+            )
+        peb_due, peb_count, elapsed_jeoi = _api_pebbling_due(now)
+        peb_due = bool(peb_state.get("enabled") and peb_due)
+
+        sticky_id = state.get("sticky_session_id")
+        keepalive_ready = bool(
+            sticky_id in _api_keepalive_snapshots
+            and not state.get("keepalive_breaker")
+        )
+        choice = (
+            "keepalive" if keepalive_ready
+            else "desire" if desire_intent
+            else "pebbling" if peb_due
+            else None
+        )
+        if choice:
+            api_diag(
+                "SCHEDULER_SLOT",
+                choice=choice,
+                gateway_session_id=session.id,
+                sticky_session_id=sticky_id,
+                seconds_since_api=round(now - last_request, 1),
+                keepalive_ready=keepalive_ready,
+                keepalive_breaker=bool(state.get("keepalive_breaker")),
+                desire=(desire_intent or {}).get("drive_key"),
+                pebbling_due=peb_due,
+            )
+        if keepalive_ready:
+            async with _tmux_send_lock:
+                if _user_msg_active:
+                    return False
+                result = await run_api_cache_keepalive(session)
+            if result.get("success"):
+                # The cheaper cache refresh owns this slot.  A due desire that
+                # was not sent still advances through the existing partial /
+                # three-level reset path instead of retrying for free.
+                if desire_intent:
+                    desire_st.intent = desire_intent
+                    dg.partial_satisfy_after_response(
+                        desire_st, desire_intent["drive_key"],
+                        source="API保活让位",
+                    )
+                    log.info(
+                        "API keepalive won slot; desire rolled back: %s level=%s",
+                        desire_intent["drive_key"],
+                        desire_st.silent_inject_count.get(
+                            desire_intent["drive_key"], 0
+                        ),
+                    )
+                    api_diag(
+                        "DESIRE_ROLLBACK_FOR_KEEPALIVE",
+                        gateway_session_id=session.id,
+                        drive=desire_intent["drive_key"],
+                        silent_level=desire_st.silent_inject_count.get(
+                            desire_intent["drive_key"], 0
+                        ),
+                    )
+                return True
+            # A transport/API failure owns no successful cache timestamp and
+            # does not open a second paid call in the same check.
+            if result.get("attempted"):
+                return False
+
+        if desire_intent:
+            if (not await tmux_is_running()
+                    or _active_runtime != OPENROUTER_RUNTIME
+                    or (session.cc_session_id not in (None, "tmux", "channel")
+                        and _tmux_cc_id != session.cc_session_id)):
+                log.info("API scheduler: semantic turn waiting for bound tmux session")
+                api_diag(
+                    "DESIRE_SESSION_NOT_READY", level="warning",
+                    gateway_session_id=session.id,
+                    expected_cc_session_id=session.cc_session_id,
+                    active_cc_session_id=_tmux_cc_id,
+                    active_runtime=_active_runtime,
+                )
+                return False
+            state["last_job"] = "desire"
+            state["last_job_at"] = now
+            save_peb_state()
+            await _run_scheduled_desire(session, desire_intent)
+            return True
+
+        if peb_due:
+            if (not await tmux_is_running()
+                    or _active_runtime != OPENROUTER_RUNTIME
+                    or (session.cc_session_id not in (None, "tmux", "channel")
+                        and _tmux_cc_id != session.cc_session_id)):
+                log.info("API scheduler: pebbling waiting for bound tmux session")
+                api_diag(
+                    "PEBBLING_SESSION_NOT_READY", level="warning",
+                    gateway_session_id=session.id,
+                    expected_cc_session_id=session.cc_session_id,
+                    active_cc_session_id=_tmux_cc_id,
+                    active_runtime=_active_runtime,
+                )
+                return False
+            state["last_job"] = "pebbling"
+            state["last_job_at"] = now
+            save_peb_state()
+            await run_pebbling_action(
+                session, elapsed_jeoi / 3600, peb_count,
+                "silent" if peb_count == 0 else "free",
+            )
+            peb_state["pebbling_history"].append(time_mod.time())
+            peb_state["t_cache"] = time_mod.time()
+            save_peb_state()
+            api_diag(
+                "PEBBLING_RUN",
+                gateway_session_id=session.id,
+                count=peb_count + 1,
+                elapsed_hours=round(elapsed_jeoi / 3600, 2),
+            )
+            return True
+    return False
+
+
 # ── WS keepalive ──
 
 async def ws_keepalive():
@@ -3674,7 +4141,9 @@ async def pebbling_worker():
             # Desire proactive push (autonomous, when toggle is ON)
             # Per-drive cooldown + 180s global minimum interval
             # Drive selection is independent of state.intent (avoids stale-intent and priority-blocking)
-            if DESIRE_ENABLED and desire_st and peb_state.get("desire_proactive"):
+            if (DESIRE_ENABLED and desire_st
+                    and peb_state.get("desire_proactive")
+                    and _active_api_scheduler_session() is None):
                 _dp_last_any = max(_desire_last_proactive.values(), default=0)
                 if now - _dp_last_any >= 180:
                     _dp_intent = dg.pick_proactive_intent(desire_st, _desire_last_proactive, now,
@@ -3825,6 +4294,14 @@ async def pebbling_worker():
             except Exception as e:
                 log.warning(f"Alarm check error: {e}")
 
+            # API keepalive/desire scheduling is automatic after a real API
+            # chat.  Pebbling's toggle still controls patrol + pebbling, but a
+            # pure cache refresh does not depend on that UI toggle.
+            _api_session = _active_api_scheduler_session()
+            if _api_session and not peb_state.get("enabled"):
+                await run_api_scheduler_if_due(_api_session)
+                continue
+
             # ── Pebbling (requires pebbling enabled) ──
             if not peb_state.get("enabled"):
                 continue
@@ -3858,6 +4335,14 @@ async def pebbling_worker():
                         peb_state["t_cache"] = time_mod.time()
                         save_peb_state()
                     break
+
+            # API sessions use the strict shared 50-minute arbiter below.
+            # Patrol above remains unchanged; its successful API request is
+            # observed by the proxy and moves the shared clock forward.
+            if (session.runtime == OPENROUTER_RUNTIME
+                    and _api_scheduler_state().get("gateway_session_id") == session.id):
+                await run_api_scheduler_if_due(session)
+                continue
 
             # ── L2: Pebbling (every 3h, max 8/24h) ──
             history = peb_state.get("pebbling_history", [])
@@ -4726,6 +5211,86 @@ class Session:
 sessions: dict[str, Session] = {}
 
 
+def _logical_session_root(session: Session) -> str:
+    """Follow Forge ancestry while keeping one OpenRouter routing identity."""
+    current = session
+    root = session.id
+    seen = set()
+    while current and current.id not in seen:
+        seen.add(current.id)
+        root = current.id
+        parent_id = getattr(current, "inherited_from", None)
+        if not parent_id:
+            break
+        root = parent_id
+        current = sessions.get(parent_id)
+    return root
+
+
+def _set_api_request_context(session: Session | None):
+    global _api_request_gateway_session_id
+    if session and getattr(session, "runtime", None) == OPENROUTER_RUNTIME:
+        _api_request_gateway_session_id = session.id
+    else:
+        _api_request_gateway_session_id = None
+
+
+def _bind_api_scheduler(session: Session, real_user: bool = False):
+    """Bind the scheduler to the latest genuinely used API chat."""
+    if getattr(session, "runtime", None) != OPENROUTER_RUNTIME:
+        return
+    logical_id = _logical_session_root(session)
+    sticky_id = sticky_session_id(logical_id)
+    state = _api_scheduler_state()
+    changed = state.get("logical_session_id") != logical_id
+    state.update({
+        "active": True,
+        "gateway_session_id": session.id,
+        "logical_session_id": logical_id,
+        "sticky_session_id": sticky_id,
+        "api_key_id": (
+            hashlib.sha256(_openrouter_api_key().encode("utf-8")).hexdigest()[:12]
+            if _openrouter_api_key() else None
+        ),
+    })
+    if changed:
+        _api_keepalive_snapshots.clear()
+        state["last_api_request_at"] = 0.0
+    if changed or real_user:
+        state["keepalive_misses"] = 0
+        state["keepalive_breaker"] = False
+    _set_api_request_context(session)
+    save_peb_state()
+    api_diag(
+        "API_SESSION_BIND",
+        gateway_session_id=session.id,
+        logical_session_id=logical_id,
+        sticky_session_id=sticky_id,
+        api_key_id=state.get("api_key_id"),
+        real_user=real_user,
+        forge_inherited=bool(getattr(session, "inherited_from", None)),
+    )
+
+
+def _suspend_api_scheduler():
+    state = _api_scheduler_state()
+    previous = state.get("gateway_session_id")
+    state["active"] = False
+    _set_api_request_context(None)
+    save_peb_state()
+    api_diag("API_SESSION_SUSPEND", gateway_session_id=previous)
+
+
+def _active_api_scheduler_session() -> Session | None:
+    state = _api_scheduler_state()
+    if not state.get("active"):
+        return None
+    session = sessions.get(state.get("gateway_session_id"))
+    if not session or getattr(session, "runtime", None) != OPENROUTER_RUNTIME:
+        return None
+    return session
+
+
 # ══════════════════════════════════════════════
 #  STARTUP: LOAD SESSIONS FROM DISK
 # ══════════════════════════════════════════════
@@ -4899,6 +5464,10 @@ async def startup_load_sessions():
 
     # Restore pebbling state and start app-level worker
     peb_state = load_peb_state()
+    # A process restart has no in-memory normalized request snapshot.  Require
+    # one fresh, real API use before autonomous scheduling resumes.
+    peb_state["api_scheduler"]["active"] = False
+    save_peb_state()
     log.info(f"Pebbling state loaded: enabled={peb_state.get('enabled')}, "
              f"session={peb_state.get('pebbling_session_id')}, "
              f"pending={len(peb_state.get('pending_messages', []))}")
@@ -4930,6 +5499,11 @@ async def startup_load_sessions():
             if not session or not session.cc_session_id:
                 log.warning("WeChat msg: no active session, ignoring")
                 return
+
+            if session.runtime == OPENROUTER_RUNTIME:
+                _bind_api_scheduler(session, real_user=True)
+            else:
+                _suspend_api_scheduler()
 
             # 存用户消息到历史
             append_message(session.id, "user", text, source="wechat")
@@ -5172,6 +5746,8 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
                 route_guard = bool(data.get("route_guard"))
+                if src_session.runtime == OPENROUTER_RUNTIME:
+                    _bind_api_scheduler(src_session, real_user=False)
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
                     await ws.send_json({
@@ -5252,6 +5828,8 @@ async def websocket_endpoint(ws: WebSocket):
                     session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
                     sessions[sid] = session
                     current_session = session
+                    if session.runtime == OPENROUTER_RUNTIME:
+                        _bind_api_scheduler(session, real_user=False)
                     save_session_meta(session)
                     _set_tmux_cc_id(verdict["real_id"])
                     save_last_good(sid, verdict["real_id"])
@@ -5328,6 +5906,10 @@ async def websocket_endpoint(ws: WebSocket):
                     log.warning(f"Auto-cleared stale _in_call for session {current_session.id}")
 
                 # Save user message & update last_active immediately
+                if current_session.runtime == OPENROUTER_RUNTIME:
+                    _bind_api_scheduler(current_session, real_user=True)
+                else:
+                    _suspend_api_scheduler()
                 msg_source = "voice_call" if call_mode else None
                 user_msg_idx = append_message(current_session.id, "user", message, source=msg_source)
                 current_session.last_active = datetime.now(SGT)
@@ -5469,9 +6051,13 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Desire engine: classify + pulse + inject intent
                 # 通话中不注入 desire（避免打断通话节奏）
+                _desire_key = None
+                _msg_is_libido = False
                 if DESIRE_ENABLED and desire_st and not call_mode:
                     _msg_tags = dc.classify(message)
-                    _msg_is_libido = bool(_msg_tags and _msg_tags[0]["drive"] == "libido")
+                    _msg_is_libido = any(
+                        tag.get("drive") == "libido" for tag in _msg_tags
+                    )
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
                         if not inj and desire_st.intent:
@@ -5485,16 +6071,18 @@ async def websocket_endpoint(ws: WebSocket):
                         if inj:
                             cli_message = inj + chr(10)*2 + cli_message
                             log.info(f"Desire injected: {_desire_key}")
-                        if _desire_key:
-                            if _desire_key == "libido" and not _msg_is_libido:
-                                log.info(f"Libido not satisfied (non-sexual msg, drift continues)")
-                            else:
-                                dg.satisfy_after_response(desire_st, _desire_key, source="对话")
-                                log.info(f"Desire satisfied: {_desire_key}")
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 
-                await run_claude(cli_message, current_session, ws)
+                _chat_succeeded = await run_claude(cli_message, current_session, ws)
+                if _chat_succeeded and _desire_key:
+                    if _desire_key == "libido" and not _msg_is_libido:
+                        log.info("Libido not satisfied (non-sexual msg, drift continues)")
+                    else:
+                        dg.satisfy_after_response(
+                            desire_st, _desire_key, source="对话"
+                        )
+                        log.info(f"Desire satisfied after reply: {_desire_key}")
 
                 # Snap cleanup: delete temp files after CC has read them
                 if snap_paths:
@@ -6081,6 +6669,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
     """Send message to CC CLI via tmux and stream reply via transcript."""
     global _user_msg_active
     _user_msg_active = True
+    _set_api_request_context(session)
     session.reset_accumulator()
     tailer = TranscriptTailer(ws, session)
 
@@ -6341,6 +6930,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             asyncio.create_task(wechat_gw.push_reply(session._current_text))
 
         _user_msg_active = False
+        return bool(completed_chat_turn)
 
     except Exception as e:
         _user_msg_active = False
@@ -6376,6 +6966,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if session._in_call and not ws_err_ok and session._current_text:
             session._call_unsent_text = session._current_text
             log.warning(f"WS disconnected during call, cached {len(session._current_text)} chars for {session.id}")
+        return False
 
 
 # ══════════════════════════════════════════════
@@ -6773,10 +7364,20 @@ async def list_pebbling_events(hours: int = 6):
 @app.get("/api/pebbling/status")
 async def pebbling_status():
     """Debug endpoint: current pebbling system state."""
+    api_state = dict(_api_scheduler_state())
+    last_request = float(api_state.get("last_api_request_at", 0) or 0)
+    api_state["interval_seconds"] = API_SCHEDULER_INTERVAL
+    api_state["next_due_at"] = (
+        last_request + API_SCHEDULER_INTERVAL if last_request else None
+    )
+    api_state["snapshot_ready"] = bool(
+        api_state.get("sticky_session_id") in _api_keepalive_snapshots
+    )
     return {
         "status": "ok",
         "time": datetime.now(SGT).isoformat(),
         "events_count": len(get_recent_events(24)),
+        "api_scheduler": api_state,
     }
 
 
