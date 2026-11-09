@@ -3,6 +3,7 @@ import unittest
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    apply_output_token_cap,
     build_keepalive_payload,
     merge_custom_headers,
     prepare_openrouter_payload,
@@ -249,6 +250,35 @@ class OpenRouterCacheTests(unittest.TestCase):
         self.assertEqual(blocks[0]["tool_use_id"], "tool-1")
         self.assertNotIn("max_completion_tokens", heartbeat)
         self.assertEqual(heartbeat["max_tokens"], 4096)
+
+    def test_output_cap_limits_adaptive_thinking(self):
+        payload = {
+            "max_tokens": 8192,
+            "thinking": {"type": "adaptive"},
+        }
+        applied, reason, effective = apply_output_token_cap(payload, 20)
+        self.assertTrue(applied)
+        self.assertEqual(reason, "applied")
+        self.assertEqual(effective, 20)
+        self.assertEqual(payload["max_tokens"], 20)
+
+    def test_output_cap_skips_incompatible_manual_thinking(self):
+        payload = {
+            "max_tokens": 8192,
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+        }
+        applied, reason, effective = apply_output_token_cap(payload, 20)
+        self.assertFalse(applied)
+        self.assertEqual(reason, "manual_thinking_budget")
+        self.assertEqual(effective, 8192)
+        self.assertEqual(payload["max_tokens"], 8192)
+
+    def test_output_cap_supports_chat_completion_field(self):
+        payload = {"max_completion_tokens": 4096}
+        applied, _, effective = apply_output_token_cap(payload, 800)
+        self.assertTrue(applied)
+        self.assertEqual(effective, 800)
+        self.assertEqual(payload["max_completion_tokens"], 800)
 
 
 if __name__ == "__main__":

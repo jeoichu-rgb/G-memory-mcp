@@ -364,6 +364,48 @@ def _has_cache_control(value: Any) -> bool:
     return False
 
 
+def apply_output_token_cap(
+    payload: dict[str, Any], limit: int,
+) -> tuple[bool, str, int | None]:
+    """Apply a small output ceiling without creating invalid thinking input.
+
+    Manual extended thinking requires ``budget_tokens < max_tokens``.  Those
+    legacy requests keep their original ceiling instead of turning a cheap
+    background call into an HTTP 400.  Adaptive thinking has no fixed budget
+    and can safely share the requested hard ceiling.
+    """
+    if not isinstance(payload, dict) or limit <= 0:
+        return False, "invalid_limit", None
+
+    thinking = payload.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+        budget = thinking.get("budget_tokens")
+        if isinstance(budget, int) and not isinstance(budget, bool):
+            if budget >= limit:
+                current = payload.get("max_tokens")
+                effective = current if isinstance(current, int) else None
+                return False, "manual_thinking_budget", effective
+
+    keys = [
+        key for key in ("max_tokens", "max_completion_tokens")
+        if key in payload
+    ]
+    if not keys:
+        keys = ["max_tokens"]
+
+    effective = limit
+    for key in keys:
+        current = payload.get(key)
+        if (isinstance(current, int) and not isinstance(current, bool)
+                and current > 0):
+            value = min(current, limit)
+        else:
+            value = limit
+        payload[key] = value
+        effective = min(effective, value)
+    return True, "applied", effective
+
+
 def build_keepalive_payload(
     prepared_payload: dict[str, Any],
     prompt: str = (

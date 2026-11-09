@@ -48,11 +48,12 @@ Keepalive 由 OpenRouter 代理直接发送，不经过 `run_cc_oneshot()`，因
 - 不写入 Claude Code transcript；
 - 不进入聊天历史、摘要、Forge 或长期记忆；
 - 只重放到最后一个显式 cache breakpoint 为止的稳定前缀；
-- 保留原请求的 model、tools、thinking/effort、provider、TTL 和合法 token 参数；
+- 保留原请求的 model、tools、thinking/effort、provider 和 TTL；纯 keepalive 将输出硬上限设为 20，desire 的每次 API 请求设为 800；
 - 不发送 `max_completion_tokens=0`；
+- 旧式 `thinking.enabled + budget_tokens` 与小上限冲突时跳过限额并写日志，避免 HTTP 400；
 - 若缓存尾部包含未闭合的 `tool_use`，在 breakpoint 后补合成 `tool_result`，不修改缓存前缀。
 
-返回文本被丢弃，只读取 usage。状态可从 `GET /api/pebbling/status` 的 `api_scheduler` 查看。
+返回文本不进入聊天，只保留最多 200 字符的诊断预览。状态可从 `GET /api/pebbling/status` 的 `api_scheduler` 查看。
 
 ## Terminal 排障命令
 
@@ -112,6 +113,8 @@ API_SCHEDULER_STATUS_URL=http://127.0.0.1:8081/api/pebbling/status \
 | `OR_PROXY_HTTP_ERROR` | OpenRouter 代理请求返回 4xx/5xx；404 会在这里看到 endpoint、request id 和 breakpoint 数 |
 | `OR_PROXY_TRANSPORT_ERROR` | DNS、连接、TLS、超时等尚未收到 HTTP 状态的错误 |
 | `SCHEDULER_SLOT` | 50 分钟槽被领取，记录候选和最终选择 |
+| `API_OUTPUT_CAP` | 记录 keepalive/desire 请求的目标上限、实际上限，以及旧式 thinking 防护是否跳过限额 |
+| `API_JOB_RESULT` | desire 的停止原因、可见字符数、工具和最多 200 字符预览 |
 | `KEEPALIVE_HIT` | 纯保活成功且真实读取到 cached tokens |
 | `KEEPALIVE_CACHE_MISS` | HTTP 成功但 cache read 为 0；计入连续 miss |
 | `KEEPALIVE_HTTP_ERROR` | 纯保活返回 4xx/5xx，附最多 300 字符响应；不计 cache miss |
@@ -122,7 +125,7 @@ API_SCHEDULER_STATUS_URL=http://127.0.0.1:8081/api/pebbling/status \
 | `PEBBLING_RUN` | keepalive 熔断且无 desire 时 pebbling 获得槽位 |
 | `*_SESSION_NOT_READY` | 语义任务绑定的 transcript 与当前 tmux 不一致，因此没有误发 |
 
-日志不得写入 API key、Authorization header、完整 prompt 或完整回复；sticky id 是逻辑 session 的不可逆哈希。
+日志不得写入 API key、Authorization header、完整 prompt 或完整回复；输出预览最多 200 字符，sticky id 是逻辑 session 的不可逆哈希。
 
 ### 常见排障
 

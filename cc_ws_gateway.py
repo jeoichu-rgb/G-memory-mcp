@@ -40,6 +40,7 @@ from dataclasses import replace
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    apply_output_token_cap,
     build_keepalive_payload,
     merge_custom_headers,
     prepare_openrouter_payload,
@@ -182,6 +183,8 @@ PEBBLING_INTERVAL = 3 * 3600  # 3 hours
 PEBBLING_MAX_24H = 8
 API_SCHEDULER_INTERVAL = int(os.getenv("API_SCHEDULER_INTERVAL", "3000"))
 API_KEEPALIVE_MISS_LIMIT = int(os.getenv("API_KEEPALIVE_MISS_LIMIT", "2"))
+API_KEEPALIVE_MAX_TOKENS = int(os.getenv("API_KEEPALIVE_MAX_TOKENS", "20"))
+API_DESIRE_MAX_TOKENS = int(os.getenv("API_DESIRE_MAX_TOKENS", "800"))
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
 ALARMS_PATH = Path(CC_CWD) / "alarms.json"
@@ -282,6 +285,7 @@ _desire_last_tick = 0.0
 _desire_last_proactive: dict[str, float] = {}
 _user_msg_active = False  # True while run_claude is processing a user message
 _api_request_gateway_session_id: str | None = None
+_api_request_job: str | None = None
 # In-memory only: after a process restart the remote cache is not trusted until
 # a real API request supplies a fresh, normalized prefix again.
 _api_keepalive_snapshots: dict[str, dict] = {}
@@ -508,6 +512,10 @@ def _api_scheduler_state() -> dict:
         "last_keepalive_cached_tokens": 0,
         "last_keepalive_usage": {},
         "last_keepalive_error": None,
+        "last_keepalive_stop_reason": None,
+        "last_keepalive_output_blocks": [],
+        "last_keepalive_output_preview": "",
+        "last_keepalive_max_tokens": None,
     }
     for key, value in defaults.items():
         state.setdefault(key, value)
@@ -569,6 +577,7 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     body = raw_body
     breakpoint_count = 0
     prepared_payload = None
+    request_job = _api_request_job
     sticky_id = _current_api_sticky_id()
     content_type = request.headers.get("content-type", "")
     if raw_body and "json" in content_type.lower():
@@ -586,6 +595,20 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
             payload, breakpoint_count = prepare_openrouter_payload(
                 payload, request_cache_config
             )
+            if request_job == "desire":
+                cap_applied, cap_reason, effective_cap = apply_output_token_cap(
+                    payload, API_DESIRE_MAX_TOKENS
+                )
+                api_diag(
+                    "API_OUTPUT_CAP",
+                    job=request_job,
+                    requested_limit=API_DESIRE_MAX_TOKENS,
+                    effective_limit=effective_cap,
+                    applied=cap_applied,
+                    reason=cap_reason,
+                    gateway_session_id=_api_request_gateway_session_id,
+                    sticky_session_id=sticky_id,
+                )
             prepared_payload = payload
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -638,6 +661,7 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
         status=upstream.status_code,
         upstream_path=upstream_path,
         sticky_session_id=sticky_id,
+        job=request_job,
         breakpoints=breakpoint_count,
         elapsed_ms=round((time_mod.time() - request_started_at) * 1000),
         request_id=(
@@ -660,7 +684,9 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
             "query": request.url.query,
             "headers": snapshot_headers,
         }
-        _record_api_request_success(sticky_id, request_started_at)
+        _record_api_request_success(
+            sticky_id, request_started_at, job=request_job
+        )
 
     async def _stream_upstream():
         try:
@@ -699,6 +725,37 @@ def _cache_read_tokens(usage: dict) -> int:
     return int(direct or nested or cache_read or 0)
 
 
+def _response_output_summary(data: dict) -> tuple[str | None, list[str], str]:
+    """Extract a small observable summary from Anthropic/OpenAI responses."""
+    if not isinstance(data, dict):
+        return None, [], ""
+    stop_reason = data.get("stop_reason")
+    content = data.get("content")
+    if not content and isinstance(data.get("choices"), list) and data["choices"]:
+        choice = data["choices"][0]
+        if isinstance(choice, dict):
+            stop_reason = stop_reason or choice.get("finish_reason")
+            message = choice.get("message") or {}
+            if isinstance(message, dict):
+                content = message.get("content")
+
+    block_types: list[str] = []
+    text_parts: list[str] = []
+    if isinstance(content, str):
+        block_types.append("text")
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "unknown")
+            block_types.append(block_type)
+            if block_type == "text" and isinstance(block.get("text"), str):
+                text_parts.append(block["text"])
+    preview = " ".join("".join(text_parts).split())[:200]
+    return stop_reason, block_types, preview
+
+
 async def run_api_cache_keepalive(session: "Session") -> dict:
     """Refresh the active API cache without touching the CC transcript."""
     state = _api_scheduler_state()
@@ -710,6 +767,22 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
     payload = build_keepalive_payload(snapshot.get("payload"))
     if not payload:
         return {"attempted": False, "success": False, "hit": False}
+    cap_applied, cap_reason, effective_cap = apply_output_token_cap(
+        payload, API_KEEPALIVE_MAX_TOKENS
+    )
+    state["last_keepalive_stop_reason"] = None
+    state["last_keepalive_output_blocks"] = []
+    state["last_keepalive_output_preview"] = ""
+    state["last_keepalive_max_tokens"] = effective_cap
+    api_diag(
+        "API_OUTPUT_CAP",
+        job="keepalive",
+        requested_limit=API_KEEPALIVE_MAX_TOKENS,
+        effective_limit=effective_cap,
+        applied=cap_applied,
+        reason=cap_reason,
+        sticky_session_id=sticky_id,
+    )
     payload["session_id"] = sticky_id
 
     headers = dict(snapshot.get("headers") or {})
@@ -737,6 +810,8 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
             "KEEPALIVE_TRANSPORT_ERROR", level="error",
             error=state["last_keepalive_error"],
             sticky_session_id=sticky_id, upstream_path=path,
+            max_tokens=effective_cap,
+            cap_applied=cap_applied, cap_reason=cap_reason,
         )
         return {"attempted": True, "success": False, "hit": False,
                 "error": str(exc)}
@@ -751,6 +826,8 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
             status=response.status_code,
             response=response.text[:300],
             sticky_session_id=sticky_id, upstream_path=path,
+            max_tokens=effective_cap,
+            cap_applied=cap_applied, cap_reason=cap_reason,
         )
         return {"attempted": True, "success": False, "hit": False,
                 "status": response.status_code}
@@ -761,6 +838,7 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
         data = {}
     usage = data.get("usage") if isinstance(data, dict) else {}
     usage = usage if isinstance(usage, dict) else {}
+    stop_reason, output_blocks, output_preview = _response_output_summary(data)
     cached = _cache_read_tokens(usage)
     hit = cached > 0
     if hit:
@@ -784,6 +862,10 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
     state["last_keepalive_cached_tokens"] = cached
     state["last_keepalive_usage"] = usage
     state["last_keepalive_error"] = None
+    state["last_keepalive_stop_reason"] = stop_reason
+    state["last_keepalive_output_blocks"] = output_blocks
+    state["last_keepalive_output_preview"] = output_preview
+    state["last_keepalive_max_tokens"] = effective_cap
     save_peb_state()
     log.info("API cache keepalive: hit=%s cached=%s miss_count=%s breaker=%s",
              hit, cached, state["keepalive_misses"], state["keepalive_breaker"])
@@ -794,6 +876,12 @@ async def run_api_cache_keepalive(session: "Session") -> dict:
         cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
         input_tokens=usage.get("input_tokens", usage.get("prompt_tokens", 0)),
         output_tokens=usage.get("output_tokens", usage.get("completion_tokens", 0)),
+        stop_reason=stop_reason,
+        output_blocks=output_blocks,
+        output_preview=output_preview,
+        max_tokens=effective_cap,
+        cap_applied=cap_applied,
+        cap_reason=cap_reason,
         misses=state["keepalive_misses"],
         breaker=state["keepalive_breaker"],
         sticky_session_id=sticky_id,
@@ -1472,6 +1560,10 @@ def load_peb_state() -> dict:
             "last_keepalive_cached_tokens": 0,
             "last_keepalive_usage": {},
             "last_keepalive_error": None,
+            "last_keepalive_stop_reason": None,
+            "last_keepalive_output_blocks": [],
+            "last_keepalive_output_preview": "",
+            "last_keepalive_max_tokens": None,
         },
     }
     if PEBBLING_STATE_PATH.exists():
@@ -3329,7 +3421,7 @@ def _strip_oneshot_scaffold(text: str) -> str:
 # ── CC oneshot call (non-streaming, for patrol/pebbling) ──
 
 async def run_cc_oneshot(
-    prompt: str, session: "Session", max_turns=None
+    prompt: str, session: "Session", max_turns=None, job: str | None = None,
 ) -> tuple:
     """Returns (text, thinking, tools). Sends via tmux and reads transcript."""
     global _transcript_path_cache
@@ -3339,7 +3431,7 @@ async def run_cc_oneshot(
     if not await tmux_is_running():
         log.warning("run_cc_oneshot: tmux not running")
         return "", "", []
-    _set_api_request_context(session)
+    _set_api_request_context(session, job=job)
     try:
         transcript = _find_active_transcript()
         if not transcript:
@@ -3356,6 +3448,7 @@ async def run_cc_oneshot(
         # 否则前后两半各自 json.loads 失败被丢，整条长回复（工具后的详细内容）就消失了
         line_buf = b""
         text_parts, thinking_parts, tool_parts = [], [], []
+        stop_reasons: list[str] = []
         done = False
         stale_ticks = 0
         loop_time = asyncio.get_event_loop().time
@@ -3414,9 +3507,16 @@ async def run_cc_oneshot(
                         thinking_parts.append(blk.get("thinking", ""))
                     elif bt == "tool_use":
                         tool_parts.append(_clean_tool_name(blk.get("name", "")))
-                if msg.get("stop_reason") == "end_turn":
+                stop_reason = msg.get("stop_reason")
+                if stop_reason:
+                    stop_reasons.append(str(stop_reason))
+                if stop_reason in {
+                    "end_turn", "max_tokens", "stop_sequence", "refusal",
+                    "model_context_window_exceeded",
+                }:
                     content_types = {b.get("type") for b in msg.get("content", [])}
-                    if content_types == {"thinking"} and not text_parts:
+                    if (stop_reason == "end_turn"
+                            and content_types == {"thinking"} and not text_parts):
                         continue
                     done = True
                     break
@@ -3425,6 +3525,16 @@ async def run_cc_oneshot(
         tools = list(dict.fromkeys(tool_parts))  # dedupe, preserve order
         label = "reply" if done else "timeout"
         log.info(f"oneshot {label} ({len(text)} chars, {len(tools)} tools): {text[:200]}")
+        if job:
+            api_diag(
+                "API_JOB_RESULT",
+                job=job,
+                gateway_session_id=session.id,
+                stop_reasons=stop_reasons,
+                text_chars=len(text),
+                tools=tools,
+                output_preview=" ".join(text.split())[:200],
+            )
 
         turn_usage, turn_cost, last_usage = _read_turn_usage(transcript, start_offset)
         turn_cost = _resolve_turn_cost(session, turn_usage, turn_cost)
@@ -3443,6 +3553,9 @@ async def run_cc_oneshot(
     except Exception as e:
         log.error(f"run_cc_oneshot error: {e}")
         return "", "", []
+    finally:
+        if job:
+            _set_api_request_job(None)
 
 # ── Post-call follow-up ──
 
@@ -3855,7 +3968,9 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+    text, thinking, tools = await run_cc_oneshot(
+        prompt, session, max_turns=6
+    )
     if not text:
         return "none"
 
@@ -3909,7 +4024,9 @@ async def _run_scheduled_desire(session: "Session", intent: dict) -> bool:
         prompt = dg.build_desire_proactive_prompt(desire_st)
 
     _desire_last_proactive[drive_key] = time_mod.time()
-    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+    text, thinking, tools = await run_cc_oneshot(
+        prompt, session, max_turns=6, job="desire"
+    )
     if text:
         action, content = parse_action(text)
         await push_pebbling_activity(
@@ -4187,7 +4304,10 @@ async def pebbling_worker():
                                 else:
                                     _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                                 _desire_last_proactive[_dp_dk] = now
-                                _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(_dp_prompt, _dp_session, max_turns=6)
+                                _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(
+                                    _dp_prompt, _dp_session,
+                                    max_turns=6, job="desire",
+                                )
                                 if _dp_text:
                                     _dp_action, _dp_content = parse_action(_dp_text)
                                     await push_pebbling_activity("desire", _dp_action, _dp_tools, _dp_thinking, _dp_session, content=_dp_content)
@@ -4395,7 +4515,9 @@ async def pebbling_worker():
                         prompt = dg.build_desire_pebbling_prompt(
                             desire_st, elapsed_h, actual,
                             format_events_for_prompt(events))
-                    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=6)
+                    text, thinking, tools = await run_cc_oneshot(
+                        prompt, session, max_turns=6, job="desire"
+                    )
                     if text:
                         action, content = parse_action(text)
                         await push_pebbling_activity("pebbling", action, tools, thinking, session, content=content)
@@ -5230,8 +5352,14 @@ def _logical_session_root(session: Session) -> str:
     return root
 
 
-def _set_api_request_context(session: Session | None):
+def _set_api_request_job(job: str | None):
+    global _api_request_job
+    _api_request_job = job
+
+
+def _set_api_request_context(session: Session | None, job: str | None = None):
     global _api_request_gateway_session_id
+    _set_api_request_job(job)
     if session and getattr(session, "runtime", None) == OPENROUTER_RUNTIME:
         _api_request_gateway_session_id = session.id
     else:
