@@ -99,7 +99,7 @@ grep '404\|HTTP_ERROR\|CACHE_MISS\|BREAKER' logs/api_scheduler.jsonl
 
 ```bash
 CC_CWD=/custom/path python3 api_scheduler_diag.py status
-API_SCHEDULER_STATUS_URL=http://127.0.0.1:8081/api/pebbling/status \
+API_SCHEDULER_STATUS_URL=http://127.0.0.1:3000/api/pebbling/status \
   python3 api_scheduler_diag.py live
 ```
 
@@ -114,9 +114,12 @@ API_SCHEDULER_STATUS_URL=http://127.0.0.1:8081/api/pebbling/status \
 | `OR_PROXY_TRANSPORT_ERROR` | DNS、连接、TLS、超时等尚未收到 HTTP 状态的错误 |
 | `SCHEDULER_SLOT` | 50 分钟槽被领取，记录候选和最终选择 |
 | `API_OUTPUT_CAP` | 记录 keepalive/desire 请求的目标上限、实际上限，以及旧式 thinking 防护是否跳过限额 |
+| `API_THINKING_MODE` | 新建/Forge API session 将固定 budget 迁移为 adaptive，并保留当前 effort（含 max） |
 | `API_JOB_RESULT` | desire 的停止原因、可见字符数、工具和最多 200 字符预览 |
 | `KEEPALIVE_HIT` | 纯保活成功且真实读取到 cached tokens |
 | `KEEPALIVE_CACHE_MISS` | HTTP 成功但 cache read 为 0；计入连续 miss |
+
+旧 API session 不在半途改写 thinking 参数；新建或 Forge 后的 API session 才切换到 `adaptive`，并继承原先选择的 effort（包括 `max`）。边界上的第一次请求可能因参数变化重建一次缓存，之后聊天和保活继续共用同一组参数。
 | `KEEPALIVE_HTTP_ERROR` | 纯保活返回 4xx/5xx，附最多 300 字符响应；不计 cache miss |
 | `KEEPALIVE_TRANSPORT_ERROR` | 纯保活在收到 HTTP 响应前失败；不计 cache miss |
 | `KEEPALIVE_BREAKER_OPEN` | 连续两次真实 cache miss，纯保活熔断 |

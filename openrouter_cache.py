@@ -406,6 +406,27 @@ def apply_output_token_cap(
     return True, "applied", effective
 
 
+def apply_adaptive_thinking(
+    payload: dict[str, Any], effort: str,
+) -> tuple[bool, str | None]:
+    """Migrate one new-session request from fixed-budget to adaptive thinking."""
+    if not isinstance(payload, dict):
+        return False, None
+    old = payload.get("thinking")
+    old_type = old.get("type") if isinstance(old, dict) else None
+    output_config = payload.get("output_config")
+    if not isinstance(output_config, dict):
+        output_config = {}
+    else:
+        output_config = copy.deepcopy(output_config)
+    output_config["effort"] = effort
+    desired_thinking = {"type": "adaptive"}
+    changed = old != desired_thinking or payload.get("output_config") != output_config
+    payload["thinking"] = desired_thinking
+    payload["output_config"] = output_config
+    return changed, old_type
+
+
 def build_keepalive_payload(
     prepared_payload: dict[str, Any],
     prompt: str = (

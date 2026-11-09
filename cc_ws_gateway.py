@@ -40,6 +40,7 @@ from dataclasses import replace
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    apply_adaptive_thinking,
     apply_output_token_cap,
     build_keepalive_payload,
     merge_custom_headers,
@@ -578,6 +579,8 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
     breakpoint_count = 0
     prepared_payload = None
     request_job = _api_request_job
+    thinking_mode = None
+    effective_effort = None
     sticky_id = _current_api_sticky_id()
     content_type = request.headers.get("content-type", "")
     if raw_body and "json" in content_type.lower():
@@ -589,6 +592,21 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
             upstream_path.rstrip("/").endswith(suffix)
             for suffix in ("/messages", "/chat/completions", "/responses")
         ):
+            request_session = sessions.get(_api_request_gateway_session_id)
+            if (request_session
+                    and getattr(request_session, "api_adaptive_thinking", False)):
+                changed, old_thinking_mode = apply_adaptive_thinking(
+                    payload, request_session.effort
+                )
+                if changed:
+                    api_diag(
+                        "API_THINKING_MODE",
+                        gateway_session_id=request_session.id,
+                        old_mode=old_thinking_mode,
+                        mode="adaptive",
+                        effort=request_session.effort,
+                        job=request_job,
+                    )
             request_cache_config = replace(
                 OPENROUTER_CACHE_CONFIG, session_id=sticky_id,
             )
@@ -609,6 +627,12 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
                     gateway_session_id=_api_request_gateway_session_id,
                     sticky_session_id=sticky_id,
                 )
+            thinking = payload.get("thinking")
+            if isinstance(thinking, dict):
+                thinking_mode = thinking.get("type")
+            output_config = payload.get("output_config")
+            if isinstance(output_config, dict):
+                effective_effort = output_config.get("effort")
             prepared_payload = payload
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -662,6 +686,8 @@ async def openrouter_cache_proxy(upstream_path: str, request: Request):
         upstream_path=upstream_path,
         sticky_session_id=sticky_id,
         job=request_job,
+        thinking_mode=thinking_mode,
+        effort=effective_effort,
         breakpoints=breakpoint_count,
         elapsed_ms=round((time_mod.time() - request_started_at) * 1000),
         request_id=(
@@ -1665,6 +1691,7 @@ def save_session_meta(session: "Session"):
         "preview": session.preview,
         "model": session.model,
         "effort": session.effort,
+        "api_adaptive_thinking": session.api_adaptive_thinking,
         "runtime": session.runtime,
         "transcript_runtime": session.transcript_runtime,
         "cc_session_id": session.cc_session_id,
@@ -1779,6 +1806,11 @@ def load_all_sessions() -> list["Session"]:
             session.preview = meta.get("preview", "")
             session.model = meta.get("model", "claude-sonnet-4-6")
             session.effort = meta.get("effort", "medium")
+            # Sessions created before the adaptive migration keep their fixed
+            # thinking mode until the next new-session / Forge boundary.
+            session.api_adaptive_thinking = bool(
+                meta.get("api_adaptive_thinking", False)
+            )
             session.runtime = meta.get("runtime") or _runtime_for_model(session.model)
             session.transcript_runtime = (
                 meta.get("transcript_runtime") or session.runtime
@@ -5247,6 +5279,9 @@ class Session:
         self.preview = ""
         self.model = "claude-sonnet-4-6"
         self.effort = "medium"
+        # Fresh API sessions use adaptive thinking; sessions loaded from disk
+        # override this to False unless they were already migrated.
+        self.api_adaptive_thinking = True
         self.runtime = SUBSCRIPTION_RUNTIME
         # The selected runtime may change before the next message.  Keep the
         # runtime that owns cc_session_id separately so cross-profile resume
@@ -5927,9 +5962,18 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "session:forge_progress",
                                         "stage": "verifying",
                                         "message": "裁剪完成，正在验证新session…"})
-                    verdict = await verify_forged_session(
-                        result["new_id"], src_session.model, src_session.effort
-                    )
+                    previous_adaptive = src_session.api_adaptive_thinking
+                    if src_session.runtime == OPENROUTER_RUNTIME:
+                        # The verifier writes the first turn of the forged
+                        # transcript, so migrate that request at the boundary.
+                        src_session.api_adaptive_thinking = True
+                    try:
+                        verdict = await verify_forged_session(
+                            result["new_id"], src_session.model,
+                            src_session.effort,
+                        )
+                    finally:
+                        src_session.api_adaptive_thinking = previous_adaptive
                     if not verdict["ok"]:
                         await ws.send_json({"event": "session:forge_result",
                                             "ok": False, "error": verdict["error"]})
@@ -5957,6 +6001,7 @@ async def websocket_endpoint(ws: WebSocket):
                     session = Session(sid)
                     session.model = src_session.model
                     session.effort = src_session.effort
+                    session.api_adaptive_thinking = True
                     session.runtime = src_session.runtime
                     session.transcript_runtime = _active_runtime
                     session.inherited_from = src_session.id

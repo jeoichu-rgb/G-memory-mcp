@@ -3,6 +3,7 @@ import unittest
 
 from openrouter_cache import (
     OpenRouterCacheConfig,
+    apply_adaptive_thinking,
     apply_output_token_cap,
     build_keepalive_payload,
     merge_custom_headers,
@@ -279,6 +280,20 @@ class OpenRouterCacheTests(unittest.TestCase):
         self.assertTrue(applied)
         self.assertEqual(effective, 800)
         self.assertEqual(payload["max_completion_tokens"], 800)
+
+    def test_migrates_fixed_budget_to_adaptive_with_max_effort(self):
+        payload = {
+            "thinking": {"type": "enabled", "budget_tokens": 16000},
+            "output_config": {"format": {"type": "text"}},
+        }
+        changed, old_type = apply_adaptive_thinking(payload, "max")
+        self.assertTrue(changed)
+        self.assertEqual(old_type, "enabled")
+        self.assertEqual(payload["thinking"], {"type": "adaptive"})
+        self.assertEqual(payload["output_config"]["effort"], "max")
+        self.assertEqual(
+            payload["output_config"]["format"], {"type": "text"}
+        )
 
 
 if __name__ == "__main__":

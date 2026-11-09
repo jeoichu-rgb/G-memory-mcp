@@ -146,7 +146,7 @@ def command_tail(limit: int, problems_only: bool = False) -> int:
 def command_live() -> int:
     url = os.getenv(
         "API_SCHEDULER_STATUS_URL",
-        "http://127.0.0.1:8081/api/pebbling/status",
+        "http://127.0.0.1:3000/api/pebbling/status",
     )
     try:
         with urlopen(url, timeout=5) as response:
