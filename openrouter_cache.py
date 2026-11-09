@@ -123,19 +123,172 @@ def _plain_user_text_block(message: Any) -> tuple[str, Any] | None:
     return ("block", text_blocks[-1]) if text_blocks else None
 
 
-def _set_progressive_user_breakpoint(payload: dict[str, Any], ttl: str) -> bool:
-    """Put breakpoint 2 on the second-to-last real user message."""
+def _message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _set_message_tail_breakpoint(message: Any, ttl: str) -> bool:
+    """Put a breakpoint on the last text block of one message."""
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content.strip():
+            return False
+        message["content"] = [{
+            "type": "text",
+            "text": content,
+            "cache_control": _directive(ttl),
+        }]
+        return True
+    if not isinstance(content, list):
+        return False
+    for block in reversed(content):
+        if (isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+                and block["text"].strip()):
+            block["cache_control"] = _directive(ttl)
+            return True
+    return False
+
+
+_NEW_SESSION_INJECTION_HEADER = (
+    "═══ 自动注入 · 以下是系统为你恢复的上下文，不是Jeoi的消息 ═══"
+)
+_INJECTION_FOOTER = "═══════════════════════════════════════════════════════════════"
+_FORGE_VERIFY_MARKER = "[forge-verify]"
+
+
+def _set_injection_breakpoint(message: Any, ttl: str) -> bool:
+    """Split a fresh-session injection from Jeoi's first real message."""
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+
+    content = message.get("content")
+    if isinstance(content, str):
+        if (_NEW_SESSION_INJECTION_HEADER not in content
+                or _INJECTION_FOOTER not in content):
+            return False
+        blocks = [{"type": "text", "text": content}]
+        message["content"] = blocks
+    elif isinstance(content, list):
+        blocks = content
+    else:
+        return False
+
+    for index, block in enumerate(blocks):
+        if (not isinstance(block, dict)
+                or block.get("type") != "text"
+                or not isinstance(block.get("text"), str)):
+            continue
+        text = block["text"]
+        header_at = text.find(_NEW_SESSION_INJECTION_HEADER)
+        if header_at < 0:
+            continue
+        footer_at = text.find(_INJECTION_FOOTER, header_at)
+        if footer_at < 0:
+            continue
+        split_at = footer_at + len(_INJECTION_FOOTER)
+        inherited = dict(block)
+        inherited["text"] = text[:split_at]
+        inherited["cache_control"] = _directive(ttl)
+        remainder = text[split_at:]
+        replacement = [inherited]
+        if remainder:
+            current = dict(block)
+            current["text"] = remainder
+            current.pop("cache_control", None)
+            replacement.append(current)
+        blocks[index:index + 1] = replacement
+        return True
+    return False
+
+
+def _set_inherited_context_breakpoint(
+    payload: dict[str, Any], ttl: str
+) -> tuple[bool, int]:
+    """Fix breakpoint 2 at the end of this Session's inherited prefix.
+
+    A forged Session is delimited by its synthetic verification round. A
+    completely fresh Session has no Forge tail; when clip is enabled its
+    optional today/yesterday diary and context summary are split from Jeoi's
+    first real message and cached on their own.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return False, -1
+
+    # The raw marker occurs only on the verifier for the current Forge. Older
+    # verifier rounds retained by another Forge are rewritten as 【forge-verify】.
+    verify_index = -1
+    for index, message in enumerate(messages):
+        if (isinstance(message, dict)
+                and message.get("role") == "user"
+                and _FORGE_VERIFY_MARKER in _message_text(message)):
+            verify_index = index
+    if verify_index >= 0:
+        for index in range(verify_index + 1, len(messages)):
+            message = messages[index]
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "user":
+                break
+            if (message.get("role") == "assistant"
+                    and _set_message_tail_breakpoint(message, ttl)):
+                return True, index
+        # During the verification request there is no assistant "ok" yet.
+        if _set_message_tail_breakpoint(messages[verify_index], ttl):
+            return True, verify_index
+
+    for index in range(len(messages) - 1, -1, -1):
+        if _set_injection_breakpoint(messages[index], ttl):
+            return True, index
+    return False, -1
+
+
+def _set_progressive_user_breakpoint(
+    payload: dict[str, Any], ttl: str, start_at: int = 0
+) -> bool:
+    """Put breakpoint 3 after the latest completed current-Session turn."""
     messages = payload.get("messages")
     if not isinstance(messages, list):
         return False
-    targets = []
-    for message in messages:
+    targets: list[tuple[int, tuple[str, Any]]] = []
+    start_at = max(start_at, 0)
+    for index in range(start_at, len(messages)):
+        message = messages[index]
         target = _plain_user_text_block(message)
         if target:
-            targets.append(target)
+            targets.append((index, target))
     if len(targets) < 2:
         return False
-    kind, target = targets[-2]
+
+    # The newest plain user block is the live request. Everything through the
+    # last assistant reply before it is completed dialogue and can move into
+    # the cache without swallowing the new timestamp/memory/message suffix.
+    latest_user_index = targets[-1][0]
+    for index in range(latest_user_index - 1, start_at - 1, -1):
+        message = messages[index]
+        if (isinstance(message, dict)
+                and message.get("role") == "assistant"
+                and _set_message_tail_breakpoint(message, ttl)):
+            return True
+
+    # Consecutive user messages have no completed assistant turn between them.
+    # Preserve the old safe fallback rather than dropping progressive caching.
+    kind, target = targets[-2][1]
     if kind == "string":
         target["content"] = [{
             "type": "text",
@@ -153,8 +306,9 @@ def prepare_openrouter_payload(
     """Apply stable routing and prompt-cache policy to one inference request.
 
     The contract is deliberately explicit: one fixed breakpoint at the end of
-    system, and one moving breakpoint on the second-to-last plain user
-    message. No top-level automatic cache control is used.
+    system, one fixed breakpoint after inherited Session context when present,
+    and one moving breakpoint after the latest completed dialogue turn in the
+    current Session. No top-level automatic cache control is used.
     """
     payload["session_id"] = config.session_id
 
@@ -173,8 +327,15 @@ def prepare_openrouter_payload(
 
     _strip_cache_directives(payload)
     breakpoint_count = int(_set_system_breakpoint(payload, config.ttl))
+    inherited_set, inherited_end = _set_inherited_context_breakpoint(
+        payload, config.ttl
+    )
+    breakpoint_count += int(inherited_set)
     breakpoint_count += int(
-        _set_progressive_user_breakpoint(payload, config.ttl)
+        _set_progressive_user_breakpoint(
+            payload, config.ttl,
+            start_at=inherited_end if inherited_set else 0,
+        )
     )
     return payload, breakpoint_count
 

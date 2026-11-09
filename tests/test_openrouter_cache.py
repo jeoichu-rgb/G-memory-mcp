@@ -19,7 +19,7 @@ class OpenRouterCacheTests(unittest.TestCase):
             upstream_base_url="https://openrouter.ai/api",
         )
 
-    def test_places_exact_system_and_second_last_user_breakpoints(self):
+    def test_places_system_and_completed_dialogue_breakpoints(self):
         payload = {
             "system": [{
                 "type": "text",
@@ -39,7 +39,7 @@ class OpenRouterCacheTests(unittest.TestCase):
             {"type": "ephemeral", "ttl": "1h"},
         )
         self.assertEqual(
-            result["messages"][0]["content"][0]["cache_control"],
+            result["messages"][1]["content"][0]["cache_control"],
             {"type": "ephemeral", "ttl": "1h"},
         )
         self.assertNotIn("cache_control", result)
@@ -81,7 +81,7 @@ class OpenRouterCacheTests(unittest.TestCase):
         result, count = prepare_openrouter_payload(payload, self.config())
         self.assertEqual(count, 2)
         self.assertEqual(
-            result["messages"][0]["content"][0]["cache_control"]["ttl"],
+            result["messages"][5]["content"][0]["cache_control"]["ttl"],
             "1h",
         )
         self.assertNotIn(
@@ -90,6 +90,79 @@ class OpenRouterCacheTests(unittest.TestCase):
         self.assertNotIn(
             "cache_control", result["messages"][4]["content"][0]
         )
+
+    def test_forge_inheritance_is_fixed_before_progressive_dialogue(self):
+        payload = {
+            "system": "stable",
+            "messages": [
+                {"role": "user", "content": (
+                    "═══ inherited_context · 上一 Session 总日记（非Jeoi新消息） ═══\n"
+                    "diary\n"
+                    "═══ inherited_context 结束；下面接 Forge 保留的最近原始对话 ═══"
+                )},
+                {"role": "user", "content": "retained old dialogue"},
+                {"role": "assistant", "content": "retained reply"},
+                {"role": "user", "content": (
+                    "[forge-verify] 这不是Jeoi的消息——网关正在验证"
+                )},
+                {"role": "assistant", "content": [{
+                    "type": "text", "text": "ok",
+                }]},
+                {"role": "user", "content": "new session first"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "new session latest"},
+            ],
+        }
+        result, count = prepare_openrouter_payload(payload, self.config())
+        self.assertEqual(count, 3)
+        self.assertEqual(
+            result["messages"][4]["content"][0]["cache_control"]["ttl"],
+            "1h",
+        )
+        self.assertEqual(
+            result["messages"][6]["content"][0]["cache_control"]["ttl"],
+            "1h",
+        )
+        self.assertIsInstance(result["messages"][1]["content"], str)
+        self.assertIsInstance(result["messages"][7]["content"], str)
+
+    def test_optional_fresh_session_diary_is_split_from_first_message(self):
+        injection = (
+            "═══ 自动注入 · 以下是系统为你恢复的上下文，不是Jeoi的消息 ═══\n\n"
+            "📖 这是你今天写的日记：\nhello\n\n"
+            "═══════════════════════════════════════════════════════════════"
+        )
+        payload = {
+            "system": "stable",
+            "messages": [
+                {"role": "user", "content": injection + "\n\n[time]\nfirst"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "user", "content": "latest"},
+            ],
+        }
+        result, count = prepare_openrouter_payload(payload, self.config())
+        self.assertEqual(count, 3)
+        first_blocks = result["messages"][0]["content"]
+        self.assertEqual(first_blocks[0]["text"], injection)
+        self.assertEqual(first_blocks[0]["cache_control"]["ttl"], "1h")
+        self.assertEqual(first_blocks[1]["text"], "\n\n[time]\nfirst")
+        self.assertNotIn("cache_control", first_blocks[1])
+        self.assertEqual(
+            result["messages"][1]["content"][0]["cache_control"]["ttl"],
+            "1h",
+        )
+
+    def test_no_optional_inheritance_keeps_two_breakpoint_policy(self):
+        payload = {
+            "system": "stable",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "reply"},
+                {"role": "user", "content": "latest"},
+            ],
+        }
+        _, count = prepare_openrouter_payload(payload, self.config())
+        self.assertEqual(count, 2)
 
     def test_removes_routing_overrides_that_defeat_stickiness(self):
         result, _ = prepare_openrouter_payload(
