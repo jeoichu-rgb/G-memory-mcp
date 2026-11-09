@@ -161,6 +161,9 @@ OPENROUTER_CACHE_WRITE_PER_M = float(os.getenv(
 # context, forge verification and background activity never increment it.
 SESSION_MAX_TURNS = int(os.getenv("SESSION_MAX_TURNS", "70"))
 FORGE_RETAIN_TOKENS = int(os.getenv("FORGE_RETAIN_TOKENS", "15000"))
+SKIP_AUTO_SESSION_DIARY = os.getenv(
+    "SKIP_AUTO_SESSION_DIARY", "true"
+).strip().lower() not in ("0", "false", "no", "off")
 SESSION_DIARY_DIR = Path(CC_CWD) / "session_diaries"
 SESSION_DIARY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -5750,19 +5753,28 @@ async def websocket_endpoint(ws: WebSocket):
                     _bind_api_scheduler(src_session, real_user=False)
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
-                    await ws.send_json({
-                        "event": "session:forge_progress",
-                        "stage": "diary",
-                        "message": "正在写本 Session 总日记…",
-                    })
-                    diary_content, diary_path = await generate_session_diary(src_session)
-                    if not diary_content:
+                    diary_content = ""
+                    diary_path = ""
+                    if SKIP_AUTO_SESSION_DIARY:
+                        log.info(
+                            "Forge: skipped automatic DeepSeek session diary"
+                        )
+                    else:
                         await ws.send_json({
-                            "event": "session:forge_result",
-                            "ok": False,
-                            "error": "总日记生成失败，已保留原 Session，未开始 Forge",
+                            "event": "session:forge_progress",
+                            "stage": "diary",
+                            "message": "正在写本 Session 总日记…",
                         })
-                        continue
+                        diary_content, diary_path = await generate_session_diary(
+                            src_session
+                        )
+                        if not diary_content:
+                            await ws.send_json({
+                                "event": "session:forge_result",
+                                "ok": False,
+                                "error": "总日记生成失败，已保留原 Session，未开始 Forge",
+                            })
+                            continue
                     # Forge reads/writes the source profile's transcript dir.
                     _set_active_runtime(src_session.transcript_runtime)
                     # Stop CC CLI before forging to prevent concurrent writes
