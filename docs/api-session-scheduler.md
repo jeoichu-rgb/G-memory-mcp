@@ -118,8 +118,6 @@ API_SCHEDULER_STATUS_URL=http://127.0.0.1:3000/api/pebbling/status \
 | `API_JOB_RESULT` | desire 的停止原因、可见字符数、工具和最多 200 字符预览 |
 | `KEEPALIVE_HIT` | 纯保活成功且真实读取到 cached tokens |
 | `KEEPALIVE_CACHE_MISS` | HTTP 成功但 cache read 为 0；计入连续 miss |
-
-旧 API session 不在半途改写 thinking 参数；新建或 Forge 后的 API session 才切换到 `adaptive`，并继承原先选择的 effort（包括 `max`）。边界上的第一次请求可能因参数变化重建一次缓存，之后聊天和保活继续共用同一组参数。
 | `KEEPALIVE_HTTP_ERROR` | 纯保活返回 4xx/5xx，附最多 300 字符响应；不计 cache miss |
 | `KEEPALIVE_TRANSPORT_ERROR` | 纯保活在收到 HTTP 响应前失败；不计 cache miss |
 | `KEEPALIVE_BREAKER_OPEN` | 连续两次真实 cache miss，纯保活熔断 |
@@ -127,6 +125,8 @@ API_SCHEDULER_STATUS_URL=http://127.0.0.1:3000/api/pebbling/status \
 | `DESIRE_RUN_OK` / `DESIRE_RUN_EMPTY` | 熔断后 desire 获得槽位的结果 |
 | `PEBBLING_RUN` | keepalive 熔断且无 desire 时 pebbling 获得槽位 |
 | `*_SESSION_NOT_READY` | 语义任务绑定的 transcript 与当前 tmux 不一致，因此没有误发 |
+
+旧 API session 不在半途改写 thinking 参数；新建或 Forge 后的 API session 才切换到 `adaptive`，并继承原先选择的 effort（包括 `max`）。边界上的第一次请求可能因参数变化重建一次缓存，之后聊天和保活继续共用同一组参数。
 
 日志不得写入 API key、Authorization header、完整 prompt 或完整回复；输出预览最多 200 字符，sticky id 是逻辑 session 的不可逆哈希。
 
