@@ -3294,9 +3294,12 @@ function renderContextItems(items) {
   }
   list.innerHTML = items.map(item => {
     const safeId = escapeHtml(item.id || '');
+    const isDiary = item.kind === 'diary_segment';
+    const range = isDiary ? ` · 日记 #${item.start_house}-${item.end_house}` : '';
+    const archived = item.archived ? ' · 已归档' : '';
     return `
     <div class="ctx-item" data-id="${safeId}">
-      <div class="ctx-item-date">${escapeHtml(item.date || '')} · ${escapeHtml(item.source_session || '')}</div>
+      <div class="ctx-item-date">${escapeHtml(item.date || '')} · ${escapeHtml(item.source_session || '')}${escapeHtml(range)}${escapeHtml(archived)}</div>
       <div class="ctx-item-content" contenteditable="true"
         oninput="debounceSaveCtx(this, '${safeId}')">${escapeHtml(item.content || '')}</div>
       <div class="ctx-item-actions">

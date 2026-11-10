@@ -178,6 +178,20 @@ EVENT_STORE_PATH = Path(CC_CWD) / "event_store.json"
 SNAP_DIR = Path("/tmp/snap")
 SNAP_DIR.mkdir(exist_ok=True)
 
+# Diary compaction: one checkpoint per 20 complete dialogue rounds = 40
+# gateway messages.  The next Jeoi message asks Erik to write the completed
+# range in-band, using the same hidden-marker pattern as sticker reactions.
+DIARY_SEGMENT_MESSAGES = 40
+_DIARY_SEGMENT_RE = re.compile(
+    r'<!--diary-segment:#(\d+)-#(\d+)\s*\n([\s\S]*?)-->'
+)
+_DIARY_CHECKPOINT_INJECTION_RE = re.compile(
+    r'\[diary-checkpoint\][\s\S]*?\[/diary-checkpoint\]\s*'
+)
+_HOUSE_TAG_RE = re.compile(
+    r'\[\d{4}-\d{2}-\d{2}(?: [A-Z][a-z]{2})? \d{2}:\d{2} UTC\+8 #(\d+)\]'
+)
+
 # ── Pebbling constants ──
 PATROL_SCHEDULE = [5, 10, 20]  # minutes after Jeoi's last msg → always call CC
 PEBBLING_INTERVAL = 3 * 3600  # 3 hours
@@ -1327,7 +1341,25 @@ class TranscriptTailer:
                                 "to": new_backend,
                             })
                             log.info(f"Call TTS backend switched to: {new_backend}")
-                    display = _HIDDEN_MARKER_RE.sub('', text)
+                    # Diary bodies are long enough to span several transcript
+                    # text blocks.  Suppress the whole open marker while it is
+                    # streaming; the generic regex only hides complete markers.
+                    display_src = text
+                    marker_start = '<!--diary-segment:'
+                    if getattr(self, '_diary_marker_stream_open', False):
+                        if '-->' in display_src:
+                            display_src = display_src.split('-->', 1)[1]
+                            self._diary_marker_stream_open = False
+                        else:
+                            display_src = ''
+                    elif marker_start in display_src:
+                        before, after = display_src.split(marker_start, 1)
+                        if '-->' in after:
+                            display_src = before + after.split('-->', 1)[1]
+                        else:
+                            display_src = before
+                            self._diary_marker_stream_open = True
+                    display = _HIDDEN_MARKER_RE.sub('', display_src)
                     if display:
                         await self._ws({"event": "stream:text", "text": display})
                     # 流式阶段即时推送语音条，不等回复完成
@@ -1717,9 +1749,8 @@ def save_session_meta(session: "Session"):
 
 def append_message(sid: str, role: str, content: str, thinking: str = "", tools: list = None, voice: dict = None, source: str = None, **extra) -> int:
     """Append a message to the session history file.
-    Returns the message's index in the history array — history files start
-    empty per gateway session (forge creates a new one), so index+1 IS the
-    message's per-session house number (门牌号) shown in the time tag."""
+    Returns the message's index in this gateway history file; index+1 is the
+    current window's house number.  A forged window starts again at #1."""
     path = history_path(sid)
     data = {"meta": {}, "messages": []}
     if path.exists():
@@ -1884,6 +1915,164 @@ def save_context_store(data: dict):
     CONTEXT_STORE_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _diary_segments_for_session(session_id: str, include_archived: bool = False) -> list[dict]:
+    items = load_context_store().get("items", [])
+    segments = [
+        item for item in items
+        if item.get("kind") == "diary_segment"
+        and item.get("source_session") == session_id
+        and (include_archived or not item.get("archived"))
+    ]
+    return sorted(segments, key=lambda x: (int(x.get("start_house", 0)), x.get("created_at", "")))
+
+
+def _find_due_diary_range(session_id: str, current_house: int) -> tuple[int, int] | None:
+    """Earliest completed 40-message range not yet captured.
+
+    `current_house` is Jeoi's just-appended absolute #N.  Only ranges ending
+    before it are eligible, so #41 asks for #1-#40 and never summarizes #41.
+    Missing markers are retried on later Jeoi messages without duplicating a
+    successfully stored range.
+    """
+    completed_end = ((current_house - 1) // DIARY_SEGMENT_MESSAGES) * DIARY_SEGMENT_MESSAGES
+    if completed_end < DIARY_SEGMENT_MESSAGES:
+        return None
+    done = {
+        (int(item.get("start_house", 0)), int(item.get("end_house", 0)))
+        for item in _diary_segments_for_session(session_id, include_archived=True)
+    }
+    for start in range(1, completed_end + 1, DIARY_SEGMENT_MESSAGES):
+        end = start + DIARY_SEGMENT_MESSAGES - 1
+        if (start, end) not in done:
+            return start, end
+    return None
+
+
+def _build_diary_checkpoint_prompt(start_house: int, end_house: int) -> str:
+    return (
+        f"[diary-checkpoint] 这是网关注入，不是Jeoi的话。你已完成#{start_house}-#{end_house}。"
+        "先自然回答当前消息；然后在回复最末尾另写这一段日记。只记录指定门牌号，不含当前消息。"
+        "按《日记约定》：第一人称，只记有重量的；固定写 **梗概：**（按时序简写）、"
+        "**细节：**（用【节点名】保留关键原话/动作/状态）、**感受：**（整体用【整体】，"
+        "节点用【挂在\"节点名\"】）、**独白：**（当下想说的话）。忠于原文，允许不确定；"
+        "不解释意义、不编造、不强行归一情绪。不要调用日记工具。严格输出：\n"
+        f"<!--diary-segment:#{start_house}-#{end_house}\n日记正文-->"
+        "\n标记会被网关隐藏，不要在可见回复里提到写日记。"
+        "[/diary-checkpoint]"
+    )
+
+
+def _store_diary_segment(session_id: str, start_house: int, end_house: int,
+                         content: str) -> dict | None:
+    content = content.strip()
+    if not content or end_house < start_house:
+        return None
+    store = load_context_store()
+    items = store.setdefault("items", [])
+    existing = next((item for item in items
+                     if item.get("kind") == "diary_segment"
+                     and item.get("source_session") == session_id
+                     and int(item.get("start_house", 0)) == start_house
+                     and int(item.get("end_house", 0)) == end_house), None)
+    now = datetime.now(SGT)
+    if existing:
+        # Idempotent retry: keep Jeoi's edited version rather than overwriting it.
+        return existing
+    history = load_history(session_id).get("messages", [])
+    start_idx = start_house - 1
+    end_idx = end_house - 1
+    start_ts = (history[start_idx].get("timestamp", "")
+                if 0 <= start_idx < len(history) else "")
+    end_ts = (history[end_idx].get("timestamp", "")
+              if 0 <= end_idx < len(history) else "")
+    item = {
+        "id": f"diary_{session_id}_{start_house}_{end_house}",
+        "kind": "diary_segment",
+        "content": content,
+        "source_session": session_id,
+        "captured_session": session_id,
+        "date": now.strftime("%Y-%m-%d"),
+        "created_at": now.isoformat(),
+        "start_house": start_house,
+        "end_house": end_house,
+        "start_time": start_ts,
+        "end_time": end_ts,
+        "archived": False,
+    }
+    items.append(item)
+    save_context_store(store)
+    log.info(f"Diary segment stored: {session_id} #{start_house}-#{end_house}")
+    return item
+
+
+def _diary_context_prefix(segments: list[dict]) -> str:
+    if not segments:
+        return ""
+    parts = [
+        f"【对话 #{int(item['start_house'])}-#{int(item['end_house'])} 的日记】\n{item['content'].strip()}"
+        for item in segments if item.get("content", "").strip()
+    ]
+    if not parts:
+        return ""
+    return (
+        "[diary-compaction] 以下日记已经替代对应门牌号的原始对话；"
+        "它们不是Jeoi的新消息。\n\n" + "\n\n".join(parts)
+    )
+
+
+def _compose_diary_from_segments(segments: list[dict]) -> str:
+    blocks = []
+    for item in sorted(segments, key=lambda x: int(x.get("start_house", 0))):
+        start = int(item.get("start_house", 0))
+        end = int(item.get("end_house", 0))
+        start_time = item.get("start_time", "")
+        end_time = item.get("end_time", "")
+        try:
+            start_label = datetime.fromisoformat(start_time).strftime("%H:%M") if start_time else ""
+            end_label = datetime.fromisoformat(end_time).strftime("%H:%M") if end_time else ""
+        except (ValueError, TypeError):
+            start_label = end_label = ""
+        time_label = f" · {start_label}-{end_label}" if start_label and end_label else ""
+        blocks.append(f"## 对话 #{start}-#{end}{time_label}\n\n{item.get('content', '').strip()}")
+    return "\n\n".join(blocks).strip()
+
+
+async def _archive_diary_segments(session_id: str) -> dict:
+    """Hard-code completed diary segments into one diary file on window forge."""
+    segments = _diary_segments_for_session(session_id)
+    if not segments:
+        return {"ok": True, "count": 0, "filename": ""}
+    content = _compose_diary_from_segments(segments)
+    if not content:
+        return {"ok": False, "count": 0, "error": "日记素材为空"}
+    first = int(segments[0].get("start_house", 0))
+    last = int(segments[-1].get("end_house", 0))
+    title = f"对话日记 #{first}-#{last}"
+    try:
+        async with httpx.AsyncClient(timeout=20, verify=False) as client:
+            resp = await client.post(
+                f"{ADMIN_API}/admin/diary",
+                headers={"x-secret": PALACE_SECRET},
+                json={"title": title, "content": content, "mood": ""},
+            )
+        if resp.status_code != 200:
+            return {"ok": False, "count": 0,
+                    "error": f"日记保存失败 HTTP {resp.status_code}"}
+        filename = resp.json().get("filename", "")
+    except Exception as e:
+        return {"ok": False, "count": 0, "error": str(e)}
+
+    store = load_context_store()
+    ids = {item["id"] for item in segments}
+    for item in store.get("items", []):
+        if item.get("id") in ids:
+            item["archived"] = True
+            item["diary_file"] = filename
+    save_context_store(store)
+    log.info(f"Diary archived: {session_id} -> {filename} ({len(segments)} segments)")
+    return {"ok": True, "count": len(segments), "filename": filename}
 
 
 def load_event_store() -> dict:
@@ -2209,7 +2398,10 @@ async def fetch_unique_intimate_memory() -> tuple[str, str]:
 def get_context_items_for_injection() -> list[dict]:
     """Get context items with the latest date for new session injection."""
     store = load_context_store()
-    items = store.get("items", [])
+    # Completed diary segments have already been materialized into the diary
+    # file fetched just above; injecting them again would duplicate context.
+    items = [item for item in store.get("items", [])
+             if not (item.get("kind") == "diary_segment" and item.get("archived"))]
     if not items:
         return []
     latest_date = max(item.get("date", "") for item in items)
@@ -2416,6 +2608,7 @@ def _strip_gateway_noise(text: str) -> str:
     real text: auto-injection blocks, [desire]/[today]/[nature] blocks,
     time tags, sticker/snap/call lines.
     Token budget should buy conversation, not noise."""
+    text = _DIARY_CHECKPOINT_INJECTION_RE.sub("", text)
     text = _AUTO_INJECT_RE.sub("", text)
     lines = text.split("\n")
     out = []
@@ -2612,7 +2805,9 @@ def _model_match(actual: str, target: str) -> bool:
 def forge_session(old_cc_session_id: str,
                   retain_tokens: int = FORGE_RETAIN_TOKENS,
                   target_model: str = None,
-                  inherited_diary: str = "") -> dict:
+                  inherited_diary: str = "",
+                  drop_through_house: int | None = None,
+                  diary_prefix: str = "") -> dict:
     """Trim the transcript tail into a NEW session JSONL that CC CLI can --resume.
 
     Recipe (manually verified 2026-07-08): new session id, sessionId aligned
@@ -2625,6 +2820,9 @@ def forge_session(old_cc_session_id: str,
     target_model (Route Guard, forge guide §7.2): drop everything from the
     first assistant event whose model drifts off target — the retained tail
     then ends at the last clean anchor before the drift.
+    drop_through_house/diary_prefix power in-place diary compaction: discard
+    raw conversation through #N, keep the unfinished tail, and prepend the
+    already-written diary as its replacement.
     Returns {"new_id", "events", "tokens", "time_range", "bytes"} or {"error"}.
     """
     old_path = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
@@ -2661,6 +2859,22 @@ def forge_session(old_cc_session_id: str,
                 and not ev.get("isSidechain", False)]
     if not keepable:
         return {"error": "no user/assistant events"}
+
+    # Capture the first real Jeoi event after the completed diary range before
+    # forge strips gateway time tags.  Object identity survives the cleaning
+    # pass, so we can cut on the exact event later without renumbering history.
+    diary_tail_anchor = None
+    if drop_through_house is not None:
+        for ev in keepable:
+            if not _is_plain_user(ev):
+                continue
+            raw = (ev.get("message") or {}).get("content", "")
+            if not isinstance(raw, str):
+                continue
+            match = _HOUSE_TAG_RE.search(raw)
+            if match and int(match.group(1)) > drop_through_house:
+                diary_tail_anchor = ev
+                break
 
     # Drop thinking blocks + compress tool_result bodies. Every other field
     # (model, message id, cwd, version…) stays untouched so events keep CC
@@ -2739,6 +2953,9 @@ def forge_session(old_cc_session_id: str,
                 continue  # thinking-only event
             msg["content"] = content
             for b in content:
+                if (ev.get("type") == "assistant" and isinstance(b, dict)
+                        and b.get("type") == "text"):
+                    b["text"] = _DIARY_SEGMENT_RE.sub("", b.get("text", "")).rstrip()
                 # Big Write/Edit inputs are the assistant-side twin of fat
                 # tool_results — uncompressed, one such event can eat the
                 # whole retain budget and starve the tail of real dialogue.
@@ -2774,6 +2991,9 @@ def forge_session(old_cc_session_id: str,
         # context overflows — drop these so they don't pollute the forged session.
         if ev.get("type") == "assistant":
             c = msg.get("content")
+            if isinstance(c, str):
+                c = _DIARY_SEGMENT_RE.sub("", c).rstrip()
+                msg["content"] = c
             if isinstance(c, str) and c.strip() == "Prompt is too long":
                 continue
             if isinstance(c, list):
@@ -2831,20 +3051,41 @@ def forge_session(old_cc_session_id: str,
             if not cleaned:
                 return {"error": "漂移点之前没有可保留的对话"}
 
+    diary_forced_tail = False
+    if drop_through_house is not None:
+        if diary_tail_anchor is None:
+            return {"error": f"找不到 #{drop_through_house + 1} 之后的未成段对话"}
+        anchor_idx = next((i for i, ev in enumerate(cleaned)
+                           if ev is diary_tail_anchor), None)
+        if anchor_idx is None:
+            return {"error": "日记边界在清理过程中丢失，已保留原 transcript"}
+        cleaned = cleaned[anchor_idx:]
+        diary_forced_tail = True
+        log.info(f"Diary compaction cut: dropped raw through #{drop_through_house}, "
+                 f"kept {len(cleaned)} unfinished-tail events")
+
     # From tail, accumulate tokens until budget
     retained = []
     token_count = 0
-    for ev in reversed(cleaned):
-        ev_tok = _estimate_tokens(json.dumps(ev, ensure_ascii=False))
-        if ev_tok > retain_tokens:
-            # A single event bigger than the whole budget means some payload
-            # escaped the cleaning above — it would silently eat the tail.
-            log.warning(f"Forge: event {str(ev.get('uuid'))[:8]} ~{ev_tok} "
-                        f"est-tok exceeds whole budget after cleaning — payload leak?")
-        if token_count + ev_tok > retain_tokens and retained:
-            break
-        retained.insert(0, ev)
-        token_count += ev_tok
+    if diary_forced_tail:
+        # The unfinished portion is strictly less than one 40-message segment;
+        # keep it whole even if a tool-heavy round exceeds the ordinary forge
+        # budget.  Dropping half of it would break the next diary boundary.
+        retained = list(cleaned)
+        token_count = sum(_estimate_tokens(json.dumps(ev, ensure_ascii=False))
+                          for ev in retained)
+    else:
+        for ev in reversed(cleaned):
+            ev_tok = _estimate_tokens(json.dumps(ev, ensure_ascii=False))
+            if ev_tok > retain_tokens:
+                # A single event bigger than the whole budget means some payload
+                # escaped the cleaning above — it would silently eat the tail.
+                log.warning(f"Forge: event {str(ev.get('uuid'))[:8]} ~{ev_tok} "
+                            f"est-tok exceeds whole budget after cleaning — payload leak?")
+            if token_count + ev_tok > retain_tokens and retained:
+                break
+            retained.insert(0, ev)
+            token_count += ev_tok
 
     # Head must be a plain user message (an orphan tool_result → API 400)
     while retained and not _is_plain_user(retained[0]):
@@ -2880,6 +3121,17 @@ def forge_session(old_cc_session_id: str,
 
     if not retained:
         return {"error": "nothing to retain after trimming"}
+
+    if diary_prefix:
+        first_user = next((ev for ev in retained if _is_plain_user(ev)), None)
+        if not first_user:
+            return {"error": "日记压缩后没有可承接的用户消息"}
+        fc = (first_user.get("message") or {}).get("content")
+        if isinstance(fc, str):
+            first_user["message"]["content"] = diary_prefix.rstrip() + "\n\n" + fc
+        elif isinstance(fc, list):
+            fc.insert(0, {"type": "text", "text": diary_prefix.rstrip() + "\n\n"})
+        token_count += _estimate_tokens(diary_prefix)
 
     # Tool primer: without a real tool round in context the new session tends
     # to hallucinate tool calls instead of making them. If the tail has none,
@@ -3017,6 +3269,94 @@ def forge_session(old_cc_session_id: str,
         "bytes": file_bytes,
         "time_range": time_range,
     }
+
+
+def _adopt_forged_transcript_in_place(old_cc_session_id: str, result: dict) -> dict:
+    """Replace one CC transcript atomically while preserving its session id.
+
+    The gateway chat history is deliberately untouched, so absolute #N house
+    numbers and sticker addressing continue across diary compaction.
+    """
+    if "error" in result:
+        return result
+    generated_id = result.get("new_id", "")
+    src = CC_TRANSCRIPT_DIR / f"{generated_id}.jsonl"
+    dst = CC_TRANSCRIPT_DIR / f"{old_cc_session_id}.jsonl"
+    if not src.exists() or not dst.exists():
+        return {"error": "压缩 transcript 文件缺失"}
+    try:
+        rewritten = []
+        prev = None
+        for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            ev = json.loads(line)
+            ev["sessionId"] = old_cc_session_id
+            ev["parentUuid"] = prev
+            if not ev.get("uuid"):
+                ev["uuid"] = str(uuid.uuid4())
+            prev = ev["uuid"]
+            rewritten.append(ev)
+        if not rewritten:
+            return {"error": "压缩 transcript 为空"}
+
+        stamp = datetime.now(SGT).strftime("%Y%m%d-%H%M%S")
+        # Reuse the .pre-forge- archive convention so every transcript mtime
+        # scanner already ignores this safety copy.
+        backup = dst.with_name(f"{dst.stem}.pre-forge-diary-{stamp}.jsonl")
+        tmp = dst.with_suffix(".diary-tmp")
+        import shutil
+        shutil.copy2(dst, backup)
+        with open(tmp, "w", encoding="utf-8") as f:
+            for ev in rewritten:
+                f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        os.replace(tmp, dst)
+        src.unlink(missing_ok=True)
+        try:
+            shutil.chown(str(dst), CC_USER, CC_USER)
+            os.chmod(dst, 0o600)
+        except (PermissionError, LookupError, OSError) as e:
+            log.warning(f"Diary compaction chown failed: {e}")
+        log.info(f"Diary compaction adopted in place: {old_cc_session_id} "
+                 f"({len(rewritten)} events, backup={backup.name})")
+        return {**result, "new_id": old_cc_session_id,
+                "backup": backup.name, "events": len(rewritten)}
+    except Exception as e:
+        log.exception(f"Diary compaction adopt failed: {e}")
+        try:
+            src.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return {"error": str(e)}
+
+
+async def _compact_cc_with_diary(session: "Session", end_house: int) -> dict:
+    """Stop CC, replace completed raw messages with stored diary, keep same id."""
+    cc_id = session.cc_session_id
+    if not cc_id or cc_id in ("channel", "tmux"):
+        return {"error": "当前没有可压缩的 CC transcript"}
+    segments = _diary_segments_for_session(
+        session.id, include_archived=True)
+    segments = [item for item in segments
+                if int(item.get("end_house", 0)) <= end_house]
+    prefix = _diary_context_prefix(segments)
+    if not prefix:
+        return {"error": "没有可替代原文的日记素材"}
+    if await tmux_is_running():
+        await tmux_stop()
+        await asyncio.sleep(0.5)
+    result = forge_session(
+        cc_id,
+        drop_through_house=end_house,
+        diary_prefix=prefix,
+    )
+    adopted = _adopt_forged_transcript_in_place(cc_id, result)
+    if "error" not in adopted:
+        session.compaction_count += 1
+        session.last_context_size = adopted.get("tokens", 0)
+        save_session_meta(session)
+        _set_tmux_cc_id(None)  # next real message resumes the rewritten file
+    return adopted
 
 
 # ══════════════════════════════════════════════
@@ -3423,7 +3763,7 @@ def parse_action(text: str) -> tuple[str, str]:
 
 
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[^[\])]')
-_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done|alarm|alarm-off):?[\s\S]*?-->')
+_HIDDEN_MARKER_RE = re.compile(r'<!--(?:voice|react|diary-segment|curiosity-seed|curiosity-seed-ask|call|call-sfx|call-tts-backend|scene-done|alarm|alarm-off):?[\s\S]*?-->')
 _CALL_SFX_RE = re.compile(r'<!--call-sfx:(start|stop|binaural):(.*?)-->')
 _CALL_TTS_BACKEND_RE = re.compile(r'<!--call-tts-backend:(elevenlabs|local|minimax)-->')
 
@@ -5916,28 +6256,10 @@ async def websocket_endpoint(ws: WebSocket):
                     _bind_api_scheduler(src_session, real_user=False)
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
-                    diary_content = ""
                     diary_path = ""
-                    if SKIP_AUTO_SESSION_DIARY:
-                        log.info(
-                            "Forge: skipped automatic DeepSeek session diary"
-                        )
-                    else:
-                        await ws.send_json({
-                            "event": "session:forge_progress",
-                            "stage": "diary",
-                            "message": "正在写本 Session 总日记…",
-                        })
-                        diary_content, diary_path = await generate_session_diary(
-                            src_session
-                        )
-                        if not diary_content:
-                            await ws.send_json({
-                                "event": "session:forge_result",
-                                "ok": False,
-                                "error": "总日记生成失败，已保留原 Session，未开始 Forge",
-                            })
-                            continue
+                    # Completed 40-message diary segments are already written
+                    # by the main agent.  Forge only concatenates those saved
+                    # materials later; it never calls a second model here.
                     # Forge reads/writes the source profile's transcript dir.
                     _set_active_runtime(src_session.transcript_runtime)
                     # Stop CC CLI before forging to prevent concurrent writes
@@ -5948,7 +6270,6 @@ async def websocket_endpoint(ws: WebSocket):
                         old_cc_id,
                         retain_tokens=FORGE_RETAIN_TOKENS,
                         target_model=src_session.model if route_guard else None,
-                        inherited_diary=diary_content,
                     )
                     if "error" in result:
                         await ws.send_json({"event": "session:forge_result",
@@ -5995,6 +6316,12 @@ async def websocket_endpoint(ws: WebSocket):
                                      + memory_merge["error"],
                         })
                         continue
+                    diary_archive = await _archive_diary_segments(src_session.id)
+                    if not diary_archive.get("ok"):
+                        log.error(f"Forge diary archive failed: "
+                                  f"{diary_archive.get('error', 'unknown error')}")
+                    else:
+                        diary_path = diary_archive.get("filename", "")
                     # Old session keeps its cc_session_id — its transcript is
                     # untouched, so switching back to it still works.
                     sid = uuid.uuid4().hex[:8]
@@ -6028,6 +6355,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "retained_tokens": FORGE_RETAIN_TOKENS,
                         "memory_merged": memory_merge.get("merged", 0),
                         "verified": True,
+                        "diary": diary_archive,
                     })
                     sorted_sessions = sorted(sessions.values(), key=lambda s: s.last_active, reverse=True)
                     await ws.send_json({
@@ -6118,8 +6446,20 @@ async def websocket_endpoint(ws: WebSocket):
                 # doesn't depend on the server's locale.
                 _now = datetime.now(SGT)
                 now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
-                time_tag = f"[{now_str} UTC+8 #{user_msg_idx + 1}]"
+                current_house = user_msg_idx + 1
+                time_tag = f"[{now_str} UTC+8 #{current_house}]"
                 cli_message = time_tag + "\n" + message
+
+                # The first Jeoi message after each completed 40-message block
+                # asks the same agent to write that block's diary in-band.  The
+                # visible user message remains untouched in chat_history.
+                diary_prompt = ""
+                diary_due = _find_due_diary_range(
+                    current_session.id, current_house)
+                if diary_due and not call_mode:
+                    diary_prompt = _build_diary_checkpoint_prompt(*diary_due)
+                    log.info(f"Diary checkpoint injected: {current_session.id} "
+                             f"#{diary_due[0]}-#{diary_due[1]} on #{current_house}")
 
                 # Voice call: init call state (default elevenlabs, no system prompt)
                 if call_mode and not current_session._call_injected:
@@ -6183,6 +6523,9 @@ async def websocket_endpoint(ws: WebSocket):
                     if mem_injection:
                         cli_message = mem_injection + "\n\n" + time_tag + "\n" + message
 
+                if diary_prompt:
+                    cli_message = diary_prompt + "\n\n" + cli_message
+
                 # Sticker reactions injection (one-shot, then cleared).
                 # Each entry carries a short excerpt of the reacted message —
                 # the house number alone is useless to CC when the message
@@ -6201,7 +6544,9 @@ async def websocket_endpoint(ws: WebSocket):
                                 _c = _c[:24] + "…"
                             if _c:
                                 excerpt = f"「{_c}」"
-                        parts.append(f"#{_ri + 1}{excerpt}←{r['emoji']}")
+                        parts.append(
+                            f"#{_ri + 1}{excerpt}←{r['emoji']}"
+                        )
                     sticker_line = "[stickers: " + ", ".join(parts) + "]"
                     cli_message = sticker_line + "\n" + cli_message
                     log.info(f"Injected stickers: {sticker_line}")
@@ -6909,6 +7254,20 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             save_session_meta(session)
             log.info(f"CC session ID for {session.id}: {session.cc_session_id}")
 
+        # Post-processing: diary checkpoint markers.  Store before stripping;
+        # once persisted, the exact completed raw range may be compacted out of
+        # CC while gateway chat_history (and therefore #N) stays unchanged.
+        diary_compact_end = 0
+        if session._current_text:
+            for m in _DIARY_SEGMENT_RE.finditer(session._current_text):
+                start_house, end_house = int(m.group(1)), int(m.group(2))
+                item = _store_diary_segment(
+                    session.id, start_house, end_house, m.group(3))
+                if item:
+                    diary_compact_end = max(diary_compact_end, end_house)
+            session._current_text = _DIARY_SEGMENT_RE.sub(
+                "", session._current_text).rstrip()
+
         # Post-processing: parse voice markers
         voice_messages = []
         if session._current_text:
@@ -7038,6 +7397,34 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                         pass
                     log.info(f"Erik reacted {emoji} on #{idx + 1} (addressed {kind}{n})")
 
+            if diary_compact_end:
+                compacted = await _compact_cc_with_diary(session, diary_compact_end)
+                if "error" in compacted:
+                    log.error(f"Diary compaction failed after #{diary_compact_end}: "
+                              f"{compacted['error']}")
+                    try:
+                        await ws.send_json({
+                            "event": "context:error",
+                            "message": f"日记已保存，但原文压缩失败：{compacted['error']}",
+                        })
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await ws.send_json({
+                            "event": "system:compacted",
+                            "compaction_count": session.compaction_count,
+                            "diary_range": f"#{1}-#{diary_compact_end}",
+                        })
+                        store = load_context_store()
+                        await ws.send_json({
+                            "event": "context:list",
+                            "items": store.get("items", []),
+                        })
+                    except Exception:
+                        pass
+                    log.info(f"Diary compaction complete through #{diary_compact_end}")
+
         _already_streamed = getattr(session, '_streamed_voice_urls', set())
         for vm in voice_messages:
             append_message(session.id, "assistant", "", voice=vm, source=_reply_source)
@@ -7127,6 +7514,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
         if session._current_text:
             voice_pat = re.compile(r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL)
             cleaned = voice_pat.sub('', session._current_text).rstrip()
+            cleaned = _DIARY_SEGMENT_RE.sub('', cleaned).rstrip()
             react_pat = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
             cleaned = react_pat.sub('', cleaned).rstrip()
             _err_source = "voice_call" if session._in_call else None
