@@ -408,6 +408,57 @@ def partial_satisfy(state, drive_key, factor=0.95):
                 silent_level=state.silent_inject_count[drive_key])
 
 
+def api_passive_miss(state, drive_key, factor=0.95):
+    """Advance a desire that API-passive mode deliberately did not send.
+
+    Multi-step drives keep their configured ladder (attachment/libido: three
+    opportunities).  The final opportunity is treated as satisfied even when
+    the score has not reached 100%, then the ordinary satisfy/reset physics
+    take over.  A single-threshold drive resets on its first blocked attempt.
+    Unlike partial_satisfy(), a large pulse cannot skip straight to the final
+    reset: API-passive mode counts the configured opportunities explicitly.
+    """
+    if drive_key not in state.drives:
+        return {}
+    old = state.drives[drive_key]
+    count = state.silent_inject_count.get(drive_key, 0)
+    multi = BG_THRESHOLDS_MULTI.get(drive_key)
+    final_attempt = not multi or count >= len(multi) - 1
+
+    if final_attempt:
+        result = satisfy(state, drive_key)
+        # API passive is a synthetic completion, so finish the visual cycle at
+        # the configured starting point instead of leaving the ordinary
+        # satisfy factor slightly above baseline.
+        home = DRIVE_CONFIG[drive_key]["home"]
+        state.drives[drive_key] = home
+        state.floors[drive_key] = home
+        result["new"] = round(home, 4)
+        result.update(reset=True, api_passive=True, blocked_attempt=count + 1)
+        return result
+
+    state.drives[drive_key] = _clamp(old * factor)
+    cfg = DRIVE_CONFIG[drive_key]
+    if cfg.get("drift", 0) > 0:
+        home = cfg["home"]
+        floor_reset = cfg.get("partial_floor_reset", 0.85)
+        state.floors[drive_key] = (
+            home + (state.floors.get(drive_key, home) - home) * floor_reset
+        )
+    state.silent_inject_count[drive_key] = count + 1
+    state.trails[drive_key] = []
+    state.intent = None
+    return dict(
+        drive=drive_key,
+        old=round(old, 4),
+        new=round(state.drives[drive_key], 4),
+        silent_level=state.silent_inject_count[drive_key],
+        api_passive=True,
+        blocked_attempt=count + 1,
+        reset=False,
+    )
+
+
 def reset_silent_counts(state):
     state.silent_inject_count = {k: 0 for k in DRIVE_KEYS}
 

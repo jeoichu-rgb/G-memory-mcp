@@ -350,6 +350,28 @@ def partial_satisfy_after_response(state, drive_key, source=""):
     de.save_state(state)
 
 
+def consume_api_passive_intent(state, source="API被动静默"):
+    """Consume the current intent without building or sending any prompt.
+
+    Returns the engine transition for logging/UI, or None when no intent is
+    pending.  Drive drift and conversation pulses happen before this call.
+    """
+    if not DESIRE_AVAILABLE or not state or not state.intent:
+        return None
+    drive_key = state.intent.get("drive_key")
+    if not drive_key:
+        return None
+    peak = state.drives.get(drive_key, 0)
+    result = de.api_passive_miss(state, drive_key)
+    kind = "satisfy" if result.get("reset") else "partial"
+    log_day_event(
+        drive_key, kind, peak=peak, src=source,
+        note=f"未向API注入 · 第{result.get('blocked_attempt', 1)}次",
+    )
+    de.save_state(state)
+    return result
+
+
 def reset_silent_counts(state):
     """Reset silent inject counters when Jeoi starts talking."""
     if not DESIRE_AVAILABLE or not state:
@@ -774,7 +796,8 @@ def build_libido_memory_prompt(memory_text, memory_date, elapsed_hours, desire_r
 
 def do_tick(state, t_jeoi=None, passive_mode=False):
     """Run a single tick and save. For background ticker.
-    passive_mode=True: drift_cap removed, drives rise to 100% via their growth function.
+    passive_mode does not change drive physics; the gateway uses it only to
+    decide whether an intent may be delivered or must silently roll over.
     """
     if not DESIRE_AVAILABLE or not state:
         return

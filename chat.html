@@ -3056,17 +3056,17 @@ function toggleDesireProactive() {
   setTimeout(fetchDesireState, 500);
 }
 
-function updateDesireProactiveUI(enabled) {
+function updateDesireProactiveUI(enabled, apiSilent) {
   var toggle = document.getElementById('desireProactiveToggle');
   var label = document.getElementById('desireProactiveLabel');
   if (toggle) toggle.checked = !!enabled;
-  if (label) label.textContent = enabled ? '主动' : '被动';
+  if (label) label.textContent = enabled ? '主动' : (apiSilent ? '被动 · API静默' : '被动');
 }
 
 function renderDesire(data) {
   var body = document.getElementById("desireBody");
   if (!body) return;
-  if (data.proactive !== undefined) updateDesireProactiveUI(data.proactive);
+  if (data.proactive !== undefined) updateDesireProactiveUI(data.proactive, data.api_silent);
   if (data.error) {
     body.innerHTML = "<div class=\"desire-empty\">not available</div>";
     return;

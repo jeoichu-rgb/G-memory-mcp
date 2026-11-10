@@ -4431,6 +4431,15 @@ async def _run_scheduled_desire(session: "Session", intent: dict) -> bool:
     return False
 
 
+def _api_desire_is_passive(session: "Session" = None) -> bool:
+    """API-key chat + Desire toggle off means state-only, zero Desire prompts."""
+    return bool(
+        session
+        and session.runtime == OPENROUTER_RUNTIME
+        and not peb_state.get("desire_proactive")
+    )
+
+
 def _api_pebbling_due(now: float) -> tuple[bool, int, float]:
     history = [
         t for t in peb_state.get("pebbling_history", [])
@@ -4625,6 +4634,17 @@ async def pebbling_worker():
                 try:
                     is_passive = not peb_state.get("desire_proactive")
                     dg.do_tick(desire_st, t_jeoi=peb_state.get("t_jeoi"), passive_mode=is_passive)
+                    _bound_sid = peb_state.get("pebbling_session_id")
+                    _bound_session = sessions.get(_bound_sid) if _bound_sid else None
+                    if _api_desire_is_passive(_bound_session) and desire_st.intent:
+                        _silent_result = dg.consume_api_passive_intent(desire_st)
+                        if _silent_result:
+                            log.info(
+                                "API passive Desire blocked: %s attempt=%s reset=%s",
+                                _silent_result.get("drive"),
+                                _silent_result.get("blocked_attempt"),
+                                bool(_silent_result.get("reset")),
+                            )
                     _desire_last_tick = now
                 except Exception as e:
                     log.warning(f"Desire tick error: {e}")
@@ -6584,13 +6604,30 @@ async def websocket_endpoint(ws: WebSocket):
                 _desire_key = None
                 _msg_is_libido = False
                 if DESIRE_ENABLED and desire_st and not call_mode:
+                    _api_passive_desire = _api_desire_is_passive(current_session)
                     _msg_tags = dc.classify(message)
                     _msg_is_libido = any(
                         tag.get("drive") == "libido" for tag in _msg_tags
                     )
                     try:
                         inj, _desire_key = dg.classify_and_pulse(desire_st, message)
-                        if not inj and desire_st.intent:
+                        if _api_passive_desire:
+                            # State physics and message pulses already ran, but
+                            # no Desire text may enter a paid API request.
+                            inj = ""
+                            _desire_key = None
+                            _silent_result = dg.consume_api_passive_intent(
+                                desire_st, source="API被动对话"
+                            )
+                            if _silent_result:
+                                log.info(
+                                    "API passive conversation Desire blocked: "
+                                    "%s attempt=%s reset=%s",
+                                    _silent_result.get("drive"),
+                                    _silent_result.get("blocked_attempt"),
+                                    bool(_silent_result.get("reset")),
+                                )
+                        elif not inj and desire_st.intent:
                             _passive_dk = desire_st.intent.get("drive_key")
                             if _passive_dk == "libido" and not _msg_is_libido:
                                 log.info(f"Libido passive inject suppressed (non-sexual, drift continues)")
@@ -6792,6 +6829,7 @@ async def websocket_endpoint(ws: WebSocket):
                 try:
                     snap = dg.snapshot(desire_st)
                     snap["proactive"] = bool(peb_state.get("desire_proactive"))
+                    snap["api_silent"] = _api_desire_is_passive(current_session)
                     await ws.send_json({"event": "desire:state", **snap})
                 except Exception as e:
                     log.warning(f"Desire state error: {e}")
