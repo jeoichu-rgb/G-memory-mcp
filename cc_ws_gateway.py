@@ -48,6 +48,7 @@ from openrouter_cache import (
     sticky_session_id,
 )
 from api_scheduler_diag import write_event as api_diag
+from runtime_policy import subscription_only_task_blocked
 
 try:
     import desire_engine as de
@@ -3521,6 +3522,19 @@ async def thesis_checker_worker():
         today = now.strftime("%Y-%m-%d")
         if today == _thesis_last_date:
             continue
+        # Thesis check is a subscription-only background job.  Do not even
+        # pull Finnhub data when the chat currently bound for background work
+        # is using the paid API runtime.
+        bound_sid = peb_state.get("pebbling_session_id")
+        bound_session = sessions.get(bound_sid) if bound_sid else None
+        if subscription_only_task_blocked(
+                getattr(bound_session, "runtime", None), OPENROUTER_RUNTIME):
+            _thesis_last_date = today
+            log.info(
+                "thesis_checker: skipped for active API session %s",
+                bound_sid,
+            )
+            continue
         if not FINNHUB_API_KEY:
             continue
         if not TRADE_JOURNAL_DIR.exists():
@@ -3583,6 +3597,17 @@ async def thesis_checker_worker():
         # inject
         sid = peb_state.get("pebbling_session_id")
         sess = sessions.get(sid) if sid else None
+        # The active chat may have changed while quotes were being fetched.
+        # Re-check before delivery so a mid-run switch to API cannot trigger a
+        # Claude Code API turn or the Telegram fallback for this job.
+        if subscription_only_task_blocked(
+                getattr(sess, "runtime", None), OPENROUTER_RUNTIME):
+            _thesis_last_date = today
+            log.info(
+                "thesis_checker: discarded after switch to API session %s",
+                sid,
+            )
+            continue
         if (sess and sess.cc_session_id
                 and not _tmux_send_lock.locked()
                 and not _user_msg_active
