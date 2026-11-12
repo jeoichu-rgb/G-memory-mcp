@@ -857,6 +857,11 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
   .chat-main { display:none; }
   .app.chat-open .chat-main { display:flex; }
   .chat-header-back { display:block; }
+  .chat-header { padding:8px 10px; gap:6px; }
+  .chat-header-info { min-width:42px; }
+  .chat-header-actions { gap:4px; }
+  #modelSelect { width:108px; max-width:108px; }
+  #effortSelect { width:62px; max-width:62px; padding-left:6px; padding-right:4px; }
   .messages { padding:8px 12px; }
   .msg-row { max-width:85%; }
 }
@@ -1008,6 +1013,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
           <option value="claude-haiku-4-5">Haiku 4.5</option>
           <option value="claude-opus-4-8">Opus 4.8</option>
           <option value="openrouter:anthropic/claude-opus-4.6">API · Opus 4.6 · 200k</option>
+          <option value="devin:claude-opus-4-6-thinking">D · Opus 4.6</option>
         </select>
         <select id="effortSelect" onchange="switchEffort()">
           <option value="low">Low</option>
@@ -1331,11 +1337,17 @@ let contextTotal = 200000;
 let compactionCount = 0;
 
 const OPENROUTER_MODEL_PREFIX = 'openrouter:';
+const DEVIN_MODEL_PREFIX = 'devin:';
 const SUBSCRIPTION_CONTEXT_TOKENS = 200000;
 const OPENROUTER_CONTEXT_TOKENS = 200000;
+const DEVIN_CONTEXT_TOKENS = 200000;
 
 function isOpenRouterModel(model) {
   return String(model || '').startsWith(OPENROUTER_MODEL_PREFIX);
+}
+
+function isDevinModel(model) {
+  return String(model || '').startsWith(DEVIN_MODEL_PREFIX);
 }
 
 function setActiveModel(model) {
@@ -1344,7 +1356,7 @@ function setActiveModel(model) {
   select.value = model;
   contextTotal = isOpenRouterModel(model)
     ? OPENROUTER_CONTEXT_TOKENS
-    : SUBSCRIPTION_CONTEXT_TOKENS;
+    : (isDevinModel(model) ? DEVIN_CONTEXT_TOKENS : SUBSCRIPTION_CONTEXT_TOKENS);
   renderContextBar();
 }
 

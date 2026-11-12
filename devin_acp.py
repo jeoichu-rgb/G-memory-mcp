@@ -1,0 +1,434 @@
+"""Async Devin ACP client used by the chat gateway.
+
+The Devin CLI exposes an Agent Client Protocol server over newline-delimited
+JSON-RPC on stdin/stdout. This module only owns the subprocess, ACP sessions
+and events; the gateway owns UI and history.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
+
+
+log = logging.getLogger("cc-gw.devin")
+
+EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+
+class DevinAcpError(RuntimeError):
+    """ACP process or JSON-RPC error."""
+
+
+class DevinModelUnavailable(DevinAcpError):
+    """The account did not actually activate the requested model."""
+
+
+@dataclass(slots=True)
+class DevinPromptResult:
+    stop_reason: str
+    usage: dict[str, Any]
+    raw: dict[str, Any]
+
+
+def _config_options(result: dict[str, Any]) -> list[dict[str, Any]]:
+    options = result.get("configOptions")
+    if options is None:
+        options = result.get("config_options")
+    return options if isinstance(options, list) else []
+
+
+def _option_id(option: dict[str, Any]) -> str:
+    return str(option.get("id") or option.get("configId") or "")
+
+
+def _option_current(option: dict[str, Any]) -> str:
+    value = option.get("currentValue", option.get("current", option.get("value", "")))
+    if isinstance(value, dict):
+        value = value.get("value") or value.get("id") or value.get("model_uid") or ""
+    return str(value)
+
+
+def find_config_option(result: dict[str, Any], category: str) -> dict[str, Any] | None:
+    """Return an ACP config option by id/category, tolerating schema aliases."""
+    wanted = category.casefold().replace("-", "_")
+    for option in _config_options(result):
+        labels = {
+            str(option.get("id") or ""),
+            str(option.get("category") or ""),
+            str(option.get("type") or ""),
+            str(option.get("label") or ""),
+        }
+        normalized = {label.casefold().replace("-", "_").replace(" ", "_")
+                      for label in labels if label}
+        if wanted in normalized:
+            return option
+    return None
+
+
+def normalize_session_update(params: dict[str, Any]) -> dict[str, Any]:
+    """Flatten both ACP's standard update envelope and Devin probe logs."""
+    update = params.get("update")
+    if isinstance(update, dict):
+        flat = dict(update)
+        if "sessionId" not in flat and params.get("sessionId"):
+            flat["sessionId"] = params["sessionId"]
+        return flat
+    return dict(params)
+
+
+def extract_usage(update: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Devin's usage_update, including its token metadata."""
+    meta = update.get("_meta") if isinstance(update.get("_meta"), dict) else {}
+    cost = update.get("cost") or update.get("cumulativeCost") or meta.get("cognition.ai/cost")
+    amount = None
+    currency = None
+    if isinstance(cost, dict):
+        amount = cost.get("amount", cost.get("value"))
+        currency = cost.get("currency")
+    elif isinstance(cost, (int, float)):
+        amount = cost
+    return {
+        "context_used": int(update.get("used") or 0),
+        "context_size": int(update.get("size") or 0),
+        "input_tokens": int(
+            meta.get("cognition.ai/inputTokens")
+            or update.get("inputTokens")
+            or update.get("input_tokens")
+            or 0
+        ),
+        "output_tokens": int(
+            meta.get("cognition.ai/outputTokens")
+            or update.get("outputTokens")
+            or update.get("output_tokens")
+            or 0
+        ),
+        "cached_input_tokens": int(
+            meta.get("cognition.ai/cachedInputTokens")
+            or meta.get("cognition.ai/cacheReadInputTokens")
+            or update.get("cachedInputTokens")
+            or 0
+        ),
+        "cost": float(amount) if amount is not None else None,
+        "currency": str(currency or "USD"),
+    }
+
+
+class DevinAcpClient:
+    """One persistent devin acp process serving multiple Devin sessions."""
+
+    def __init__(
+        self,
+        *,
+        binary: str,
+        model: str,
+        cwd: str,
+        run_as_user: str = "",
+        home: str = "",
+    ):
+        self.binary = binary
+        self.model = model
+        self.cwd = cwd
+        self.run_as_user = run_as_user
+        self.home = home
+        self._proc: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._next_id = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._callbacks: dict[str, EventCallback] = {}
+        self._start_lock = asyncio.Lock()
+        # Devin processes one foreground prompt at a time. Keeping this
+        # explicit also makes callback routing deterministic.
+        self._prompt_lock = asyncio.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.returncode is None
+
+    def _command(self) -> list[str]:
+        base = [self.binary, "acp", "--model", self.model]
+        if self.run_as_user and os.geteuid() == 0 and self.run_as_user != "root":
+            return ["sudo", "-H", "-u", self.run_as_user, *base]
+        return base
+
+    async def start(self) -> None:
+        async with self._start_lock:
+            if self.running:
+                return
+            env = os.environ.copy()
+            if self.home:
+                env["HOME"] = self.home
+                env["PATH"] = f"{self.home}/.local/bin:" + env.get("PATH", "")
+            self._proc = await asyncio.create_subprocess_exec(
+                *self._command(),
+                cwd=self.cwd,
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self._reader_task = asyncio.create_task(self._read_loop())
+            self._stderr_task = asyncio.create_task(self._stderr_loop())
+            try:
+                await self.request("initialize", {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "clientInfo": {"name": "g-memory-mcp", "version": "1.0"},
+                }, timeout=30)
+            except Exception:
+                await self.close()
+                raise
+            log.info("Devin ACP started: model=%s", self.model)
+
+    async def close(self) -> None:
+        proc, self._proc = self._proc, None
+        current = asyncio.current_task()
+        if proc and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        for task in (self._reader_task, self._stderr_task):
+            if task and task is not current:
+                task.cancel()
+        self._reader_task = self._stderr_task = None
+        error = DevinAcpError("Devin ACP process closed")
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
+    async def _send(self, payload: dict[str, Any]) -> None:
+        if not self.running or not self._proc or not self._proc.stdin:
+            raise DevinAcpError("Devin ACP is not running")
+        wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        self._proc.stdin.write(wire.encode("utf-8"))
+        await self._proc.stdin.drain()
+
+    async def request(
+        self, method: str, params: dict[str, Any], *, timeout: float = 300
+    ) -> dict[str, Any]:
+        if not self.running and method != "initialize":
+            await self.start()
+        self._next_id += 1
+        request_id = self._next_id
+        future = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        await self._send({
+            "jsonrpc": "2.0", "id": request_id,
+            "method": method, "params": params,
+        })
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            return result if isinstance(result, dict) else {"value": result}
+        finally:
+            self._pending.pop(request_id, None)
+
+    async def notify(self, method: str, params: dict[str, Any]) -> None:
+        if not self.running:
+            await self.start()
+        await self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    async def new_session(
+        self,
+        callback: EventCallback | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        result = await self.request("session/new", {
+            "cwd": self.cwd,
+            "mcpServers": mcp_servers or [],
+        })
+        session_id = str(result.get("sessionId") or result.get("session_id") or "")
+        if not session_id:
+            raise DevinAcpError("session/new did not return a sessionId")
+        if callback:
+            self._callbacks[session_id] = callback
+        await self._configure_and_verify(session_id, result)
+        return result
+
+    async def load_session(
+        self,
+        session_id: str,
+        callback: EventCallback | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if callback:
+            self._callbacks[session_id] = callback
+        result = await self.request("session/load", {
+            "sessionId": session_id,
+            "cwd": self.cwd,
+            "mcpServers": mcp_servers or [],
+        })
+        await self._configure_and_verify(session_id, result)
+        return result
+
+    async def _configure_and_verify(
+        self, session_id: str, result: dict[str, Any]
+    ) -> None:
+        model_option = find_config_option(result, "model")
+        if not model_option:
+            # --model remains authoritative on CLI builds that do not expose
+            # dynamic config options.
+            return
+        current = _option_current(model_option)
+        if current and self.model.casefold() != current.casefold():
+            values = model_option.get("options") or model_option.get("values") or []
+            available = []
+            for value in values if isinstance(values, list) else []:
+                if isinstance(value, dict):
+                    available.append(str(value.get("value") or value.get("id") or ""))
+                else:
+                    available.append(str(value))
+            if self.model in available:
+                updated = await self.set_config(
+                    session_id, _option_id(model_option), self.model
+                )
+                updated_option = find_config_option(updated, "model")
+                updated_current = (
+                    _option_current(updated_option) if updated_option else ""
+                )
+                if not updated_current or (
+                    updated_current.casefold() == self.model.casefold()
+                ):
+                    return
+                current = updated_current
+            raise DevinModelUnavailable(
+                f"Devin 实际启用的是 {current}，不是 {self.model}；"
+                "当前订阅尚未开放目标模型"
+            )
+
+    async def set_config(self, session_id: str, config_id: str, value: str) -> dict[str, Any]:
+        return await self.request("session/set_config_option", {
+            "sessionId": session_id,
+            "configId": config_id,
+            "value": value,
+        }, timeout=30)
+
+    async def set_effort(
+        self, session_id: str, effort: str, config_result: dict[str, Any]
+    ) -> bool:
+        option = (find_config_option(config_result, "thought_level")
+                  or find_config_option(config_result, "effort")
+                  or find_config_option(config_result, "thinking"))
+        if not option:
+            return False
+        values = option.get("options") or option.get("values") or []
+        available: list[str] = []
+        for value in values if isinstance(values, list) else []:
+            if isinstance(value, dict):
+                available.append(str(value.get("value") or value.get("id") or ""))
+            else:
+                available.append(str(value))
+        aliases = {
+            "low": ("low", "small"),
+            "medium": ("medium", "med"),
+            "high": ("high", "large"),
+            "max": ("max", "xhigh", "maximum"),
+        }
+        target = next((candidate for candidate in aliases.get(effort, (effort,))
+                       if candidate in available), effort)
+        await self.set_config(session_id, _option_id(option), target)
+        return True
+
+    async def prompt(
+        self, session_id: str, text: str, callback: EventCallback | None = None
+    ) -> DevinPromptResult:
+        if callback:
+            self._callbacks[session_id] = callback
+        async with self._prompt_lock:
+            result = await self.request("session/prompt", {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": text}],
+            }, timeout=900)
+        return DevinPromptResult(
+            stop_reason=str(result.get("stopReason") or ""),
+            usage=result.get("usage") if isinstance(result.get("usage"), dict) else {},
+            raw=result,
+        )
+
+    async def cancel(self, session_id: str) -> None:
+        await self.notify("session/cancel", {"sessionId": session_id})
+
+    def forget(self, session_id: str) -> None:
+        self._callbacks.pop(session_id, None)
+
+    async def _dispatch(self, params: dict[str, Any]) -> None:
+        update = normalize_session_update(params)
+        session_id = str(update.get("sessionId") or params.get("sessionId") or "")
+        callback = self._callbacks.get(session_id)
+        if callback:
+            value = callback(update)
+            if inspect.isawaitable(value):
+                await value
+
+    async def _handle_server_request(self, message: dict[str, Any]) -> None:
+        request_id = message.get("id")
+        method = str(message.get("method") or "")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if method == "session/request_permission":
+            options = params.get("options") or []
+            option_id = None
+            for option in options if isinstance(options, list) else []:
+                if not isinstance(option, dict):
+                    continue
+                kind = str(option.get("kind") or option.get("name") or "")
+                if kind in ("allow_once", "allow_always"):
+                    option_id = option.get("optionId") or option.get("id")
+                    break
+            result = {"outcome": {"outcome": "selected", "optionId": option_id}} if option_id else {
+                "outcome": {"outcome": "cancelled"}
+            }
+        else:
+            result = {}
+        await self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    async def _read_loop(self) -> None:
+        assert self._proc and self._proc.stdout
+        try:
+            while True:
+                raw = await self._proc.stdout.readline()
+                if not raw:
+                    raise DevinAcpError("Devin ACP stdout closed")
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    log.warning("Ignoring non-JSON Devin ACP stdout: %r", raw[:300])
+                    continue
+                if "id" in message and ("result" in message or "error" in message):
+                    future = self._pending.get(message["id"])
+                    if future and not future.done():
+                        if message.get("error"):
+                            future.set_exception(DevinAcpError(str(message["error"])))
+                        else:
+                            future.set_result(message.get("result", {}))
+                elif "id" in message and message.get("method"):
+                    await self._handle_server_request(message)
+                elif message.get("method") == "session/update":
+                    params = message.get("params")
+                    if isinstance(params, dict):
+                        await self._dispatch(params)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            log.exception("Devin ACP reader stopped: %s", exc)
+            if self._proc:
+                asyncio.create_task(self.close())
+
+    async def _stderr_loop(self) -> None:
+        assert self._proc and self._proc.stderr
+        try:
+            while True:
+                raw = await self._proc.stderr.readline()
+                if not raw:
+                    return
+                log.info("Devin ACP: %s", raw.decode("utf-8", "replace").rstrip())
+        except asyncio.CancelledError:
+            return

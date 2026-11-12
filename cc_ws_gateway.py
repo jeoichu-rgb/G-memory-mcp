@@ -49,6 +49,12 @@ from openrouter_cache import (
 )
 from api_scheduler_diag import write_event as api_diag
 from runtime_policy import subscription_only_task_blocked
+from devin_acp import (
+    DevinAcpClient,
+    DevinAcpError,
+    DevinModelUnavailable,
+    extract_usage as extract_devin_usage,
+)
 
 try:
     import desire_engine as de
@@ -169,6 +175,8 @@ SKIP_AUTO_SESSION_DIARY = os.getenv(
 ).strip().lower() not in ("0", "false", "no", "off")
 SESSION_DIARY_DIR = Path(CC_CWD) / "session_diaries"
 SESSION_DIARY_DIR.mkdir(parents=True, exist_ok=True)
+DEVIN_FORGE_DIR = Path(CC_CWD) / "devin_forge_context"
+DEVIN_FORGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # DeepSeek API for context summarization (same key as claude_memory.py)
 DS_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -398,9 +406,16 @@ _ch_req: _ChannelReq | None = None
 # ── Transcript tailer (thinking + tool calls from CC CLI JSONL) ──
 SUBSCRIPTION_RUNTIME = "subscription"
 OPENROUTER_RUNTIME = "openrouter"
+DEVIN_RUNTIME = "devin"
 OPENROUTER_MODEL_PREFIX = "openrouter:"
+DEVIN_MODEL_PREFIX = "devin:"
 OPENROUTER_MODEL_ID = "anthropic/claude-opus-4.6"
 OPENROUTER_CLAUDE_MODEL = OPENROUTER_MODEL_ID
+DEVIN_MODEL_ID = "claude-opus-4-6-thinking"
+DEVIN_FRONTEND_MODEL = DEVIN_MODEL_PREFIX + DEVIN_MODEL_ID
+DEVIN_BINARY = os.getenv("DEVIN_BINARY", "/home/erik/.local/bin/devin")
+DEVIN_USER = os.getenv("DEVIN_USER", "erik")
+DEVIN_HOME = os.getenv("DEVIN_HOME", f"/home/{DEVIN_USER}")
 SUBSCRIPTION_CONFIG_DIR = Path(f"/home/{CC_USER}/.claude")
 OPENROUTER_CONFIG_DIR = Path(
     os.getenv("OPENROUTER_CLAUDE_CONFIG_DIR", f"/home/{CC_USER}/.claude-openrouter")
@@ -411,9 +426,12 @@ _TMUX_RUNTIME_FILE = Path(CC_CWD) / ".tmux_runtime"
 
 
 def _runtime_for_model(model: str) -> str:
-    return (OPENROUTER_RUNTIME
-            if (model or "").startswith(OPENROUTER_MODEL_PREFIX)
-            else SUBSCRIPTION_RUNTIME)
+    value = model or ""
+    if value.startswith(OPENROUTER_MODEL_PREFIX):
+        return OPENROUTER_RUNTIME
+    if value.startswith(DEVIN_MODEL_PREFIX):
+        return DEVIN_RUNTIME
+    return SUBSCRIPTION_RUNTIME
 
 
 def _claude_model_id(model: str) -> str:
@@ -1543,15 +1561,20 @@ def _resolve_turn_cost(session, usage: dict, reported_cost: float) -> float:
 
 
 def _message_usage_meta(session, usage: dict, cost: float) -> dict | None:
-    if getattr(session, "runtime", _runtime_for_model(session.model)) != OPENROUTER_RUNTIME:
+    runtime = getattr(session, "runtime", _runtime_for_model(session.model))
+    if runtime not in (OPENROUTER_RUNTIME, DEVIN_RUNTIME):
         return None
     return {
-        "runtime": OPENROUTER_RUNTIME,
-        "model": _claude_model_id(session.model),
+        "runtime": runtime,
+        "model": (
+            session.devin_model_actual or DEVIN_MODEL_ID
+            if runtime == DEVIN_RUNTIME
+            else _claude_model_id(session.model)
+        ),
         "usage": usage,
         "cost": cost,
         "cache_hit_rate": round(_cache_hit_rate(usage), 1),
-        "approximate": True,
+        "approximate": runtime == OPENROUTER_RUNTIME,
     }
 
 
@@ -1570,15 +1593,21 @@ def _usage_ws_payload(session, turn_usage, turn_cost, context_usage=None):
     real current window, so handing it the per-turn sum inflates it by
     the number of calls in the turn."""
     runtime = getattr(session, "runtime", _runtime_for_model(session.model))
+    is_devin = runtime == DEVIN_RUNTIME
     return {
         "usage": turn_usage,
         "turn_usage": turn_usage,
         "cost": turn_cost,
         "runtime": runtime,
-        "model": _claude_model_id(session.model),
+        "model": (
+            session.devin_model_actual or DEVIN_MODEL_ID
+            if is_devin else _claude_model_id(session.model)
+        ),
         "cache_hit_rate": round(_cache_hit_rate(turn_usage), 1),
         "cost_estimated": runtime == OPENROUTER_RUNTIME,
-        "context_window": 200_000,
+        "context_window": (
+            session.devin_context_window if is_devin else 200_000
+        ),
         "session_usage": {
             "total_input": session.total_input,
             "total_output": session.total_output,
@@ -1728,6 +1757,15 @@ def save_session_meta(session: "Session"):
         "runtime": session.runtime,
         "transcript_runtime": session.transcript_runtime,
         "cc_session_id": session.cc_session_id,
+        "devin_session_id": session.devin_session_id,
+        "devin_model_actual": session.devin_model_actual,
+        "devin_context_used": session.devin_context_used,
+        "devin_context_window": session.devin_context_window,
+        "devin_cumulative_cost": session.devin_cumulative_cost,
+        "devin_cost_currency": session.devin_cost_currency,
+        "devin_config_options": session.devin_config_options,
+        "forge_context_path": session.forge_context_path,
+        "forge_context_injected": session.forge_context_injected,
         "turn_count": session.turn_count,
         "boundary_due": session.boundary_due,
         "inherited_from": session.inherited_from,
@@ -1848,6 +1886,25 @@ def load_all_sessions() -> list["Session"]:
                 meta.get("transcript_runtime") or session.runtime
             )
             session.cc_session_id = meta.get("cc_session_id")
+            session.devin_session_id = meta.get("devin_session_id")
+            session.devin_model_actual = meta.get("devin_model_actual", "")
+            session.devin_context_used = int(meta.get("devin_context_used", 0) or 0)
+            session.devin_context_window = int(
+                meta.get("devin_context_window", 200000) or 200000
+            )
+            session.devin_cumulative_cost = float(
+                meta.get("devin_cumulative_cost", 0) or 0
+            )
+            session.devin_cost_currency = meta.get("devin_cost_currency", "USD")
+            session.devin_config_options = (
+                meta.get("devin_config_options")
+                if isinstance(meta.get("devin_config_options"), list)
+                else []
+            )
+            session.forge_context_path = meta.get("forge_context_path", "")
+            session.forge_context_injected = bool(
+                meta.get("forge_context_injected", False)
+            )
             session.turn_count = int(meta.get("turn_count", 0) or 0)
             session.boundary_due = bool(meta.get("boundary_due", False))
             session.inherited_from = meta.get("inherited_from")
@@ -5596,6 +5653,11 @@ async def chat_stop_signal(request: Request):
         s._stop_requested = True
     elif not force:
         return JSONResponse({"status": "no_session"}, status_code=404)
+    if (s and s.runtime == DEVIN_RUNTIME and s.devin_session_id
+            and _devin_client is not None and _devin_client.running):
+        await _devin_client.cancel(s.devin_session_id)
+        log.info("Chat stop: ACP cancel sent to Devin (session %s)", sid)
+        return JSONResponse({"status": "ok", "acp_cancel": True})
     # Only poke Esc mid-turn (or forced). On an idle CLI a stray Esc is at
     # best a no-op and repeated ones can open the history-jump menu.
     if (_user_msg_active or force) and await tmux_is_running():
@@ -5659,6 +5721,19 @@ class Session:
         self.id = sid
         self.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')}"
         self.cc_session_id = None
+        # Devin is an independent ACP backend. Never put its id in
+        # cc_session_id: the latter is owned exclusively by Claude Code/tmux.
+        self.devin_session_id: str | None = None
+        self.devin_model_actual = ""
+        self.devin_context_used = 0
+        self.devin_context_window = 200000
+        self.devin_cumulative_cost = 0.0
+        self.devin_cost_currency = "USD"
+        self.devin_config_options: list[dict] = []
+        # A Devin Forge stores diary + recent context outside metadata and
+        # prepends it atomically to the first real prompt in the new session.
+        self.forge_context_path = ""
+        self.forge_context_injected = False
         self.created_at = datetime.now(SGT)
         self.last_active = datetime.now(SGT)
         self.preview = ""
@@ -5739,6 +5814,11 @@ class Session:
             "time": time_str,
             "last_active": self.last_active.isoformat(),
             "runtime": self.runtime,
+            "backend_session_id": (
+                self.devin_session_id
+                if self.runtime == DEVIN_RUNTIME
+                else self.cc_session_id
+            ),
             "turn_count": self.turn_count,
             "session_max_turns": SESSION_MAX_TURNS,
             "boundary_due": self.boundary_due,
@@ -5754,6 +5834,355 @@ class Session:
 
 
 sessions: dict[str, Session] = {}
+
+
+def _session_backend_id(session: Session | None) -> str | None:
+    """Stable identity hook shared by future patrol/pebbling adapters."""
+    if not session:
+        return None
+    if session.runtime == DEVIN_RUNTIME:
+        return session.devin_session_id
+    return session.cc_session_id
+
+
+def _session_has_backend(session: Session | None) -> bool:
+    return bool(_session_backend_id(session))
+
+
+def _sync_background_binding(session: Session) -> None:
+    """Persist route identity without enabling any Devin background sender."""
+    if peb_state.get("pebbling_session_id") != session.id:
+        return
+    peb_state["backend_runtime"] = session.runtime
+    peb_state["backend_session_id"] = _session_backend_id(session)
+    save_peb_state()
+
+
+def _set_dashboard_session(session: Session) -> None:
+    """Remember the session currently selected in chat for Usage auto mode."""
+    peb_state["dashboard_session_id"] = session.id
+    save_peb_state()
+
+
+_devin_client: DevinAcpClient | None = None
+
+
+def _devin_mcp_servers() -> list[dict]:
+    """Translate the existing Claude MCP config into ACP's server list."""
+    merged: dict = {}
+    for path in (
+        Path(CC_CWD) / ".claude" / "settings.json",
+        Path(CC_CWD) / ".claude" / "settings.local.json",
+    ):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        servers = data.get("mcpServers")
+        if isinstance(servers, dict):
+            merged.update(servers)
+    result: list[dict] = []
+    for name, config in merged.items():
+        if not isinstance(config, dict):
+            continue
+        url = str(config.get("url") or "")
+        if url:
+            server_type = str(config.get("type") or "")
+            if server_type not in ("http", "sse"):
+                server_type = "sse" if url.rstrip("/").endswith("/sse") else "http"
+            server = {"name": name, "type": server_type, "url": url}
+            headers = config.get("headers")
+            if isinstance(headers, list):
+                server["headers"] = headers
+            elif isinstance(headers, dict):
+                server["headers"] = [
+                    {"name": key, "value": str(value)}
+                    for key, value in headers.items()
+                ]
+            result.append(server)
+            continue
+        command = config.get("command")
+        if command:
+            server = {
+                "name": name,
+                "type": "stdio",
+                "command": str(command),
+                "args": [str(value) for value in config.get("args", [])],
+            }
+            env = config.get("env")
+            if isinstance(env, dict):
+                server["env"] = [
+                    {"name": key, "value": str(value)}
+                    for key, value in env.items()
+                ]
+            result.append(server)
+    return result
+
+
+def _get_devin_client() -> DevinAcpClient:
+    global _devin_client
+    if _devin_client is None:
+        _devin_client = DevinAcpClient(
+            binary=DEVIN_BINARY,
+            model=DEVIN_MODEL_ID,
+            cwd=CC_CWD,
+            run_as_user=DEVIN_USER,
+            home=DEVIN_HOME,
+        )
+    return _devin_client
+
+
+def _devin_config_options(result: dict) -> list[dict]:
+    options = result.get("configOptions", result.get("config_options", []))
+    return options if isinstance(options, list) else []
+
+
+def _devin_actual_model(result: dict) -> str:
+    for option in _devin_config_options(result):
+        keys = {
+            str(option.get("id") or "").casefold(),
+            str(option.get("category") or "").casefold(),
+        }
+        if "model" not in keys:
+            continue
+        value = option.get("currentValue", option.get("current", option.get("value", "")))
+        if isinstance(value, dict):
+            value = value.get("value") or value.get("id") or value.get("model_uid")
+        return str(value or "")
+    return ""
+
+
+async def _create_devin_session(session: Session, callback=None) -> dict:
+    client = _get_devin_client()
+    result = await client.new_session(callback, _devin_mcp_servers())
+    session.devin_session_id = str(
+        result.get("sessionId") or result.get("session_id") or ""
+    )
+    session.devin_config_options = _devin_config_options(result)
+    session.devin_model_actual = _devin_actual_model(result) or DEVIN_MODEL_ID
+    session.transcript_runtime = DEVIN_RUNTIME
+    await client.set_effort(
+        session.devin_session_id, session.effort, result
+    )
+    save_session_meta(session)
+    _sync_background_binding(session)
+    log.info(
+        "Devin session bound: gateway=%s devin=%s model=%s effort=%s",
+        session.id, session.devin_session_id,
+        session.devin_model_actual, session.effort,
+    )
+    return result
+
+
+def _devin_chunk_text(update: dict) -> str:
+    content = update.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or "")
+    return str(update.get("text") or update.get("delta") or "")
+
+
+def _devin_tool_block(update: dict) -> dict:
+    raw_input = (
+        update.get("rawInput")
+        or update.get("input")
+        or update.get("arguments")
+        or {}
+    )
+    return {
+        "type": "tool_use",
+        "id": update.get("toolCallId") or update.get("id") or "",
+        "name": update.get("title") or update.get("name") or update.get("kind") or "tool",
+        "input": raw_input if isinstance(raw_input, dict) else {"value": raw_input},
+    }
+
+
+def _previous_forge_diary(session: Session) -> str:
+    if not session.forge_context_path:
+        return ""
+    try:
+        text = Path(session.forge_context_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(
+        r"<!--DEVIN_FORGE_DIARY_BEGIN-->\n([\s\S]*?)\n<!--DEVIN_FORGE_DIARY_END-->",
+        text,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _recent_history_for_devin_forge(
+    session_id: str, retain_tokens: int = FORGE_RETAIN_TOKENS
+) -> tuple[str, int, int]:
+    """Return recent gateway dialogue, cut only at whole-message boundaries."""
+    messages = load_history(session_id).get("messages", [])
+    retained: list[str] = []
+    token_count = 0
+    ignored_sources = {"pebbling", "patrol", "desire", "keepalive"}
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        if msg.get("source") in ignored_sources:
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        speaker = "Jeoi" if role == "user" else "Erik"
+        timestamp = msg.get("timestamp") or msg.get("time") or ""
+        block = f"[{timestamp}] {speaker}:\n{content}"
+        cost = _estimate_tokens(block)
+        if retained and token_count + cost > retain_tokens:
+            break
+        retained.append(block)
+        token_count += cost
+    retained.reverse()
+    return "\n\n".join(retained), token_count, len(retained)
+
+
+def _write_devin_forge_bundle(
+    session: Session, inherited_diary: str, recent_context: str
+) -> str:
+    path = DEVIN_FORGE_DIR / f"{session.id}.txt"
+    payload = (
+        "[context-forge] 这是上一 Session 的恢复材料，不是 Jeoi 的新消息。"
+        "把它当作已经发生的共同历史；不要逐段复述。\n\n"
+        "<!--DEVIN_FORGE_DIARY_BEGIN-->\n"
+        + (inherited_diary.strip() or "（上一 Session 尚无已完成的日记片段）")
+        + "\n<!--DEVIN_FORGE_DIARY_END-->\n\n"
+        "═══ Forge 保留的最近原始对话（约 15k tokens） ═══\n"
+        + recent_context.strip()
+        + "\n═══ Forge 恢复材料结束 ═══\n\n"
+        "[forge-verification] 如果你已完整接收以上恢复材料，只回复 OK。"
+    )
+    path.write_text(payload, encoding="utf-8")
+    return str(path)
+
+
+async def _verify_devin_forge(session: Session) -> dict:
+    """Load the inherited bundle and require an explicit ACP end_turn + OK."""
+    try:
+        prompt = Path(session.forge_context_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "error": f"Forge 恢复材料无法读取：{exc}"}
+
+    reply_parts: list[str] = []
+
+    async def collect(update: dict):
+        kind = str(
+            update.get("sessionUpdate")
+            or update.get("session_update")
+            or update.get("type")
+            or ""
+        )
+        if kind == "agent_message_chunk":
+            text = _devin_chunk_text(update)
+            if text:
+                reply_parts.append(text)
+        elif kind == "usage_update":
+            usage = extract_devin_usage(update)
+            session.devin_context_used = usage["context_used"]
+            if usage["context_size"]:
+                session.devin_context_window = usage["context_size"]
+            if usage["cost"] is not None:
+                session.devin_cumulative_cost = usage["cost"]
+                session.devin_cost_currency = usage["currency"]
+
+    result = await _get_devin_client().prompt(
+        session.devin_session_id, prompt, collect
+    )
+    reply = "".join(reply_parts).strip().strip(chr(96)).strip()
+    if result.stop_reason != "end_turn":
+        return {
+            "ok": False,
+            "error": f"Devin Forge 验证未正常结束：{result.stop_reason or 'unknown'}",
+        }
+    if reply.upper() != "OK":
+        return {
+            "ok": False,
+            "error": f"Devin Forge 未返回 OK：{reply[:120] or '空回复'}",
+        }
+    session.forge_context_injected = True
+    return {"ok": True, "reply": reply, "stop_reason": result.stop_reason}
+
+
+def _discard_unpublished_devin_session(session: Session) -> None:
+    if session.devin_session_id and _devin_client is not None:
+        _devin_client.forget(session.devin_session_id)
+    history_path(session.id).unlink(missing_ok=True)
+    if session.forge_context_path:
+        Path(session.forge_context_path).unlink(missing_ok=True)
+
+
+async def _forge_devin_session(src_session: Session) -> dict:
+    """Create a fresh Devin ACP session and bind diary + recent 15k context."""
+    segments = _diary_segments_for_session(src_session.id)
+    current_diary = _compose_diary_from_segments(segments)
+    previous_diary = _previous_forge_diary(src_session)
+    inherited_diary = "\n\n".join(
+        part for part in (previous_diary, current_diary) if part.strip()
+    )
+    recent, tokens, message_count = _recent_history_for_devin_forge(src_session.id)
+
+    sid = uuid.uuid4().hex[:8]
+    session = Session(sid)
+    session.model = src_session.model
+    session.effort = src_session.effort
+    session.runtime = DEVIN_RUNTIME
+    session.transcript_runtime = DEVIN_RUNTIME
+    session.inherited_from = src_session.id
+    session.first_msg_seen = True
+    session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
+    try:
+        await _create_devin_session(session)
+        session.forge_context_path = _write_devin_forge_bundle(
+            session, inherited_diary, recent
+        )
+        session.forge_context_injected = False
+        verification = await _verify_devin_forge(session)
+        if not verification.get("ok"):
+            _discard_unpublished_devin_session(session)
+            return verification
+
+        # Match the official Forge transaction: the old session remains
+        # authoritative until the new session has replied OK.
+        memory_merge = await merge_pending_core_at_boundary()
+        if memory_merge.get("error"):
+            _discard_unpublished_devin_session(session)
+            return {
+                "ok": False,
+                "error": "核心记忆边界合并失败，已保留原 Session："
+                         + memory_merge["error"],
+            }
+    except Exception:
+        _discard_unpublished_devin_session(session)
+        raise
+
+    sessions[sid] = session
+    save_session_meta(session)
+
+    diary_archive = await _archive_diary_segments(src_session.id)
+    if diary_archive.get("ok"):
+        session.session_diary_path = diary_archive.get("filename", "")
+        save_session_meta(session)
+    else:
+        log.error(
+            "Devin Forge diary archive failed: %s",
+            diary_archive.get("error", "unknown error"),
+        )
+    return {
+        "ok": True,
+        "session": session,
+        "tokens": tokens,
+        "events": message_count,
+        "retained_tokens": FORGE_RETAIN_TOKENS,
+        "memory_merged": memory_merge.get("merged", 0),
+        "diary": diary_archive,
+        "diary_path": session.session_diary_path,
+        "verified": True,
+        "verification": verification,
+    }
 
 
 def _logical_session_root(session: Session) -> str:
@@ -5845,6 +6274,11 @@ def _active_api_scheduler_session() -> Session | None:
 # ══════════════════════════════════════════════
 #  STARTUP: LOAD SESSIONS FROM DISK
 # ══════════════════════════════════════════════
+
+@app.on_event("shutdown")
+async def shutdown_devin_acp():
+    if _devin_client is not None:
+        await _devin_client.close()
 
 @app.on_event("startup")
 async def startup_load_sessions():
@@ -6186,6 +6620,7 @@ async def websocket_endpoint(ws: WebSocket):
                 session.transcript_runtime = session.runtime
                 sessions[sid] = session
                 current_session = session
+                _set_dashboard_session(session)
                 save_session_meta(session)
                 await ws.send_json(
                     {"event": "session:created", "sessionId": sid}
@@ -6203,6 +6638,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if sid in sessions:
                     prev_cc_id = current_session.cc_session_id if current_session else None
                     current_session = sessions[sid]
+                    _set_dashboard_session(current_session)
                     pending_model = current_session.model
                     pending_effort = current_session.effort
                     history = load_history(sid)
@@ -6245,8 +6681,17 @@ async def websocket_endpoint(ws: WebSocket):
                     path = history_path(sid)
                     if path.exists():
                         path.unlink()
+                    dead_devin_id = sessions[sid].devin_session_id
+                    dead_forge_path = sessions[sid].forge_context_path
                     dead_cc_id = sessions[sid].cc_session_id
                     del sessions[sid]
+                    if dead_devin_id and _devin_client is not None:
+                        _devin_client.forget(dead_devin_id)
+                    if dead_forge_path:
+                        try:
+                            Path(dead_forge_path).unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     # If tmux is still parked on the deleted session, kill it —
                     # otherwise the ledger keeps pointing at a ghost and the
                     # next restart decision runs on stale state.
@@ -6280,6 +6725,70 @@ async def websocket_endpoint(ws: WebSocket):
                 # session's transcript instead of the one on screen.
                 src_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 src_session = sessions.get(src_sid) if src_sid else None
+                if src_session and src_session.runtime == DEVIN_RUNTIME:
+                    if not src_session.devin_session_id:
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": False,
+                            "error": "当前 Devin 窗口尚未建立远端 session；先完成一轮对话",
+                        })
+                        continue
+                    _user_msg_active = True
+                    try:
+                        await ws.send_json({
+                            "event": "session:forge_progress",
+                            "stage": "creating",
+                            "message": "正在创建 Devin Session 并绑定日记＋最近15k…",
+                        })
+                        result = await _forge_devin_session(src_session)
+                        if not result.get("ok"):
+                            await ws.send_json({
+                                "event": "session:forge_result",
+                                "ok": False,
+                                "error": result.get("error", "Devin Forge 失败"),
+                            })
+                            continue
+                        current_session = result.pop("session")
+                        _set_dashboard_session(current_session)
+                        pending_model = current_session.model
+                        pending_effort = current_session.effort
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": True,
+                            "sessionId": current_session.id,
+                            **result,
+                        })
+                        sorted_sessions = sorted(
+                            sessions.values(),
+                            key=lambda s: s.last_active,
+                            reverse=True,
+                        )
+                        await ws.send_json({
+                            "event": "session:list",
+                            "sessions": [s.to_dict() for s in sorted_sessions],
+                        })
+                        log.info(
+                            "Devin Forge complete: %s -> %s (devin=%s, tokens=%s)",
+                            src_session.id, current_session.id,
+                            current_session.devin_session_id,
+                            result.get("tokens", 0),
+                        )
+                    except (DevinModelUnavailable, DevinAcpError) as exc:
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": False,
+                            "error": str(exc),
+                        })
+                    except Exception as exc:
+                        log.exception("Devin Forge failed: %s", exc)
+                        await ws.send_json({
+                            "event": "session:forge_result",
+                            "ok": False,
+                            "error": f"Devin Forge 失败：{exc}",
+                        })
+                    finally:
+                        _user_msg_active = False
+                    continue
                 if not src_session or not src_session.cc_session_id:
                     await ws.send_json({"event": "session:forge_result",
                                         "ok": False, "error": "指定的session没有可裁剪的transcript"})
@@ -6385,6 +6894,7 @@ async def websocket_endpoint(ws: WebSocket):
                     session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
                     sessions[sid] = session
                     current_session = session
+                    _set_dashboard_session(session)
                     if session.runtime == OPENROUTER_RUNTIME:
                         _bind_api_scheduler(session, real_user=False)
                     save_session_meta(session)
@@ -6443,6 +6953,7 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json(
                         {"event": "session:created", "sessionId": sid}
                     )
+                _set_dashboard_session(current_session)
 
                 # Voice call mode
                 call_mode = data.get("call_mode", False)
@@ -6622,13 +7133,18 @@ async def websocket_endpoint(ws: WebSocket):
                 peb_state["patrol_checks_done"] = []
                 peb_state["pebbling_history"] = []
                 peb_state["pebbling_session_id"] = current_session.id
+                peb_state["backend_runtime"] = current_session.runtime
+                peb_state["backend_session_id"] = _session_backend_id(
+                    current_session
+                )
                 save_peb_state()
 
                 # Desire engine: classify + pulse + inject intent
                 # 通话中不注入 desire（避免打断通话节奏）
                 _desire_key = None
                 _msg_is_libido = False
-                if DESIRE_ENABLED and desire_st and not call_mode:
+                if (DESIRE_ENABLED and desire_st and not call_mode
+                        and current_session.runtime != DEVIN_RUNTIME):
                     _api_passive_desire = _api_desire_is_passive(current_session)
                     _msg_tags = dc.classify(message)
                     _msg_is_libido = any(
@@ -6666,7 +7182,9 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         log.warning(f"Desire engine error: {e}")
 
-                _chat_succeeded = await run_claude(cli_message, current_session, ws)
+                _chat_succeeded = await run_agent_chat(
+                    cli_message, current_session, ws
+                )
                 if _chat_succeeded and _desire_key:
                     if _desire_key == "libido" and not _msg_is_libido:
                         log.info("Libido not satisfied (non-sexual msg, drift continues)")
@@ -6685,11 +7203,13 @@ async def websocket_endpoint(ws: WebSocket):
                 model = data.get("model", "")
                 if model:
                     if (current_session and current_session.turn_count > 0
-                            and (current_session.runtime == OPENROUTER_RUNTIME
-                                 or _runtime_for_model(model) == OPENROUTER_RUNTIME)):
+                            and (current_session.runtime in (
+                                    OPENROUTER_RUNTIME, DEVIN_RUNTIME)
+                                 or _runtime_for_model(model) in (
+                                     OPENROUTER_RUNTIME, DEVIN_RUNTIME))):
                         await ws.send_json({
                             "event": "config:locked",
-                            "message": "API Session 已开始；模型到下一个 Session 边界再切换",
+                            "message": "该线路的 Session 已开始；模型到下一个 Session 边界再切换",
                             "model": current_session.model,
                             "effort": current_session.effort,
                         })
@@ -6698,6 +7218,9 @@ async def websocket_endpoint(ws: WebSocket):
                     if current_session:
                         current_session.model = model
                         current_session.runtime = _runtime_for_model(model)
+                        if (current_session.turn_count == 0
+                                and not _session_has_backend(current_session)):
+                            current_session.transcript_runtime = current_session.runtime
                         # Explicit switch — opens the Route Guard grace window
                         current_session.model_set_at = time_mod.time()
                         current_session._drift_count = 0
@@ -6734,6 +7257,17 @@ async def websocket_endpoint(ws: WebSocket):
                     if current_session:
                         current_session.effort = effort
                         save_session_meta(current_session)
+                        if (current_session.runtime == DEVIN_RUNTIME
+                                and current_session.devin_session_id):
+                            try:
+                                await _get_devin_client().set_effort(
+                                    current_session.devin_session_id,
+                                    effort,
+                                    {"configOptions":
+                                     current_session.devin_config_options},
+                                )
+                            except Exception as exc:
+                                log.warning("Devin effort switch failed: %s", exc)
                         owns_tmux = bool(
                             current_session.cc_session_id
                             and current_session.cc_session_id == _tmux_cc_id
@@ -7252,6 +7786,283 @@ async def websocket_endpoint(ws: WebSocket):
         if active_ws is ws:
             active_ws = None
             _ws_last_activity = 0.0
+
+
+# ══════════════════════════════════════════════
+#  AGENT BACKENDS
+# ══════════════════════════════════════════════
+
+async def run_agent_chat(message: str, session: Session, ws: WebSocket):
+    if session.runtime == DEVIN_RUNTIME:
+        return await run_devin(message, session, ws)
+    return await run_claude(message, session, ws)
+
+
+async def run_devin(message: str, session: Session, ws: WebSocket):
+    """Send one turn through Devin ACP and map its events to the existing UI."""
+    global _user_msg_active
+    _user_msg_active = True
+    session.reset_accumulator()
+    client = _get_devin_client()
+    latest_usage: dict = {}
+    starting_cost = session.devin_cumulative_cost
+
+    async def on_update(update: dict):
+        nonlocal latest_usage
+        kind = str(
+            update.get("sessionUpdate")
+            or update.get("session_update")
+            or update.get("type")
+            or ""
+        )
+        if kind == "agent_message_chunk":
+            text = _devin_chunk_text(update)
+            if text:
+                session._current_text += text
+                await ws.send_json({"event": "stream:text", "text": text})
+        elif kind == "agent_thought_chunk":
+            text = _devin_chunk_text(update)
+            if text:
+                session._current_thinking += text
+                await ws.send_json({"event": "stream:thinking", "text": text})
+        elif kind == "tool_call":
+            block = _devin_tool_block(update)
+            session._current_tools.append(block)
+            await ws.send_json({"event": "stream:block", "block": block})
+        elif kind == "usage_update":
+            latest_usage = extract_devin_usage(update)
+            session.devin_context_used = latest_usage["context_used"]
+            if latest_usage["context_size"]:
+                session.devin_context_window = latest_usage["context_size"]
+            if latest_usage["cost"] is not None:
+                session.devin_cumulative_cost = latest_usage["cost"]
+                session.devin_cost_currency = latest_usage["currency"]
+        elif kind == "compaction_update":
+            status = str(update.get("status") or update.get("state") or "")
+            if status in ("completed", "complete", "end"):
+                session.compaction_count += 1
+                await ws.send_json({
+                    "event": "system:compacted",
+                    "compaction_count": session.compaction_count,
+                })
+
+    try:
+        if not session.devin_session_id:
+            await ws.send_json({
+                "event": "system:status",
+                "message": "Creating Devin session...",
+            })
+            await _create_devin_session(session, on_update)
+
+        prompt_text = message
+        used_forge_bundle = False
+        if session.forge_context_path and not session.forge_context_injected:
+            try:
+                inherited = Path(session.forge_context_path).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise DevinAcpError(f"Forge 恢复材料无法读取：{exc}") from exc
+            prompt_text = inherited + "\n\n═══ 本轮 Jeoi 的新消息 ═══\n" + message
+            used_forge_bundle = True
+
+        try:
+            result = await client.prompt(
+                session.devin_session_id, prompt_text, on_update
+            )
+        except DevinAcpError as exc:
+            # A gateway restart starts a fresh ACP process. The persisted
+            # Devin id is still valid, but must be loaded into that process.
+            if "session" not in str(exc).casefold():
+                raise
+            client.forget(session.devin_session_id)
+            loaded = await client.load_session(
+                session.devin_session_id,
+                mcp_servers=_devin_mcp_servers(),
+            )
+            session.devin_config_options = _devin_config_options(loaded)
+            session.devin_model_actual = (
+                _devin_actual_model(loaded) or DEVIN_MODEL_ID
+            )
+            await client.set_effort(
+                session.devin_session_id, session.effort, loaded
+            )
+            result = await client.prompt(
+                session.devin_session_id, prompt_text, on_update
+            )
+
+        if result.stop_reason and result.stop_reason != "end_turn":
+            log.warning(
+                "Devin prompt stopped: session=%s reason=%s",
+                session.devin_session_id, result.stop_reason,
+            )
+        if used_forge_bundle and result.stop_reason == "end_turn":
+            session.forge_context_injected = True
+
+        raw_usage = result.usage
+        turn_usage = {
+            "input_tokens": int(
+                raw_usage.get("inputTokens")
+                or raw_usage.get("input_tokens")
+                or latest_usage.get("input_tokens")
+                or 0
+            ),
+            "output_tokens": int(
+                raw_usage.get("outputTokens")
+                or raw_usage.get("output_tokens")
+                or latest_usage.get("output_tokens")
+                or 0
+            ),
+            "cache_read_input_tokens": int(
+                raw_usage.get("cachedInputTokens")
+                or raw_usage.get("cache_read_input_tokens")
+                or latest_usage.get("cached_input_tokens")
+                or 0
+            ),
+            "cache_creation_input_tokens": 0,
+        }
+        turn_cost = max(
+            0.0, session.devin_cumulative_cost - starting_cost
+        ) if latest_usage.get("cost") is not None else 0.0
+        if any(turn_usage.values()) or turn_cost:
+            _accumulate_session_usage(session, turn_usage, turn_cost)
+
+        # Capture the hidden in-band diary before removing its marker from the
+        # visible reply. Devin keeps its own context; unlike CC JSONL, there
+        # is no editable transcript to compact here.
+        if session._current_text:
+            for match in _DIARY_SEGMENT_RE.finditer(session._current_text):
+                _store_diary_segment(
+                    session.id,
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    match.group(3),
+                )
+            session._current_text = _DIARY_SEGMENT_RE.sub(
+                "", session._current_text
+            ).rstrip()
+
+        voice_messages = []
+        if session._current_text:
+            voice_pattern = re.compile(
+                r'<!--voice:(.+?)\|(.+?)\|(.+?)-->', re.DOTALL
+            )
+            for match in voice_pattern.finditer(session._current_text):
+                voice_messages.append({
+                    "audio_url": match.group(1),
+                    "duration": float(match.group(2)),
+                    "text": match.group(3).replace("\n", " "),
+                })
+            session._current_text = voice_pattern.sub(
+                "", session._current_text
+            ).rstrip()
+
+        erik_reactions = []
+        if session._current_text:
+            reaction_pattern = re.compile(r'<!--react:(.+?):([#^])(\d+)-->')
+            for match in reaction_pattern.finditer(session._current_text):
+                erik_reactions.append(
+                    (match.group(2), int(match.group(3)), match.group(1))
+                )
+            session._current_text = reaction_pattern.sub(
+                "", session._current_text
+            ).rstrip()
+
+        completed = bool(
+            session._current_text
+            or session._current_thinking
+            or voice_messages
+        )
+        reply_source = "voice_call" if session._in_call else None
+        if session._current_text or session._current_thinking:
+            usage_meta = _message_usage_meta(session, turn_usage, turn_cost)
+            append_message(
+                session.id,
+                "assistant",
+                session._current_text,
+                thinking=session._current_thinking,
+                tools=session._current_tools or None,
+                source=reply_source,
+                **({"usage_meta": usage_meta} if usage_meta else {}),
+            )
+            for kind, number, emoji in erik_reactions:
+                index = (
+                    number - 1 if kind == "#"
+                    else resolve_nth_user_from_tail(session.id, number)
+                )
+                if index is not None and set_reaction(
+                    session.id, index, "erik", emoji
+                ):
+                    await ws.send_json({
+                        "event": "reaction:erik",
+                        "msgIndex": index,
+                        "emoji": emoji,
+                    })
+
+        for voice in voice_messages:
+            append_message(
+                session.id, "assistant", "",
+                voice=voice, source=reply_source,
+            )
+            await ws.send_json({"event": "voice", **voice})
+
+        if completed:
+            session.turn_count += 1
+            session.boundary_due = session.turn_count >= SESSION_MAX_TURNS
+            if session._current_text:
+                session.preview = (
+                    session._current_text.replace("\n", " ")[:30]
+                    + ("..." if len(session._current_text) > 30 else "")
+                )
+            session.last_active = datetime.now(SGT)
+        save_session_meta(session)
+
+        sorted_sessions = sorted(
+            sessions.values(), key=lambda item: item.last_active, reverse=True
+        )
+        await ws.send_json({
+            "event": "session:list",
+            "sessions": [item.to_dict() for item in sorted_sessions],
+        })
+        context_usage = {
+            "input_tokens": session.devin_context_used,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+        payload = _usage_ws_payload(
+            session, turn_usage, turn_cost, context_usage=context_usage
+        )
+        payload["event"] = "message:complete"
+        await ws.send_json(payload)
+
+        if session._current_text:
+            preview = session._current_text.replace("\n", " ")[:100]
+            await send_web_push("Erik", preview, url="/chat.html")
+            if (wechat_gw and wechat_gw.enabled
+                    and _last_msg_source == "wechat"):
+                asyncio.create_task(wechat_gw.push_reply(session._current_text))
+
+        _user_msg_active = False
+        return completed
+    except Exception as exc:
+        _user_msg_active = False
+        log.exception("run_devin error: %s", exc)
+        if session._current_text or session._current_thinking:
+            cleaned = _HIDDEN_MARKER_RE.sub(
+                "", session._current_text
+            ).rstrip()
+            append_message(
+                session.id, "assistant", cleaned,
+                thinking=session._current_thinking,
+                tools=session._current_tools or None,
+            )
+        try:
+            await ws.send_json({
+                "event": "system:error",
+                "message": str(exc),
+            })
+        except Exception:
+            pass
+        return False
 
 
 # ══════════════════════════════════════════════
@@ -8164,6 +8975,28 @@ _USAGE_CACHE = {"ts": 0.0, "data": None}
 _USAGE_CACHE_SECS = 60
 
 
+@app.get("/api/usage/active")
+async def active_usage_provider():
+    """Choose the shared Usage card from the currently bound chat session."""
+    sid = (
+        peb_state.get("dashboard_session_id")
+        or peb_state.get("pebbling_session_id")
+    )
+    session = sessions.get(sid) if sid else None
+    if not session:
+        sid = peb_state.get("pebbling_session_id")
+        session = sessions.get(sid) if sid else None
+    runtime = session.runtime if session else peb_state.get("backend_runtime", "")
+    return {
+        "ok": True,
+        "session_id": sid,
+        "runtime": runtime,
+        # OpenRouter keeps its own separate card, so its active chat does not
+        # replace the official subscription card.
+        "provider": "devin" if runtime == DEVIN_RUNTIME else "official",
+    }
+
+
 @app.get("/api/usage/limits")
 async def usage_limits(force: int = 0):
     now = time_mod.time()
@@ -8250,6 +9083,24 @@ async def openrouter_usage(force: int = 0):
     _OPENROUTER_USAGE_CACHE["ts"] = now
     _OPENROUTER_USAGE_CACHE["data"] = data
     return data
+
+
+@app.get("/api/usage/devin")
+async def devin_account_usage(force: int = 0):
+    """Account-level Devin quota only.
+
+    ACP usage_update is deliberately not returned here: it describes the
+    current session/context and cannot truthfully stand in for daily/weekly
+    account limits. The Pro account response mapping is added after the first
+    authenticated capture.
+    """
+    return {
+        "ok": False,
+        "configured": False,
+        "source": "account",
+        "error": "等待 Pro 账号 Usage & limits 的真实响应字段",
+        "windows": [],
+    }
 
 
 # no-cache = 可以缓存但每次必须回源校验（没变就 304，极便宜）。不设这个

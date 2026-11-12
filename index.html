@@ -341,13 +341,19 @@ textarea.inp{resize:vertical;line-height:1.7;}
         <div><div class="dc-lbl">Health</div><div class="dc-ttl">健康</div><div class="dc-desc">心率 · 睡眠 · 步数</div></div>
         <div class="dc-arr">→</div>
       </div>
-      <div class="dc" onclick="window.open('https://read.erikssheep.uk/?token=Jeoi2026','_blank')">
+      <div class="dc" onclick="window.open('https://read.erikssheep.uk/','_blank')">
         <div><div class="dc-lbl">Co-Reading</div><div class="dc-ttl">共读</div><div class="dc-desc">书架 · 批注 · 卡片</div></div>
         <div class="dc-arr">↗</div>
       </div>
-      <div class="dc" onclick="loadUsage(true)">
+      <div class="dc" onclick="loadSelectedUsage(true)">
         <div style="flex:1;">
-          <div class="dc-lbl">Usage · 用量</div>
+          <div class="dc-lbl">Usage ·
+            <button id="u-tab-auto" onclick="event.stopPropagation();selectUsageProvider('auto')" style="border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;">自动</button>
+            /
+            <button id="u-tab-official" onclick="event.stopPropagation();selectUsageProvider('official')" style="border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;">官端</button>
+            /
+            <button id="u-tab-devin" onclick="event.stopPropagation();selectUsageProvider('devin')" style="border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer;opacity:.45;">Devin</button>
+          </div>
           <div id="u-rows"><div class="dc-desc" style="margin-top:8px;">—</div></div>
         </div>
         <div class="dc-lbl" id="u-sub" style="margin-top:8px;opacity:.5;">点击刷新</div>
@@ -752,6 +758,7 @@ textarea.inp{resize:vertical;line-height:1.7;}
 //  CONFIG
 // ══════════════════════════════════════════════
 const API_BASE = 'https://erikssheep.uk';
+const CHAT_GATEWAY_API = 'https://chat.erikssheep.uk';
 
 const GALLERY = [
   { title: '示例', category: 'GALLERY', images: ['https://via.placeholder.com/800x500/1a1612/c4a8ff?text=E'] },
@@ -816,13 +823,41 @@ async function loadDash() {
     document.getElementById('d-rounds').textContent = n;
     document.getElementById('d-bar').style.width = Math.min(100, n / 40 * 100) + '%';
   } catch {}
-  loadUsage();
+  loadSelectedUsage();
   loadOpenRouterUsage();
 }
 
 // Plan usage limits（订阅用量卡片，数据链路：网关 OAuth → main.py 代理）
 // 只展示 5h + 周全模型两条；点卡片带 force=1 跳过网关 60s 缓存强刷
-const USAGE_SHOW = { five_hour: '5 小时', seven_day: '每周' };
+const USAGE_SHOW = { five_hour: '5 小时', daily: '每日', seven_day: '每周', weekly: '每周' };
+let usageMode = localStorage.getItem('usage-provider-mode') || 'auto';
+let usageProvider = 'official';
+function renderUsageTabs() {
+  document.getElementById('u-tab-auto').style.opacity = usageMode === 'auto' ? '1' : '.45';
+  document.getElementById('u-tab-official').style.opacity = usageProvider === 'official' ? '1' : '.45';
+  document.getElementById('u-tab-devin').style.opacity = usageProvider === 'devin' ? '1' : '.45';
+}
+async function detectUsageProvider() {
+  if (usageMode !== 'auto') return;
+  try {
+    const d = await (await fetch(CHAT_GATEWAY_API + '/api/usage/active', { headers: hdr() })).json();
+    if (d.ok) usageProvider = d.provider === 'devin' ? 'devin' : 'official';
+  } catch {}
+}
+async function selectUsageProvider(provider) {
+  usageMode = provider === 'devin' || provider === 'official' ? provider : 'auto';
+  localStorage.setItem('usage-provider-mode', usageMode);
+  if (usageMode === 'auto') await detectUsageProvider();
+  else usageProvider = usageMode;
+  renderUsageTabs();
+  return loadSelectedUsage(true, true);
+}
+async function loadSelectedUsage(force, alreadyDetected) {
+  if (!alreadyDetected && usageMode === 'auto') await detectUsageProvider();
+  else if (usageMode !== 'auto') usageProvider = usageMode;
+  renderUsageTabs();
+  return usageProvider === 'devin' ? loadDevinUsage(force) : loadUsage(force);
+}
 function fmtReset(key, iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -857,6 +892,37 @@ async function loadUsage(force) {
       </div>`;
     }).join('');
     sub.textContent = (d.subscription || '') + ' · 点击刷新';
+  } catch {
+    box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">离线</div>';
+    sub.textContent = '点击重试';
+  }
+}
+
+async function loadDevinUsage(force) {
+  const box = document.getElementById('u-rows');
+  const sub = document.getElementById('u-sub');
+  if (force) sub.textContent = '刷新中…';
+  try {
+    const suffix = force ? '?force=1' : '';
+    const d = await (await fetch(CHAT_GATEWAY_API + '/api/usage/devin' + suffix, { headers: hdr() })).json();
+    if (!d.ok || !(d.windows || []).length) {
+      box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">待接入账户额度</div>';
+      sub.textContent = d.error || '升级 Pro 后抓取真实字段';
+      return;
+    }
+    const ws = ['daily', 'weekly', 'seven_day']
+      .map(k => d.windows.find(w => w.key === k)).filter(Boolean)
+      .filter((w, i, arr) => arr.findIndex(x => USAGE_SHOW[x.key] === USAGE_SHOW[w.key]) === i);
+    box.innerHTML = ws.map(w => {
+      const pct = Math.max(0, Math.min(100, Math.round(w.utilization || 0)));
+      const color = pct >= 85 ? 'var(--red)' : pct >= 60 ? 'var(--warm)' : 'var(--green)';
+      return '<div class="u-win">'
+        + '<div class="u-win-top"><span class="u-win-lbl">' + (USAGE_SHOW[w.key] || w.key)
+        + '</span><span class="u-win-meta">' + fmtReset(w.key, w.resets_at) + ' · ' + pct + '%</span></div>'
+        + '<div class="gbar"><div class="gfill" style="width:' + pct + '%;background:' + color + ';"></div></div>'
+        + '</div>';
+    }).join('');
+    sub.textContent = (d.plan || 'Devin') + ' · 点击刷新';
   } catch {
     box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">离线</div>';
     sub.textContent = '点击重试';
