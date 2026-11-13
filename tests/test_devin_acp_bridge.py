@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,13 @@ class DevinAcpBridgeTests(unittest.IsolatedAsyncioTestCase):
             cwd=self.temp.name,
             socket_path=self.socket_path,
         )
+
+    def test_gateway_constructor_uses_bridge_environment(self):
+        with patch.dict(os.environ, {"DEVIN_ACP_SOCKET": self.socket_path}):
+            client = DevinAcpClient(
+                binary="unused", model="model", cwd=self.temp.name
+            )
+        self.assertEqual(client.socket_path, self.socket_path)
 
     async def test_gateway_reconnect_does_not_restart_or_load_acp(self):
         first = self.client()

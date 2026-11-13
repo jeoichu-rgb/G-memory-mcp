@@ -215,7 +215,11 @@ class DevinAcpClient:
         self.cwd = cwd
         self.run_as_user = run_as_user
         self.home = home
-        self.socket_path = socket_path
+        # The gateway predates the bridge and constructs this client without
+        # transport arguments.  Reading the opt-in environment variable here
+        # keeps that call site untouched while the systemd drop-in moves it to
+        # the persistent bridge transport.
+        self.socket_path = socket_path or os.getenv("DEVIN_ACP_SOCKET", "")
         self._event_callback = event_callback
         self._proc: asyncio.subprocess.Process | None = None
         self._socket_reader: asyncio.StreamReader | None = None
