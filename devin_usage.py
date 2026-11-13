@@ -2,8 +2,8 @@
 
 Devin exposes account-level daily/weekly quota only inside its interactive
 terminal UI.  ACP ``usage_update`` is session/context usage and must never be
-presented as account quota.  This module keeps one idle Devin terminal alive,
-asks it for ``/usage`` on demand, and normalizes the rendered values.
+presented as account quota.  This module keeps one idle tmux-backed Devin terminal alive, asks it for
+``/usage`` on demand, and normalizes the rendered values.
 """
 
 from __future__ import annotations
@@ -11,8 +11,7 @@ from __future__ import annotations
 import getpass
 import os
 import re
-import select
-import struct
+import shlex
 import subprocess
 import threading
 import time
@@ -122,7 +121,7 @@ def parse_devin_usage(value: str, captured_at: datetime | None = None) -> dict[s
 
 
 class DevinUsageProbe:
-    """Persistent hidden terminal used only for Devin account quota reads."""
+    """Persistent tmux terminal used only for Devin account quota reads."""
 
     def __init__(
         self,
@@ -132,18 +131,18 @@ class DevinUsageProbe:
         cwd: str,
         run_as_user: str = "erik",
         home: str | None = None,
-        startup_timeout: float = 60.0,
-        response_timeout: float = 30.0,
+        session_name: str = "devin_usage_probe",
+        startup_timeout: float = 30.0,
+        response_timeout: float = 15.0,
     ):
         self.binary = binary
         self.model = model
         self.cwd = cwd
         self.run_as_user = run_as_user
         self.home = home or f"/home/{run_as_user}"
+        self.session_name = session_name
         self.startup_timeout = startup_timeout
         self.response_timeout = response_timeout
-        self._proc: subprocess.Popen[bytes] | None = None
-        self._master_fd: int | None = None
         self._lock = threading.Lock()
         self._account_info: dict[str, str] | None = None
 
@@ -153,7 +152,7 @@ class DevinUsageProbe:
         return command
 
     def _command(self) -> list[str]:
-        return self._run_as_user([self.binary, "--model", self.model])
+        return [self.binary, "--model", self.model]
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -168,133 +167,138 @@ class DevinUsageProbe:
         })
         return env
 
+    def _tmux(
+        self,
+        *args: str,
+        timeout: float = 20.0,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                self._run_as_user(["tmux", *args]),
+                cwd=self.cwd,
+                env=self._environment(),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DevinUsageProbeError(f"tmux command failed: {exc}") from exc
+
+    @property
+    def target(self) -> str:
+        return f"{self.session_name}:0.0"
+
     @property
     def running(self) -> bool:
-        return bool(self._proc and self._proc.poll() is None and self._master_fd is not None)
+        return self._tmux(
+            "has-session", "-t", self.session_name, timeout=5
+        ).returncode == 0
 
     def _close_process(self) -> None:
-        proc, master_fd = self._proc, self._master_fd
-        self._proc = None
-        self._master_fd = None
-        if master_fd is not None:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=3)
+        self._tmux("kill-session", "-t", self.session_name, timeout=5)
 
     def close(self) -> None:
         with self._lock:
-            if self.running:
-                try:
-                    os.write(self._master_fd, b"/exit\r")
-                    self._proc.wait(timeout=3)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
             self._close_process()
 
     def _start(self) -> None:
-        import pty
-
-        self._close_process()
-        master_fd, slave_fd = pty.openpty()
-        try:
-            import fcntl
-            import termios
-
-            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
-            proc = subprocess.Popen(
-                self._command(),
-                cwd=self.cwd,
-                env=self._environment(),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                close_fds=True,
+        if self.running:
+            return
+        shell_command = "exec " + " ".join(
+            shlex.quote(part) for part in self._command()
+        )
+        completed = self._tmux(
+            "new-session",
+            "-d",
+            "-s",
+            self.session_name,
+            "-c",
+            self.cwd,
+            "-x",
+            "160",
+            "-y",
+            "50",
+            shell_command,
+        )
+        if completed.returncode != 0 and not self.running:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise DevinUsageProbeError(
+                f"could not start Devin tmux session: {detail}"
             )
-        finally:
-            os.close(slave_fd)
-        self._proc = proc
-        self._master_fd = master_fd
-        self._wait_until_ready(self.startup_timeout)
-        if not self.running:
-            raise DevinUsageProbeError("Devin CLI exited while starting usage probe")
 
-    def _read_chunk(self, timeout: float) -> bytes:
-        if self._master_fd is None:
-            return b""
-        ready, _, _ = select.select([self._master_fd], [], [], max(0.0, timeout))
-        if not ready:
-            return b""
-        try:
-            return os.read(self._master_fd, 65536)
-        except OSError:
-            return b""
+    def _capture(self) -> str:
+        completed = self._tmux(
+            "capture-pane",
+            "-p",
+            "-J",
+            "-S",
+            "-200",
+            "-t",
+            self.target,
+            timeout=10,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise DevinUsageProbeError(
+                f"could not capture Devin tmux session: {detail}"
+            )
+        return completed.stdout
 
-    def _drain_until_quiet(self, timeout: float, quiet: float = 0.6) -> bytes:
+    def _send_literal(self, value: str) -> None:
+        completed = self._tmux(
+            "send-keys", "-t", self.target, "-l", value, timeout=5
+        )
+        if completed.returncode != 0:
+            raise DevinUsageProbeError("could not type into Devin tmux session")
+
+    def _send_enter(self) -> None:
+        completed = self._tmux(
+            "send-keys", "-t", self.target, "Enter", timeout=5
+        )
+        if completed.returncode != 0:
+            raise DevinUsageProbeError("could not submit Devin /usage command")
+
+    def _wait_until_ready(self, timeout: float) -> str:
         deadline = time.monotonic() + timeout
-        last_data = time.monotonic()
-        output = bytearray()
+        screen = ""
         while time.monotonic() < deadline:
-            chunk = self._read_chunk(min(0.2, deadline - time.monotonic()))
-            if chunk:
-                output.extend(chunk)
-                last_data = time.monotonic()
-                continue
-            if output and time.monotonic() - last_data >= quiet:
-                break
-            if self._proc and self._proc.poll() is not None:
-                break
-        return bytes(output)
-
-    def _wait_until_ready(self, timeout: float) -> bytes:
-        """Wait until Devin accepts slash commands instead of typing too early."""
-        deadline = time.monotonic() + timeout
-        output = bytearray()
-        while time.monotonic() < deadline:
-            chunk = self._read_chunk(min(0.5, deadline - time.monotonic()))
-            if chunk:
-                output.extend(chunk)
-                screen = strip_terminal_controls(output.decode("utf-8", "replace"))
-                if "Do you trust the authors of this directory?" in screen:
-                    raise DevinUsageProbeError(
-                        f"Devin CLI is waiting for directory trust confirmation: {self.cwd}"
-                    )
-                if "Alt+Enter for multiline prompts" in screen:
-                    return bytes(output)
-            if self._proc and self._proc.poll() is not None:
-                break
-        excerpt = strip_terminal_controls(output.decode("utf-8", "replace"))[-1000:]
+            screen = self._capture()
+            if "Do you trust the authors of this directory?" in screen:
+                raise DevinUsageProbeError(
+                    f"Devin CLI is waiting for directory trust confirmation: {self.cwd}"
+                )
+            if (
+                "Ask Devin to build features" in screen
+                and "Starting session" not in screen
+            ):
+                return screen
+            time.sleep(0.4)
         raise DevinUsageProbeError(
-            f"Devin CLI did not become ready before /usage: {excerpt!r}"
+            f"Devin tmux session did not become ready: {screen[-1000:]!r}"
         )
 
     def _query_once(self) -> dict[str, Any]:
-        if not self.running:
-            self._start()
-        self._drain_until_quiet(0.3, quiet=0.1)
-        os.write(self._master_fd, b"/usage\r")
+        self._start()
+        before = self._wait_until_ready(self.startup_timeout)
+        self._send_literal("/usage")
+        self._send_enter()
+
+        captured_at = datetime.now(timezone.utc)
         deadline = time.monotonic() + self.response_timeout
-        output = bytearray()
+        screen = before
         while time.monotonic() < deadline:
-            chunk = self._read_chunk(min(0.5, deadline - time.monotonic()))
-            if chunk:
-                output.extend(chunk)
-                decoded = output.decode("utf-8", "replace")
-                try:
-                    return parse_devin_usage(decoded, datetime.now(timezone.utc))
-                except DevinUsageProbeError:
-                    pass
-            if self._proc and self._proc.poll() is not None:
-                break
-        excerpt = strip_terminal_controls(output.decode("utf-8", "replace"))[-1000:]
-        raise DevinUsageProbeError(f"timed out reading Devin /usage: {excerpt!r}")
+            time.sleep(0.4)
+            screen = self._capture()
+            if screen == before:
+                continue
+            try:
+                return parse_devin_usage(screen, captured_at)
+            except DevinUsageProbeError:
+                pass
+        raise DevinUsageProbeError(
+            f"timed out reading Devin /usage from tmux: {screen[-1000:]!r}"
+        )
 
     def _read_account_info(self) -> dict[str, str]:
         if self._account_info is not None:

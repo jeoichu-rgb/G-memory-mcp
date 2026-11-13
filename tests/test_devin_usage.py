@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from devin_usage import (
     DevinUsageProbe,
@@ -77,21 +77,19 @@ Weekly  ■■■■■■■■■■■■■■■■■■■■  1% used  �
             "/home/erik/.local/bin/devin", "auth", "status"
         ])
 
-    def test_probe_waits_for_ready_marker_before_sending_usage(self):
+    def test_probe_waits_for_tmux_prompt(self):
         probe = DevinUsageProbe(
             binary="/home/erik/.local/bin/devin",
             model="claude-opus-4-6-thinking",
             cwd="/home/erik",
         )
-        probe._proc = Mock()
-        probe._proc.poll.return_value = None
-        chunks = iter([
-            b"Claude Opus 4.6 Thinking  Starting session...",
-            b"Alt+Enter for multiline prompts",
+        probe._capture = Mock(side_effect=[
+            "Claude Opus 4.6 Thinking  Starting session...",
+            "Ask Devin to build features, fix bugs, or work on your code",
         ])
-        probe._read_chunk = lambda _timeout: next(chunks)
-        output = probe._wait_until_ready(1)
-        self.assertIn(b"Alt+Enter for multiline prompts", output)
+        with patch("devin_usage.time.sleep"):
+            screen = probe._wait_until_ready(1)
+        self.assertIn("Ask Devin to build features", screen)
 
     def test_probe_reports_directory_trust_prompt(self):
         probe = DevinUsageProbe(
@@ -99,13 +97,34 @@ Weekly  ■■■■■■■■■■■■■■■■■■■■  1% used  �
             model="claude-opus-4-6-thinking",
             cwd="/opt/G-memory-mcp",
         )
-        probe._proc = Mock()
-        probe._proc.poll.return_value = None
-        probe._read_chunk = lambda _timeout: (
-            b"Do you trust the authors of this directory?"
+        probe._capture = Mock(
+            return_value="Do you trust the authors of this directory?"
         )
         with self.assertRaisesRegex(DevinUsageProbeError, "trust confirmation"):
             probe._wait_until_ready(1)
+
+    def test_query_reads_usage_from_reused_tmux_session(self):
+        probe = DevinUsageProbe(
+            binary="/home/erik/.local/bin/devin",
+            model="claude-opus-4-6-thinking",
+            cwd="/home/erik",
+        )
+        probe._start = Mock()
+        probe._wait_until_ready = Mock(
+            return_value="Ask Devin to build features, fix bugs, or work on your code"
+        )
+        probe._send_literal = Mock()
+        probe._send_enter = Mock()
+        probe._capture = Mock(return_value=(
+            "❭ /usage\nUsage\n"
+            "Daily 2% used · resets in 5h 28m\n"
+            "Weekly 1% used · resets Nov 15, 8:00 AM (UTC)\n"
+        ))
+        with patch("devin_usage.time.sleep"):
+            result = probe._query_once()
+        probe._send_literal.assert_called_once_with("/usage")
+        probe._send_enter.assert_called_once_with()
+        self.assertEqual([w["key"] for w in result["windows"]], ["daily", "weekly"])
 
     def test_terminal_control_stripping(self):
         self.assertEqual(strip_terminal_controls("\x1b[31mDaily\x1b[0m\r"), "Daily\n")
