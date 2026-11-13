@@ -1877,6 +1877,7 @@ def _mcp_server_list() -> list:
             "name": name,
             "url": cfg.get("url", ""),
             "command": cfg.get("command", ""),
+            "has_headers": bool(cfg.get("headers")),
             "enabled": any(p.startswith(f"mcp__{name}") for p in permissions),
         }
         for name, cfg in servers.items()
@@ -1896,7 +1897,19 @@ async def api_mcp_add(request: Request):
     if not name or not url:
         return JSONResponse(status_code=400, content={"error": "name and url required"})
     settings = _read_mcp_settings()
-    settings.setdefault("mcpServers", {})[name] = {"url": url}
+    server_config = {"url": url}
+    raw_headers = body.get("headers")
+    if isinstance(raw_headers, dict):
+        server_config["headers"] = {
+            str(key): str(value) for key, value in raw_headers.items()
+        }
+    elif isinstance(raw_headers, list):
+        server_config["headers"] = [
+            {"name": str(item["name"]), "value": str(item["value"])}
+            for item in raw_headers
+            if isinstance(item, dict) and "name" in item and "value" in item
+        ]
+    settings.setdefault("mcpServers", {})[name] = server_config
     perms = settings.setdefault("permissions", {}).setdefault("allow", [])
     pattern = f"mcp__{name}"
     if pattern not in perms:
@@ -1955,7 +1968,21 @@ async def api_mcp_test(request: Request):
                 "jsonrpc": "2.0", "method": "initialize", "id": 1,
                 "params": {"protocolVersion": "2025-03-26",
                            "capabilities": {}, "clientInfo": {"name": "palace-test", "version": "1.0"}}
-            }, headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+            }, headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                **(
+                    cfg.get("headers", {})
+                    if isinstance(cfg.get("headers"), dict)
+                    else {
+                        str(item["name"]): str(item["value"])
+                        for item in cfg.get("headers", [])
+                        if isinstance(item, dict)
+                        and "name" in item
+                        and "value" in item
+                    }
+                ),
+            })
             if resp.status_code == 200:
                 return {"name": name, "ok": True, "message": "Streamable HTTP 连接成功"}
             resp = await client.get(url)
