@@ -4,6 +4,7 @@ import asyncio
 from devin_acp import (
     DevinAcpClient,
     DevinModelUnavailable,
+    cache_read_tokens,
     extract_usage,
     find_config_option,
     normalize_session_update,
@@ -53,6 +54,11 @@ class DevinAcpParsingTests(unittest.TestCase):
         }, "model")
         self.assertIsNotNone(option)
         self.assertEqual(option["currentValue"], "claude-opus-4-6-thinking")
+
+    def test_cache_reads_distinguish_zero_from_missing(self):
+        self.assertEqual(cache_read_tokens({"cache_read_input_tokens": 0}), 0)
+        self.assertEqual(extract_usage({"cachedInputTokens": 0})["cached_input_tokens"], 0)
+        self.assertIsNone(extract_usage({"used": 20000})["cached_input_tokens"])
 
     def test_sse_mcp_has_required_empty_headers(self):
         servers = normalize_mcp_servers({

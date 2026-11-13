@@ -159,6 +159,21 @@ def normalize_session_update(params: dict[str, Any]) -> dict[str, Any]:
     return dict(params)
 
 
+def cache_read_tokens(usage: dict[str, Any]) -> int | None:
+    """Preserve the difference between an explicit zero and missing telemetry."""
+    meta = usage.get("_meta")
+    if isinstance(meta, dict):
+        for key in ("cognition.ai/cachedInputTokens",
+                    "cognition.ai/cacheReadInputTokens"):
+            if meta.get(key) is not None:
+                return int(meta[key])
+    for key in ("cachedInputTokens", "cacheReadInputTokens",
+                "cache_read_input_tokens", "cached_input_tokens"):
+        if usage.get(key) is not None:
+            return int(usage[key])
+    return None
+
+
 def extract_usage(update: dict[str, Any]) -> dict[str, Any]:
     """Normalize Devin's usage_update, including its token metadata."""
     meta = update.get("_meta") if isinstance(update.get("_meta"), dict) else {}
@@ -185,12 +200,7 @@ def extract_usage(update: dict[str, Any]) -> dict[str, Any]:
             or update.get("output_tokens")
             or 0
         ),
-        "cached_input_tokens": int(
-            meta.get("cognition.ai/cachedInputTokens")
-            or meta.get("cognition.ai/cacheReadInputTokens")
-            or update.get("cachedInputTokens")
-            or 0
-        ),
+        "cached_input_tokens": cache_read_tokens(update),
         "cost": float(amount) if amount is not None else None,
         "currency": str(currency or "USD"),
     }
