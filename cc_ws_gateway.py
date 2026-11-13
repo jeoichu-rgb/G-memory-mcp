@@ -420,7 +420,9 @@ DEVIN_HOME = os.getenv("DEVIN_HOME", f"/home/{DEVIN_USER}")
 _DEVIN_USAGE_PROBE = DevinUsageProbe(
     binary=DEVIN_BINARY,
     model=DEVIN_MODEL_ID,
-    cwd=CC_CWD,
+    # The repository triggers Devin's interactive trust prompt; the account
+    # quota command only needs a trusted working directory.
+    cwd=DEVIN_HOME,
     run_as_user=DEVIN_USER,
     home=DEVIN_HOME,
 )

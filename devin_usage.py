@@ -132,8 +132,8 @@ class DevinUsageProbe:
         cwd: str,
         run_as_user: str = "erik",
         home: str | None = None,
-        startup_timeout: float = 20.0,
-        response_timeout: float = 20.0,
+        startup_timeout: float = 60.0,
+        response_timeout: float = 30.0,
     ):
         self.binary = binary
         self.model = model
@@ -222,7 +222,7 @@ class DevinUsageProbe:
             os.close(slave_fd)
         self._proc = proc
         self._master_fd = master_fd
-        self._drain_until_quiet(self.startup_timeout)
+        self._wait_until_ready(self.startup_timeout)
         if not self.running:
             raise DevinUsageProbeError("Devin CLI exited while starting usage probe")
 
@@ -252,6 +252,28 @@ class DevinUsageProbe:
             if self._proc and self._proc.poll() is not None:
                 break
         return bytes(output)
+
+    def _wait_until_ready(self, timeout: float) -> bytes:
+        """Wait until Devin accepts slash commands instead of typing too early."""
+        deadline = time.monotonic() + timeout
+        output = bytearray()
+        while time.monotonic() < deadline:
+            chunk = self._read_chunk(min(0.5, deadline - time.monotonic()))
+            if chunk:
+                output.extend(chunk)
+                screen = strip_terminal_controls(output.decode("utf-8", "replace"))
+                if "Do you trust the authors of this directory?" in screen:
+                    raise DevinUsageProbeError(
+                        f"Devin CLI is waiting for directory trust confirmation: {self.cwd}"
+                    )
+                if "Alt+Enter for multiline prompts" in screen:
+                    return bytes(output)
+            if self._proc and self._proc.poll() is not None:
+                break
+        excerpt = strip_terminal_controls(output.decode("utf-8", "replace"))[-1000:]
+        raise DevinUsageProbeError(
+            f"Devin CLI did not become ready before /usage: {excerpt!r}"
+        )
 
     def _query_once(self) -> dict[str, Any]:
         if not self.running:
