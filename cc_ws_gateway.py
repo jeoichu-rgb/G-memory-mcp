@@ -49,6 +49,12 @@ from openrouter_cache import (
 )
 from api_scheduler_diag import write_event as api_diag
 from runtime_policy import subscription_only_task_blocked
+from hook_config import (
+    is_managed_thinking_hook_tool,
+    merge_hook_configs,
+    strip_managed_thinking_hook,
+    with_single_managed_thinking_hook,
+)
 from devin_acp import (
     DevinAcpClient,
     DevinAcpError,
@@ -1319,6 +1325,8 @@ class TranscriptTailer:
             elif bt == "tool_use":
                 name = blk.get("name", "")
                 if name in REPLY_TOOL_NAMES or _clean_tool_name(name) in REPLY_TOOL_NAMES:
+                    continue
+                if is_managed_thinking_hook_tool(name):
                     continue
                 clean = _clean_tool_name(name)
                 info = {"type": "tool_use", "name": clean,
@@ -6372,18 +6380,18 @@ async def startup_load_sessions():
             del servers["erik_channel"]
             log.info("Removed legacy erik_channel MCP from settings")
 
-        # Inject Stop hook for thinking extraction
-        hooks = settings.setdefault("hooks", {})
-        hooks["Stop"] = [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": f"python3 {Path(CC_CWD) / 'thinking_hook.py'}",
-            }],
-        }]
+        # The thinking Stop hook must live in one Claude settings scope only.
+        # Claude merges project, local and user hooks without de-duplicating;
+        # copying it into all three scopes made every stop execute three times.
+        hook_command = f"python3 {Path(CC_CWD) / 'thinking_hook.py'}"
+        project_hooks = strip_managed_thinking_hook(settings.get("hooks", {}))
+        if project_hooks:
+            settings["hooks"] = project_hooks
+        else:
+            settings.pop("hooks", None)
 
         write_claude_settings(settings)
-        log.info(f"Injected shared deny list: {len(SHARED_DENY_TOOLS)} tools blocked, Stop hook configured")
+        log.info(f"Injected shared deny list: {len(SHARED_DENY_TOOLS)} tools blocked")
 
         # CC CLI treats project settings.json MCP servers as untrusted (needs
         # interactive approval). Write MCP config to settings.local.json which
@@ -6395,16 +6403,19 @@ async def startup_load_sessions():
             local_perms.get("allow", []) + perms.get("allow", [])
         ))
         local_perms["deny"] = perms["deny"]
-        local["hooks"] = settings.get("hooks", {})
+        local_hooks = strip_managed_thinking_hook(local.get("hooks", {}))
+        hooks_payload = with_single_managed_thinking_hook(
+            merge_hook_configs(project_hooks, local_hooks), hook_command
+        )
+        local["hooks"] = hooks_payload
         write_claude_local_settings(local)
-        log.info(f"MCP config written to settings.local.json: "
+        log.info(f"MCP config and single Stop hook written to settings.local.json: "
                  f"{list(local.get('mcpServers', {}).keys())}")
 
         # Write MCP config to global ~/.claude/settings.json for both erik AND
         # root — Coolify terminal defaults to root, and `su erik` without `-`
         # keeps HOME=/root, so CC CLI reads root's global config.
         mcp_payload = settings.get("mcpServers", {})
-        hooks_payload = settings.get("hooks", {})
         for global_path in [
             Path(f"/home/{CC_USER}/.claude/settings.json"),
             Path("/root/.claude/settings.json"),
@@ -6420,7 +6431,13 @@ async def startup_load_sessions():
                 ))
                 # Keep the existing subscription profile's ToolSearch deny.
                 global_perms["deny"] = DENY_TOOLS
-                global_settings["hooks"] = hooks_payload
+                global_hooks = strip_managed_thinking_hook(
+                    global_settings.get("hooks", {})
+                )
+                if global_hooks:
+                    global_settings["hooks"] = global_hooks
+                else:
+                    global_settings.pop("hooks", None)
                 global_path.parent.mkdir(parents=True, exist_ok=True)
                 global_path.write_text(
                     json.dumps(global_settings, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -6434,7 +6451,7 @@ async def startup_load_sessions():
         if _openrouter_api_key():
             try:
                 _ensure_openrouter_runtime_config(
-                    settings=settings, permissions=perms, hooks=hooks_payload
+                    settings=settings, permissions=perms, hooks=project_hooks
                 )
             except Exception as e:
                 log.warning(f"Failed to prepare OpenRouter profile: {e}")

@@ -1843,6 +1843,7 @@ function appendThinking(text) {
 }
 
 function addToolCall(block) {
+  if (isManagedThinkingHookTool(block)) return;
   ensureAssistantBubble();
   const metaArea = currentBubble.querySelector('.msg-meta-blocks');
   const tool = document.createElement('div');
@@ -1854,6 +1855,13 @@ function addToolCall(block) {
     <div class="tool-content">${escapeHtml(JSON.stringify(block.input || {}, null, 2))}</div>
   `;
   metaArea.appendChild(tool);
+}
+
+function isManagedThinkingHookTool(tool) {
+  const name = String(tool?.name || '').trim().toLowerCase();
+  return name.includes('ran hook:')
+    && name.includes('thinking_hook.py')
+    && name.includes('(stop)');
 }
 
 function addMemoryBlock(memories) {
@@ -1979,6 +1987,24 @@ function clearMessages() {
 
 function renderHistory(messages) {
   clearMessages();
+  messages = (messages || []).map(msg => {
+    if (!Array.isArray(msg.tools)) return msg;
+    const hadManagedHook = msg.tools.some(isManagedThinkingHookTool);
+    return {
+      ...msg,
+      tools: msg.tools.filter(t => !isManagedThinkingHookTool(t)),
+      _hadManagedHook: hadManagedHook,
+    };
+  }).filter(msg => {
+    const hadOnlyManagedHookTools = msg._hadManagedHook
+      && Array.isArray(msg.tools)
+      && msg.tools.length === 0
+      && !msg.content
+      && !msg.thinking
+      && !msg.voice
+      && !msg.call_record;
+    return !hadOnlyManagedHookTools;
+  });
   if (!messages || messages.length === 0) return;
   hideEmpty();
 
@@ -2081,7 +2107,7 @@ function renderHistory(messages) {
         </div>`;
       }
       if (msg.tools && msg.tools.length) {
-        msg.tools.forEach(t => {
+        msg.tools.filter(t => !isManagedThinkingHookTool(t)).forEach(t => {
           metaHtml += `<div class="tool-block">
             <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
               Called ${escapeHtml(t.name || 'tool')} <span class="tool-arrow">▸</span>
