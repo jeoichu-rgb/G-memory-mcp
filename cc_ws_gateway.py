@@ -326,6 +326,10 @@ POMODORO_BREAK_MIN = 20
 active_ws = None  # WebSocket | None
 _ws_last_activity = 0.0  # last time we received anything from the frontend WS
 _WS_STALE_SECS = 120  # if no client message for this long, treat WS as potentially stale
+# Every browser has its own WebSocket and its own selected chat session.  The
+# old single ``active_ws`` pointer is still used by legacy background features,
+# but it cannot keep a phone and a desktop viewing the same session in sync.
+_frontend_ws_sessions: dict[int, tuple[WebSocket, str | None]] = {}
 peb_state: dict = {}
 pomo_state: dict = {}
 desire_st = None
@@ -1927,6 +1931,55 @@ def load_history(sid: str) -> dict:
         except Exception:
             pass
     return {"meta": {}, "messages": []}
+
+
+def _register_frontend_ws(ws: WebSocket) -> None:
+    _frontend_ws_sessions[id(ws)] = (ws, None)
+
+
+def _bind_frontend_ws(ws: WebSocket, sid: str | None) -> None:
+    _frontend_ws_sessions[id(ws)] = (ws, sid)
+
+
+def _unregister_frontend_ws(ws: WebSocket) -> None:
+    _frontend_ws_sessions.pop(id(ws), None)
+
+
+async def _broadcast_session_history(
+    session: "Session", *, exclude: WebSocket | None = None,
+) -> None:
+    """Refresh other open frontends that are viewing ``session``.
+
+    The sending page already renders its own user bubble and receives the
+    assistant stream directly.  Other devices do neither, so send them the
+    authoritative persisted history after the user message is saved and again
+    after the assistant turn completes.
+    """
+    history = load_history(session.id)
+    payload = {
+        "event": "session:history",
+        "sessionId": session.id,
+        "messages": history.get("messages", []),
+        "model": session.model,
+        "effort": session.effort,
+        "turn_count": session.turn_count,
+        "session_max_turns": SESSION_MAX_TURNS,
+        "boundary_due": session.boundary_due,
+    }
+    stale: list[int] = []
+    for key, (client_ws, sid) in list(_frontend_ws_sessions.items()):
+        if client_ws is exclude or sid != session.id:
+            continue
+        # The client may have switched sessions while another send yielded.
+        current = _frontend_ws_sessions.get(key)
+        if not current or current[0] is not client_ws or current[1] != session.id:
+            continue
+        try:
+            await client_ws.send_json(payload)
+        except Exception:
+            stale.append(key)
+    for key in stale:
+        _frontend_ws_sessions.pop(key, None)
 
 
 def resolve_nth_user_from_tail(sid: str, nth: int):
@@ -4191,9 +4244,15 @@ async def run_devin_background_oneshot(
                 if "session" not in str(exc).casefold() or _user_msg_active:
                     raise
                 client.forget(session.devin_session_id)
+                text_parts.clear()
+                thinking_parts.clear()
+                tools.clear()
+                latest_usage = {}
+                # session/load replays the existing conversation.  Attaching
+                # this turn's collector here used to concatenate that replay
+                # with the new patrol/KAL reply and persist it as one message.
                 loaded = await client.load_session(
                     session.devin_session_id,
-                    callback=on_update,
                     mcp_servers=_devin_mcp_servers(),
                 )
                 session.devin_config_options = _devin_config_options(loaded)
@@ -7132,6 +7191,7 @@ async def websocket_endpoint(ws: WebSocket):
     # background oneshots" write silently landed on a local shadow.
     global active_ws, _active_frontend_ws, _ws_last_activity, _user_msg_active, _last_msg_source
     await ws.accept()
+    _register_frontend_ws(ws)
     active_ws = ws
     _active_frontend_ws = ws
     _ws_last_activity = time_mod.time()
@@ -7196,6 +7256,7 @@ async def websocket_endpoint(ws: WebSocket):
                 session.transcript_runtime = session.runtime
                 sessions[sid] = session
                 current_session = session
+                _bind_frontend_ws(ws, sid)
                 _set_dashboard_session(session)
                 save_session_meta(session)
                 await ws.send_json(
@@ -7214,12 +7275,14 @@ async def websocket_endpoint(ws: WebSocket):
                 if sid in sessions:
                     prev_cc_id = current_session.cc_session_id if current_session else None
                     current_session = sessions[sid]
+                    _bind_frontend_ws(ws, sid)
                     _set_dashboard_session(current_session)
                     pending_model = current_session.model
                     pending_effort = current_session.effort
                     history = load_history(sid)
                     await ws.send_json({
                         "event": "session:history",
+                        "sessionId": sid,
                         "messages": history.get("messages", []),
                         "model": current_session.model,
                         "effort": current_session.effort,
@@ -7331,6 +7394,9 @@ async def websocket_endpoint(ws: WebSocket):
                         # silently spawns a brand-new empty session.
                         current_session = (max(sessions.values(), key=lambda s: s.last_active)
                                            if sessions else None)
+                        _bind_frontend_ws(
+                            ws, current_session.id if current_session else None
+                        )
                         if current_session:
                             _set_dashboard_session(current_session)
                             log.info(f"Session delete: current fell back to {current_session.id}")
@@ -7397,6 +7463,7 @@ async def websocket_endpoint(ws: WebSocket):
                             })
                             continue
                         current_session = result.pop("session")
+                        _bind_frontend_ws(ws, current_session.id)
                         _set_dashboard_session(current_session)
                         _adopt_background_session_after_forge(
                             current_session, request_at=time_mod.time()
@@ -7545,6 +7612,7 @@ async def websocket_endpoint(ws: WebSocket):
                     session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
                     sessions[sid] = session
                     current_session = session
+                    _bind_frontend_ws(ws, sid)
                     _set_dashboard_session(session)
                     _adopt_background_session_after_forge(session)
                     save_session_meta(session)
@@ -7588,6 +7656,7 @@ async def websocket_endpoint(ws: WebSocket):
                     if not current_session or current_session.id != payload_sid:
                         log.info(f"chat:send restored session from payload: {payload_sid}")
                         current_session = sessions[payload_sid]
+                        _bind_frontend_ws(ws, payload_sid)
                         pending_model = current_session.model
                         pending_effort = current_session.effort
 
@@ -7599,6 +7668,7 @@ async def websocket_endpoint(ws: WebSocket):
                     current_session.runtime = _runtime_for_model(pending_model)
                     current_session.transcript_runtime = current_session.runtime
                     sessions[sid] = current_session
+                    _bind_frontend_ws(ws, sid)
                     save_session_meta(current_session)
                     await ws.send_json(
                         {"event": "session:created", "sessionId": sid}
@@ -7638,6 +7708,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "event": "session:list",
                     "sessions": [s.to_dict() for s in sorted_sessions],
                 })
+                await _broadcast_session_history(current_session, exclude=ws)
 
                 # Snap: save images to temp files for CC to Read
                 snap_paths = []
@@ -8310,6 +8381,7 @@ async def websocket_endpoint(ws: WebSocket):
                 call_session = sessions.get(call_sid) if call_sid else current_session
                 if call_session:
                     current_session = call_session
+                    _bind_frontend_ws(ws, call_session.id)
                     _set_dashboard_session(call_session)
                     _bind_runtime_scheduler(call_session, real_user=True)
                     call_session._in_call = True
@@ -8440,14 +8512,20 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         log.info("WS client disconnected (pebbling worker continues)")
         _user_msg_active = False
-        if active_ws is ws:
-            active_ws = None
-            _ws_last_activity = 0.0
     except Exception as e:
         log.exception(f"WS error: {e}")
         _user_msg_active = False
+    finally:
+        _unregister_frontend_ws(ws)
+        replacement = next(
+            (client for client, _sid in reversed(list(_frontend_ws_sessions.values()))),
+            None,
+        )
         if active_ws is ws:
-            active_ws = None
+            active_ws = replacement
+        if _active_frontend_ws is ws:
+            _active_frontend_ws = replacement
+        if active_ws is None:
             _ws_last_activity = 0.0
 
 
@@ -8689,6 +8767,8 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
             "event": "session:list",
             "sessions": [item.to_dict() for item in sorted_sessions],
         })
+        if completed:
+            await _broadcast_session_history(session, exclude=ws)
         context_usage = {
             "input_tokens": session.devin_context_used,
             "output_tokens": 0,
@@ -8722,6 +8802,7 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
                 thinking=session._current_thinking,
                 tools=session._current_tools or None,
             )
+            await _broadcast_session_history(session, exclude=ws)
         try:
             await ws.send_json({
                 "event": "system:error",
@@ -9009,6 +9090,9 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 "sessions": [s.to_dict() for s in sorted_sessions],
             })
 
+        if completed_chat_turn:
+            await _broadcast_session_history(session, exclude=ws)
+
         ws_ok = False
         if not session._result_sent:
             try:
@@ -9069,6 +9153,7 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
                 tools=session._current_tools if session._current_tools else None,
                 source=_err_source,
             )
+            await _broadcast_session_history(session, exclude=ws)
         ws_err_ok = False
         try:
             await ws.send_json({"event": "system:error", "message": str(e)})

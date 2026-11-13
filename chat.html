@@ -1521,6 +1521,9 @@ function handleWSMessage(data) {
       break;
 
     case 'session:history':
+      // A history refresh can race with a session switch on another device.
+      // Never paint an old session over the one this tab is currently viewing.
+      if (data.sessionId && data.sessionId !== currentSessionId) break;
       if (data.model) {
         setActiveModel(data.model);
       }
