@@ -6,6 +6,7 @@ from devin_acp import (
     extract_usage,
     find_config_option,
     normalize_session_update,
+    normalize_mcp_servers,
 )
 
 
@@ -51,6 +52,32 @@ class DevinAcpParsingTests(unittest.TestCase):
         }, "model")
         self.assertIsNotNone(option)
         self.assertEqual(option["currentValue"], "claude-opus-4-6-thinking")
+
+    def test_sse_mcp_has_required_empty_headers(self):
+        servers = normalize_mcp_servers({
+            "tools": {
+                "type": "sse",
+                "url": "http://127.0.0.1:8001/mcp/example/sse",
+            },
+        })
+        self.assertEqual(servers, [{
+            "name": "tools",
+            "type": "sse",
+            "url": "http://127.0.0.1:8001/mcp/example/sse",
+            "headers": [],
+        }])
+
+    def test_stdio_mcp_uses_v1_untagged_shape(self):
+        servers = normalize_mcp_servers({
+            "local": {"command": "python3", "args": ["server.py"]},
+        })
+        self.assertEqual(servers, [{
+            "name": "local",
+            "command": "python3",
+            "args": ["server.py"],
+            "env": [],
+        }])
+        self.assertNotIn("type", servers[0])
 
     def test_root_launches_devin_as_erik(self):
         client = DevinAcpClient(

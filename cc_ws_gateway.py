@@ -54,6 +54,7 @@ from devin_acp import (
     DevinAcpError,
     DevinModelUnavailable,
     extract_usage as extract_devin_usage,
+    normalize_mcp_servers,
 )
 from devin_usage import DevinUsageProbe, DevinUsageProbeError
 
@@ -5891,42 +5892,7 @@ def _devin_mcp_servers() -> list[dict]:
         servers = data.get("mcpServers")
         if isinstance(servers, dict):
             merged.update(servers)
-    result: list[dict] = []
-    for name, config in merged.items():
-        if not isinstance(config, dict):
-            continue
-        url = str(config.get("url") or "")
-        if url:
-            server_type = str(config.get("type") or "")
-            if server_type not in ("http", "sse"):
-                server_type = "sse" if url.rstrip("/").endswith("/sse") else "http"
-            server = {"name": name, "type": server_type, "url": url}
-            headers = config.get("headers")
-            if isinstance(headers, list):
-                server["headers"] = headers
-            elif isinstance(headers, dict):
-                server["headers"] = [
-                    {"name": key, "value": str(value)}
-                    for key, value in headers.items()
-                ]
-            result.append(server)
-            continue
-        command = config.get("command")
-        if command:
-            server = {
-                "name": name,
-                "type": "stdio",
-                "command": str(command),
-                "args": [str(value) for value in config.get("args", [])],
-            }
-            env = config.get("env")
-            if isinstance(env, dict):
-                server["env"] = [
-                    {"name": key, "value": str(value)}
-                    for key, value in env.items()
-                ]
-            result.append(server)
-    return result
+    return normalize_mcp_servers(merged)
 
 
 def _get_devin_client() -> DevinAcpClient:

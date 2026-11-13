@@ -21,6 +21,81 @@ log = logging.getLogger("cc-gw.devin")
 EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+def normalize_mcp_servers(
+    raw_servers: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Translate Claude-style MCP config to strict ACP v1 wire objects.
+
+    ACP v1 requires headers for HTTP/SSE, args and env for stdio,
+    and uses no type discriminator for the stdio variant.
+    """
+    result: list[dict[str, Any]] = []
+    for name, config in raw_servers.items():
+        if not isinstance(config, dict):
+            continue
+        url = str(config.get("url") or "")
+        if url:
+            server_type = str(config.get("type") or "")
+            if server_type not in ("http", "sse"):
+                server_type = (
+                    "sse" if url.rstrip("/").endswith("/sse") else "http"
+                )
+            headers: list[dict[str, str]] = []
+            raw_headers = config.get("headers")
+            if isinstance(raw_headers, dict):
+                headers = [
+                    {"name": str(key), "value": str(value)}
+                    for key, value in raw_headers.items()
+                ]
+            elif isinstance(raw_headers, list):
+                headers = [
+                    {
+                        "name": str(item["name"]),
+                        "value": str(item["value"]),
+                    }
+                    for item in raw_headers
+                    if isinstance(item, dict)
+                    and "name" in item
+                    and "value" in item
+                ]
+            result.append({
+                "name": str(name),
+                "type": server_type,
+                "url": url,
+                "headers": headers,
+            })
+            continue
+
+        command = config.get("command")
+        if not command:
+            continue
+        raw_env = config.get("env")
+        env: list[dict[str, str]] = []
+        if isinstance(raw_env, dict):
+            env = [
+                {"name": str(key), "value": str(value)}
+                for key, value in raw_env.items()
+            ]
+        elif isinstance(raw_env, list):
+            env = [
+                {
+                    "name": str(item["name"]),
+                    "value": str(item["value"]),
+                }
+                for item in raw_env
+                if isinstance(item, dict)
+                and "name" in item
+                and "value" in item
+            ]
+        result.append({
+            "name": str(name),
+            "command": str(command),
+            "args": [str(value) for value in config.get("args", [])],
+            "env": env,
+        })
+    return result
+
+
 class DevinAcpError(RuntimeError):
     """ACP process or JSON-RPC error."""
 
@@ -153,7 +228,8 @@ class DevinAcpClient:
 
     def _command(self) -> list[str]:
         base = [self.binary, "acp", "--model", self.model]
-        if self.run_as_user and os.geteuid() == 0 and self.run_as_user != "root":
+        is_root = getattr(os, "geteuid", lambda: -1)() == 0
+        if self.run_as_user and is_root and self.run_as_user != "root":
             return ["sudo", "-H", "-u", self.run_as_user, *base]
         return base
 
