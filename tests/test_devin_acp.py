@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 
 from devin_acp import (
     DevinAcpClient,
@@ -133,6 +134,47 @@ class DevinModelGuardTests(unittest.IsolatedAsyncioTestCase):
                     "options": [],
                 }]
             })
+
+
+class DevinPromptSerializationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_queued_prompt_does_not_steal_active_callback(self):
+        client = DevinAcpClient(
+            binary="devin", model="model", cwd="/tmp"
+        )
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = 0
+
+        async def fake_request(method, params, timeout=300):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                await release_first.wait()
+            return {"stopReason": "end_turn"}
+
+        client.request = fake_request
+
+        async def first_callback(update):
+            return None
+
+        async def second_callback(update):
+            return None
+
+        first = asyncio.create_task(
+            client.prompt("session", "first", first_callback)
+        )
+        await first_started.wait()
+        second = asyncio.create_task(
+            client.prompt("session", "second", second_callback)
+        )
+        await asyncio.sleep(0)
+        self.assertIs(client._callbacks["session"], first_callback)
+
+        release_first.set()
+        await first
+        await second
+        self.assertIs(client._callbacks["session"], second_callback)
 
 
 if __name__ == "__main__":

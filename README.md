@@ -109,12 +109,14 @@ Stop hook (回复结束后触发 thinking_hook.py):
 
 ### Session 隔离
 
-每个前端 session 独立映射一个 CC CLI 会话：
+每个前端 session 独立映射一个同渠道后端会话：
 
-- 前端创建新 session → 网关分配新的 `cc_session_id`
+- 官端 / OpenRouter → 独立 `cc_session_id`；Devin → 独立 `devin_session_id`
 - 发消息前检查当前 tmux 中的 CC CLI session 是否匹配目标
 - 不匹配 → `restart_cc_for_session()`：kill 旧 CC CLI → 启动新的 `claude --resume <target_id>`
 - `_tmux_send_lock`（asyncio.Lock）防止并发消息发送冲突
+- 已绑定后端的 Session 不允许从模型下拉框跨渠道改写；切渠道必须新建 Session 或在同渠道 Forge
+- 删除 Session 时同步清除 Dashboard、后台调度、番茄钟和 last-good 指针，后台结果也会再次验证 Session 仍存在，避免删除后被异步任务“复活”
 
 ### 计费
 
@@ -139,6 +141,12 @@ OPENROUTER_CACHE_TTL=1h
 API 通道使用隔离的 `/home/erik/.claude-openrouter` 配置与 transcript 目录，模型固定为 OpenRouter 的 Claude Opus 4.6（200k context）。Claude Code 的请求先经过网关内置的 `/openrouter/*` 透明代理：保留 CC 原生 system/tools/history 和工具循环，只补 OpenRouter 的稳定 `session_id`、`provider.only=["anthropic"]`、`allow_fallbacks=true`，去掉会绕开 sticky routing 的 `provider.order/sort`。缓存严格使用两个显式 1h 断点：固定 system 末尾 + 倒数第 2 条无附件、非 tool-result 的真实 user；不使用顶层自动 `cache_control`。Session 第一轮后模型和 effort 锁定，到边界才允许换，避免拆成另一套缓存。每条 API 回复显示 token、缓存命中率和估算费用；Dashboard 的 OpenRouter 卡通过 `/api/v1/key` 显示 Key 的精确累计用量。未配置 Key 时选择 API 只会返回明确错误，不会关闭正在运行的订阅通道。
 
 API 长窗的生命周期固定为：当前 Session 保留完整原文，不做中途 DS 摘要；完成 70 个 `user + assistant` 回合后只显示边界提醒，等待 Jeoi 手动点击 Forge，绝不自动换窗。手动 Forge 后执行：写一次 Session 总日记 → Forge 最近约 15k token 原始 transcript → 合并 `pending core memory` → 创建新窗。日记、Forge 继承区、工具子轮、后台 oneshot 和现有 Forge 验证都不计回合。新 transcript 的顺序是 `CC system/tools/CLAUDE.md → 上一 Session 总日记 → Forge 15k 原文 → 新 Session 对话`。
+
+### Devin Pro 通道
+
+聊天页的 `D · Opus 4.6` 使用持久化 Devin ACP 进程；每个前端 Session 绑定自己的 `devin_session_id`，不会借用 tmux 中的官端或 OpenRouter 会话。Forge 也严格继承来源渠道：官端→官端、OpenRouter→OpenRouter、Devin→新的 Devin ACP Session；只有新后端在原渠道回复验证 `OK` 后，前端选择、Dashboard 和全部后台绑定才原子迁移到新 Session，旧 Session 只保留为历史。
+
+后台规则保持原样：Patrol 仍按 5/10/20 分钟独立运行；统一 50 分钟槽仍为 `KAL > Desire > Pebbling`。OpenRouter 的 KAL 默认常开；Devin 的 KAL 跟随聊天页 🐧/🪨 石头开关，打开后 Devin 的 KAL、Patrol、Pebbling 都投递到同一个当前绑定的 Devin Session。用户消息到达时优先取消 Devin 后台轮，防止后台回复抢占真实对话。
 
 ### 部署
 

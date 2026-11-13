@@ -48,7 +48,16 @@ from openrouter_cache import (
     sticky_session_id,
 )
 from api_scheduler_diag import write_event as api_diag
-from runtime_policy import subscription_only_task_blocked
+from background_scheduler import (
+    choose_background_job,
+    keepalive_enabled_for_runtime,
+    scheduler_slot_due,
+)
+from runtime_policy import (
+    forge_route,
+    session_route_change_locked,
+    subscription_only_task_blocked,
+)
 from hook_config import (
     is_managed_thinking_hook_tool,
     merge_hook_configs,
@@ -217,6 +226,10 @@ API_SCHEDULER_INTERVAL = int(os.getenv("API_SCHEDULER_INTERVAL", "3000"))
 API_KEEPALIVE_MISS_LIMIT = int(os.getenv("API_KEEPALIVE_MISS_LIMIT", "2"))
 API_KEEPALIVE_MAX_TOKENS = int(os.getenv("API_KEEPALIVE_MAX_TOKENS", "20"))
 API_DESIRE_MAX_TOKENS = int(os.getenv("API_DESIRE_MAX_TOKENS", "800"))
+DEVIN_KEEPALIVE_PROMPT = (
+    "[keepalive] This is an automatic session keepalive, not a new message "
+    "from Jeoi. Do not call tools. Reply with exactly OK and nothing else."
+)
 EVENTS_PATH = Path(CC_CWD) / "pebbling_events.json"
 PEBBLING_STATE_PATH = Path(CC_CWD) / "pebbling_state.json"
 ALARMS_PATH = Path(CC_CWD) / "alarms.json"
@@ -395,6 +408,9 @@ def load_last_good() -> dict | None:
 
 _tmux_send_lock = asyncio.Lock()
 _api_scheduler_lock = asyncio.Lock()
+_devin_scheduler_lock = asyncio.Lock()
+_devin_background_lock = asyncio.Lock()
+_devin_background_session_id: str | None = None
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
 
@@ -571,6 +587,41 @@ def _api_scheduler_state() -> dict:
     for key, value in defaults.items():
         state.setdefault(key, value)
     return state
+
+
+def _devin_scheduler_state() -> dict:
+    state = peb_state.setdefault("devin_scheduler", {})
+    defaults = {
+        "active": False,
+        "gateway_session_id": None,
+        "backend_session_id": None,
+        "last_request_at": 0.0,
+        "keepalive_misses": 0,
+        "keepalive_breaker": False,
+        "last_job": None,
+        "last_job_at": 0.0,
+        "last_keepalive_error": None,
+        "last_keepalive_stop_reason": None,
+        "last_keepalive_output_preview": "",
+    }
+    for key, value in defaults.items():
+        state.setdefault(key, value)
+    return state
+
+
+def _record_devin_request_success(
+    session: "Session", started_at: float, job: str | None = None,
+) -> None:
+    state = _devin_scheduler_state()
+    if (state.get("active")
+            and state.get("gateway_session_id") == session.id
+            and state.get("backend_session_id") == session.devin_session_id):
+        state["last_request_at"] = started_at
+        peb_state["t_cache"] = started_at
+        if job:
+            state["last_job"] = job
+            state["last_job_at"] = started_at
+        save_peb_state()
 
 
 def _current_api_sticky_id() -> str:
@@ -1672,6 +1723,19 @@ def load_peb_state() -> dict:
             "last_keepalive_output_preview": "",
             "last_keepalive_max_tokens": None,
         },
+        "devin_scheduler": {
+            "active": False,
+            "gateway_session_id": None,
+            "backend_session_id": None,
+            "last_request_at": 0.0,
+            "keepalive_misses": 0,
+            "keepalive_breaker": False,
+            "last_job": None,
+            "last_job_at": 0.0,
+            "last_keepalive_error": None,
+            "last_keepalive_stop_reason": None,
+            "last_keepalive_output_preview": "",
+        },
     }
     if PEBBLING_STATE_PATH.exists():
         try:
@@ -1684,6 +1748,12 @@ def load_peb_state() -> dict:
             api_state = data["api_scheduler"]
             for k, v in api_defaults.items():
                 api_state.setdefault(k, v)
+            devin_defaults = defaults["devin_scheduler"]
+            if not isinstance(data.get("devin_scheduler"), dict):
+                data["devin_scheduler"] = {}
+            devin_state = data["devin_scheduler"]
+            for k, v in devin_defaults.items():
+                devin_state.setdefault(k, v)
             # Clean up entries > 48h
             cutoff = time_mod.time() - 48 * 3600
             data["pebbling_history"] = [t for t in data["pebbling_history"] if t > cutoff]
@@ -3898,6 +3968,9 @@ async def run_cc_oneshot(
 ) -> tuple:
     """Returns (text, thinking, tools). Sends via tmux and reads transcript."""
     global _transcript_path_cache
+    if not _session_is_registered(session):
+        log.info("run_cc_oneshot: session %s is no longer registered", session.id)
+        return "", "", []
     if _tmux_send_lock.locked() or _user_msg_active:
         log.info(f"run_cc_oneshot: busy (lock={_tmux_send_lock.locked()}, user_msg={_user_msg_active}), skipping")
         return "", "", []
@@ -4030,18 +4103,178 @@ async def run_cc_oneshot(
         if job:
             _set_api_request_job(None)
 
+
+async def _cancel_devin_background_for_user() -> None:
+    """Give an arriving real user turn priority over a background Devin turn."""
+    if not _devin_background_session_id:
+        return
+    try:
+        await _get_devin_client().cancel(_devin_background_session_id)
+        log.info(
+            "Cancelled Devin background turn for user message: %s",
+            _devin_background_session_id,
+        )
+    except Exception as exc:
+        log.warning("Failed to cancel Devin background turn: %s", exc)
+
+
+async def run_devin_background_oneshot(
+    prompt: str, session: "Session", max_turns=None, job: str | None = None,
+) -> tuple:
+    """Run patrol/keepalive/desire/pebbling in the bound Devin session."""
+    del max_turns  # ACP owns its turn limit; kept for the shared call shape.
+    global _devin_background_session_id
+    if (not _session_is_registered(session)
+            or not session.devin_session_id or _devin_background_lock.locked()
+            or _user_msg_active or session._in_call):
+        return "", "", []
+
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tools: list[str] = []
+    latest_usage: dict = {}
+    cancelled = False
+    client = _get_devin_client()
+    started_at = time_mod.time()
+    starting_cost = session.devin_cumulative_cost
+
+    async def on_update(update: dict):
+        nonlocal latest_usage, cancelled
+        if _user_msg_active and not cancelled:
+            cancelled = True
+            await client.cancel(session.devin_session_id)
+            return
+        kind = str(
+            update.get("sessionUpdate")
+            or update.get("session_update")
+            or update.get("type")
+            or ""
+        )
+        if kind == "agent_message_chunk":
+            chunk = _devin_chunk_text(update)
+            if chunk:
+                text_parts.append(chunk)
+        elif kind == "agent_thought_chunk":
+            chunk = _devin_chunk_text(update)
+            if chunk:
+                thinking_parts.append(chunk)
+        elif kind == "tool_call":
+            tools.append(str(_devin_tool_block(update).get("name") or "tool"))
+        elif kind == "usage_update":
+            latest_usage = extract_devin_usage(update)
+            session.devin_context_used = latest_usage["context_used"]
+            if latest_usage["context_size"]:
+                session.devin_context_window = latest_usage["context_size"]
+            if latest_usage["cost"] is not None:
+                session.devin_cumulative_cost = latest_usage["cost"]
+                session.devin_cost_currency = latest_usage["currency"]
+
+    async with _devin_background_lock:
+        if _user_msg_active:
+            return "", "", []
+        _devin_background_session_id = session.devin_session_id
+        try:
+            try:
+                result = await client.prompt(
+                    session.devin_session_id, prompt, on_update
+                )
+            except DevinAcpError as exc:
+                if "session" not in str(exc).casefold() or _user_msg_active:
+                    raise
+                client.forget(session.devin_session_id)
+                loaded = await client.load_session(
+                    session.devin_session_id,
+                    callback=on_update,
+                    mcp_servers=_devin_mcp_servers(),
+                )
+                session.devin_config_options = _devin_config_options(loaded)
+                session.devin_model_actual = (
+                    _devin_actual_model(loaded) or DEVIN_MODEL_ID
+                )
+                await client.set_effort(
+                    session.devin_session_id, session.effort, loaded
+                )
+                result = await client.prompt(
+                    session.devin_session_id, prompt, on_update
+                )
+
+            if not _session_is_registered(session):
+                log.info(
+                    "Discarded Devin background result for deleted session %s",
+                    session.id,
+                )
+                return "", "", []
+            raw_usage = result.usage
+            turn_usage = {
+                "input_tokens": int(
+                    raw_usage.get("inputTokens")
+                    or raw_usage.get("input_tokens")
+                    or latest_usage.get("input_tokens")
+                    or 0
+                ),
+                "output_tokens": int(
+                    raw_usage.get("outputTokens")
+                    or raw_usage.get("output_tokens")
+                    or latest_usage.get("output_tokens")
+                    or 0
+                ),
+                "cache_read_input_tokens": int(
+                    raw_usage.get("cachedInputTokens")
+                    or raw_usage.get("cache_read_input_tokens")
+                    or latest_usage.get("cached_input_tokens")
+                    or 0
+                ),
+                "cache_creation_input_tokens": 0,
+            }
+            turn_cost = max(
+                0.0, session.devin_cumulative_cost - starting_cost
+            ) if latest_usage.get("cost") is not None else 0.0
+            if any(turn_usage.values()) or turn_cost:
+                _accumulate_session_usage(session, turn_usage, turn_cost)
+            if result.stop_reason == "end_turn" and not cancelled:
+                _record_devin_request_success(session, started_at, job=job)
+            save_session_meta(session)
+            text = "".join(text_parts).strip()
+            if cancelled:
+                log.info("Devin background %s yielded to user", job or "turn")
+                return "", "", []
+            log.info(
+                "Devin background %s: stop=%s text=%s tools=%s",
+                job or "turn", result.stop_reason, text[:120], tools,
+            )
+            return text, "".join(thinking_parts), list(dict.fromkeys(tools))
+        except Exception as exc:
+            log.warning("Devin background %s failed: %s", job or "turn", exc)
+            return "", "", []
+        finally:
+            _devin_background_session_id = None
+
+
+async def run_background_oneshot(
+    prompt: str, session: "Session", max_turns=None, job: str | None = None,
+) -> tuple:
+    if session.runtime == DEVIN_RUNTIME:
+        return await run_devin_background_oneshot(
+            prompt, session, max_turns=max_turns, job=job
+        )
+    return await run_cc_oneshot(
+        prompt, session, max_turns=max_turns, job=job
+    )
+
 # ── Post-call follow-up ──
 
 async def _send_call_followup(session: "Session"):
     await asyncio.sleep(3)
-    if _user_msg_active:
+    if _user_msg_active or not _session_is_registered(session):
         return
     prompt = (
         "[system] Jeoi刚挂了电话。你可以发一条消息给她——"
         "随便说几句，把通话里没说完的补上，或者就简单告个别。"
         "正常文字消息，不需要TTS格式。如果没什么要说的就回复[无]。"
     )
-    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=1)
+    text, thinking, tools = await run_background_oneshot(
+        prompt, session, max_turns=1, job="call_followup"
+    )
     if text and "[无]" not in text:
         session._call_ended_notify = False
         await push_pebbling_msg("call_followup", text, session, thinking=thinking)
@@ -4114,9 +4347,27 @@ async def push_system_error(source: str, error_text: str):
 
 # ── Push helper (WS if available, else pending queue) ──
 
+_BACKGROUND_BOUND_SOURCES = frozenset({
+    "patrol", "pebbling", "desire", "stardew", "thesis_check",
+    "wechat", "coread", "listen_together", "call_followup",
+    "call_reject",
+})
+
 async def push_pebbling_msg(source: str, content: str, session: "Session", thinking: str = "",
                             push_backup: bool = True):
     global active_ws
+    if not _session_is_registered(session):
+        log.info(
+            "Dropped %s output for deleted session %s", source, session.id
+        )
+        return
+    if (source in _BACKGROUND_BOUND_SOURCES
+            and peb_state.get("pebbling_session_id") != session.id):
+        log.info(
+            "Dropped %s output after background binding moved: %s",
+            source, session.id,
+        )
+        return
     now = time_mod.time()
 
     # ── 提取隐藏标记（与 streaming 模式的 post-processing 对齐） ──
@@ -4260,7 +4511,9 @@ async def push_pebbling_activity(source: str, action: str, tools: list,
                                   content: str = ""):
     """Push background activity to frontend (WS only, no chat history, no push)."""
     global active_ws
-    if not active_ws:
+    if (not active_ws or not _session_is_registered(session)
+            or (source in _BACKGROUND_BOUND_SOURCES
+                and peb_state.get("pebbling_session_id") != session.id)):
         return
     thinking_preview = ""
     if thinking:
@@ -4413,7 +4666,9 @@ async def run_patrol(session: "Session", elapsed_seconds: float, check_min: int 
     events = get_recent_events(max(check_min, 10) / 60)
     prompt = build_patrol_prompt(elapsed_min, format_events_for_prompt(events))
 
-    text, thinking, tools = await run_cc_oneshot(prompt, session, max_turns=1)
+    text, thinking, tools = await run_background_oneshot(
+        prompt, session, max_turns=1, job="patrol"
+    )
     if not text:
         return "none"
 
@@ -4441,8 +4696,8 @@ async def run_pebbling_action(
         elapsed_hours, count, format_events_for_prompt(events), mode
     )
 
-    text, thinking, tools = await run_cc_oneshot(
-        prompt, session, max_turns=6
+    text, thinking, tools = await run_background_oneshot(
+        prompt, session, max_turns=6, job="pebbling"
     )
     if not text:
         return "none"
@@ -4497,7 +4752,7 @@ async def _run_scheduled_desire(session: "Session", intent: dict) -> bool:
         prompt = dg.build_desire_proactive_prompt(desire_st)
 
     _desire_last_proactive[drive_key] = time_mod.time()
-    text, thinking, tools = await run_cc_oneshot(
+    text, thinking, tools = await run_background_oneshot(
         prompt, session, max_turns=6, job="desire"
     )
     if text:
@@ -4590,14 +4845,16 @@ async def run_api_scheduler_if_due(session: "Session") -> bool:
 
         sticky_id = state.get("sticky_session_id")
         keepalive_ready = bool(
-            sticky_id in _api_keepalive_snapshots
+            keepalive_enabled_for_runtime(
+                session.runtime, bool(peb_state.get("enabled"))
+            )
+            and sticky_id in _api_keepalive_snapshots
             and not state.get("keepalive_breaker")
         )
-        choice = (
-            "keepalive" if keepalive_ready
-            else "desire" if desire_intent
-            else "pebbling" if peb_due
-            else None
+        choice = choose_background_job(
+            keepalive_ready=keepalive_ready,
+            desire_ready=bool(desire_intent),
+            pebbling_due=peb_due,
         )
         if choice:
             api_diag(
@@ -4701,6 +4958,130 @@ async def run_api_scheduler_if_due(session: "Session") -> bool:
     return False
 
 
+async def run_devin_keepalive(session: "Session") -> dict:
+    state = _devin_scheduler_state()
+    previous_job_at = float(state.get("last_job_at", 0) or 0)
+    text, _thinking, _tools = await run_devin_background_oneshot(
+        DEVIN_KEEPALIVE_PROMPT, session, max_turns=1, job="keepalive"
+    )
+    state = _devin_scheduler_state()
+    success = bool(
+        state.get("last_job") == "keepalive"
+        and float(state.get("last_job_at", 0) or 0) > previous_job_at
+    )
+    state["last_keepalive_output_preview"] = " ".join(text.split())[:200]
+    if success:
+        state["keepalive_misses"] = 0
+        state["keepalive_breaker"] = False
+        state["last_keepalive_error"] = None
+        state["last_keepalive_stop_reason"] = "end_turn"
+    else:
+        state["keepalive_misses"] = int(state.get("keepalive_misses", 0)) + 1
+        state["last_keepalive_error"] = "no completed Devin keepalive turn"
+        state["last_keepalive_stop_reason"] = None
+        if state["keepalive_misses"] >= API_KEEPALIVE_MISS_LIMIT:
+            state["keepalive_breaker"] = True
+    save_peb_state()
+    return {"success": success, "attempted": True}
+
+
+async def run_devin_scheduler_if_due(session: "Session") -> bool:
+    """One strict 50-minute Devin slot: keepalive > desire > pebbling."""
+    global desire_st
+    state = _devin_scheduler_state()
+    now = time_mod.time()
+    if (session.runtime != DEVIN_RUNTIME
+            or state.get("gateway_session_id") != session.id
+            or state.get("backend_session_id") != session.devin_session_id
+            or not scheduler_slot_due(
+                active=bool(state.get("active")),
+                bound=bool(session.devin_session_id),
+                last_request_at=float(state.get("last_request_at", 0) or 0),
+                now=now,
+                interval_seconds=API_SCHEDULER_INTERVAL,
+            )):
+        return False
+    if (_devin_scheduler_lock.locked() or _devin_background_lock.locked()
+            or _user_msg_active or session._in_call):
+        return False
+
+    async with _devin_scheduler_lock:
+        now = time_mod.time()
+        if not scheduler_slot_due(
+            active=bool(state.get("active")),
+            bound=(
+                state.get("gateway_session_id") == session.id
+                and state.get("backend_session_id") == session.devin_session_id
+            ),
+            last_request_at=float(state.get("last_request_at", 0) or 0),
+            now=now,
+            interval_seconds=API_SCHEDULER_INTERVAL,
+        ) or _devin_background_lock.locked() or _user_msg_active or session._in_call:
+            return False
+
+        away = now - peb_state.get("t_jeoi", now)
+        desire_intent = None
+        if (DESIRE_ENABLED and desire_st
+                and peb_state.get("desire_proactive")):
+            desire_intent = dg.pick_proactive_intent(
+                desire_st, _desire_last_proactive, now,
+                jeoi_away_secs=away,
+            )
+        peb_due, peb_count, elapsed_jeoi = _api_pebbling_due(now)
+        peb_due = bool(peb_state.get("enabled") and peb_due)
+        keepalive_ready = bool(
+            keepalive_enabled_for_runtime(
+                session.runtime, bool(peb_state.get("enabled"))
+            )
+            and session.devin_session_id
+            and not state.get("keepalive_breaker")
+        )
+        choice = choose_background_job(
+            keepalive_ready=keepalive_ready,
+            desire_ready=bool(desire_intent),
+            pebbling_due=peb_due,
+        )
+        if not choice:
+            return False
+        log.info(
+            "Devin scheduler slot: choice=%s session=%s idle=%.1fs",
+            choice, session.id,
+            now - float(state.get("last_request_at", 0) or 0),
+        )
+
+        if choice == "keepalive":
+            result = await run_devin_keepalive(session)
+            if result.get("success"):
+                if desire_intent:
+                    desire_st.intent = desire_intent
+                    dg.partial_satisfy_after_response(
+                        desire_st, desire_intent["drive_key"],
+                        source="Devin保活让位",
+                    )
+                return True
+            return False
+
+        if choice == "desire" and desire_intent:
+            state["last_job"] = "desire"
+            state["last_job_at"] = now
+            save_peb_state()
+            return await _run_scheduled_desire(session, desire_intent)
+
+        if choice == "pebbling":
+            state["last_job"] = "pebbling"
+            state["last_job_at"] = now
+            save_peb_state()
+            await run_pebbling_action(
+                session, elapsed_jeoi / 3600, peb_count,
+                "silent" if peb_count == 0 else "free",
+            )
+            peb_state["pebbling_history"].append(time_mod.time())
+            peb_state["t_cache"] = time_mod.time()
+            save_peb_state()
+            return True
+    return False
+
+
 # ── WS keepalive ──
 
 async def ws_keepalive():
@@ -4756,7 +5137,7 @@ async def pebbling_worker():
             # Drive selection is independent of state.intent (avoids stale-intent and priority-blocking)
             if (DESIRE_ENABLED and desire_st
                     and peb_state.get("desire_proactive")
-                    and _active_api_scheduler_session() is None):
+                    and _active_paid_scheduler_session() is None):
                 _dp_last_any = max(_desire_last_proactive.values(), default=0)
                 if now - _dp_last_any >= 180:
                     _dp_intent = dg.pick_proactive_intent(desire_st, _desire_last_proactive, now,
@@ -4764,8 +5145,7 @@ async def pebbling_worker():
                     if _dp_intent:
                         _dp_sid = peb_state.get("pebbling_session_id")
                         _dp_session = sessions.get(_dp_sid) if _dp_sid else None
-                        if (_dp_session and _dp_session.cc_session_id
-                                and not _tmux_send_lock.locked()
+                        if (_session_has_backend(_dp_session)
                                 and not _user_msg_active
                                 and not _dp_session._in_call):
                             _dp_dk = _dp_intent["drive_key"]
@@ -4797,7 +5177,7 @@ async def pebbling_worker():
                                 else:
                                     _dp_prompt = dg.build_desire_proactive_prompt(desire_st)
                                 _desire_last_proactive[_dp_dk] = now
-                                _dp_text, _dp_thinking, _dp_tools = await run_cc_oneshot(
+                                _dp_text, _dp_thinking, _dp_tools = await run_background_oneshot(
                                     _dp_prompt, _dp_session,
                                     max_turns=6, job="desire",
                                 )
@@ -4913,9 +5293,9 @@ async def pebbling_worker():
             # API keepalive/desire scheduling is automatic after a real API
             # chat.  Pebbling's toggle still controls patrol + pebbling, but a
             # pure cache refresh does not depend on that UI toggle.
-            _api_session = _active_api_scheduler_session()
-            if _api_session and not peb_state.get("enabled"):
-                await run_api_scheduler_if_due(_api_session)
+            _paid_session = _active_paid_scheduler_session()
+            if _paid_session and not peb_state.get("enabled"):
+                await _run_paid_scheduler_if_due(_paid_session)
                 continue
 
             # ── Pebbling (requires pebbling enabled) ──
@@ -4924,7 +5304,7 @@ async def pebbling_worker():
 
             sid = peb_state.get("pebbling_session_id")
             session = sessions.get(sid) if sid else None
-            if not session or not session.cc_session_id:
+            if not _session_has_backend(session):
                 continue
 
             elapsed_jeoi = now - peb_state.get("t_jeoi", now)
@@ -4955,9 +5335,11 @@ async def pebbling_worker():
             # API sessions use the strict shared 50-minute arbiter below.
             # Patrol above remains unchanged; its successful API request is
             # observed by the proxy and moves the shared clock forward.
-            if (session.runtime == OPENROUTER_RUNTIME
-                    and _api_scheduler_state().get("gateway_session_id") == session.id):
-                await run_api_scheduler_if_due(session)
+            if ((session.runtime == OPENROUTER_RUNTIME
+                    and _api_scheduler_state().get("gateway_session_id") == session.id)
+                    or (session.runtime == DEVIN_RUNTIME
+                        and _devin_scheduler_state().get("gateway_session_id") == session.id)):
+                await _run_paid_scheduler_if_due(session)
                 continue
 
             # ── L2: Pebbling (every 3h, max 8/24h) ──
@@ -5008,7 +5390,7 @@ async def pebbling_worker():
                         prompt = dg.build_desire_pebbling_prompt(
                             desire_st, elapsed_h, actual,
                             format_events_for_prompt(events))
-                    text, thinking, tools = await run_cc_oneshot(
+                    text, thinking, tools = await run_background_oneshot(
                         prompt, session, max_turns=6, job="desire"
                     )
                     if text:
@@ -5383,18 +5765,6 @@ def tmux_get_status() -> dict:
         running = False
     return {"running": running, "tmux_session": TMUX_SESSION,
             "runtime": _active_runtime}
-
-
-def _get_cc_session_id_from_transcript() -> str | None:
-    """Get CC CLI session ID from latest transcript filename."""
-    if not CC_TRANSCRIPT_DIR.exists():
-        return None
-    candidates = [p for p in CC_TRANSCRIPT_DIR.glob("*.jsonl")
-                  if ".pre-forge-" not in p.name]
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda p: p.stat().st_mtime)
-    return latest.stem
 
 
 async def restart_cc_for_session(session: "Session", ws=None):
@@ -5855,6 +6225,10 @@ class Session:
 sessions: dict[str, Session] = {}
 
 
+def _session_is_registered(session: Session | None) -> bool:
+    return bool(session and sessions.get(session.id) is session)
+
+
 def _session_backend_id(session: Session | None) -> str | None:
     """Stable identity hook shared by future patrol/pebbling adapters."""
     if not session:
@@ -5869,11 +6243,15 @@ def _session_has_backend(session: Session | None) -> bool:
 
 
 def _sync_background_binding(session: Session) -> None:
-    """Persist route identity without enabling any Devin background sender."""
+    """Persist the backend identity used by background jobs."""
     if peb_state.get("pebbling_session_id") != session.id:
         return
     peb_state["backend_runtime"] = session.runtime
     peb_state["backend_session_id"] = _session_backend_id(session)
+    if session.runtime == DEVIN_RUNTIME:
+        state = _devin_scheduler_state()
+        if state.get("gateway_session_id") == session.id:
+            state["backend_session_id"] = session.devin_session_id
     save_peb_state()
 
 
@@ -6101,6 +6479,9 @@ def _discard_unpublished_devin_session(session: Session) -> None:
 
 async def _forge_devin_session(src_session: Session) -> dict:
     """Create a fresh Devin ACP session and bind diary + recent 15k context."""
+    route = forge_route(src_session.runtime, src_session.model)
+    if route["verifier"] != "devin-acp":
+        return {"ok": False, "error": "Forge 路由错误：Devin 未使用 ACP 验证"}
     segments = _diary_segments_for_session(src_session.id)
     current_diary = _compose_diary_from_segments(segments)
     previous_diary = _previous_forge_diary(src_session)
@@ -6111,10 +6492,10 @@ async def _forge_devin_session(src_session: Session) -> dict:
 
     sid = uuid.uuid4().hex[:8]
     session = Session(sid)
-    session.model = src_session.model
+    session.model = route["model"]
     session.effort = src_session.effort
-    session.runtime = DEVIN_RUNTIME
-    session.transcript_runtime = DEVIN_RUNTIME
+    session.runtime = route["runtime"]
+    session.transcript_runtime = route["runtime"]
     session.inherited_from = src_session.id
     session.first_msg_seen = True
     session.name = f"Erik · {datetime.now(SGT).strftime('%m/%d %H:%M')} ✂"
@@ -6253,6 +6634,93 @@ def _active_api_scheduler_session() -> Session | None:
     if not session or getattr(session, "runtime", None) != OPENROUTER_RUNTIME:
         return None
     return session
+
+
+def _bind_devin_scheduler(session: Session, real_user: bool = False) -> None:
+    if getattr(session, "runtime", None) != DEVIN_RUNTIME:
+        return
+    state = _devin_scheduler_state()
+    changed = state.get("gateway_session_id") != session.id
+    state.update({
+        "active": True,
+        "gateway_session_id": session.id,
+        "backend_session_id": session.devin_session_id,
+    })
+    if changed:
+        state["last_request_at"] = 0.0
+    if changed or real_user:
+        state["keepalive_misses"] = 0
+        state["keepalive_breaker"] = False
+    if real_user:
+        # The actual successful prompt will refine this timestamp. Starting
+        # here prevents a background turn racing the arriving user message.
+        state["last_request_at"] = time_mod.time()
+    save_peb_state()
+
+
+def _suspend_devin_scheduler() -> None:
+    state = _devin_scheduler_state()
+    state["active"] = False
+    save_peb_state()
+
+
+def _active_devin_scheduler_session() -> Session | None:
+    state = _devin_scheduler_state()
+    if not state.get("active"):
+        return None
+    session = sessions.get(state.get("gateway_session_id"))
+    if (not session or session.runtime != DEVIN_RUNTIME
+            or not session.devin_session_id
+            or state.get("backend_session_id") != session.devin_session_id):
+        return None
+    return session
+
+
+def _active_paid_scheduler_session() -> Session | None:
+    return _active_api_scheduler_session() or _active_devin_scheduler_session()
+
+
+def _bind_runtime_scheduler(session: Session, real_user: bool = False) -> None:
+    if session.runtime == OPENROUTER_RUNTIME:
+        _suspend_devin_scheduler()
+        _bind_api_scheduler(session, real_user=real_user)
+    elif session.runtime == DEVIN_RUNTIME:
+        _suspend_api_scheduler()
+        _bind_devin_scheduler(session, real_user=real_user)
+    else:
+        _suspend_api_scheduler()
+        _suspend_devin_scheduler()
+
+
+def _adopt_background_session_after_forge(
+    session: Session, request_at: float | None = None,
+) -> None:
+    """Move every background binding to the verified forged session route."""
+    peb_state["pebbling_session_id"] = session.id
+    peb_state["backend_runtime"] = session.runtime
+    peb_state["backend_session_id"] = _session_backend_id(session)
+    _bind_runtime_scheduler(session, real_user=False)
+    if session.runtime == DEVIN_RUNTIME and request_at:
+        _record_devin_request_success(session, request_at)
+    parent_id = session.inherited_from
+    if parent_id and pomo_state.get("session_id") == parent_id:
+        pomo_state["session_id"] = session.id
+        save_pomo_state()
+    if parent_id:
+        for slot in _coread_slots.values():
+            if (slot.get("session_id") == parent_id
+                    and slot.get("status") == "pending"):
+                slot["status"] = "error"
+                slot["text"] = "Session 已 Forge；请在新 Session 重试"
+    save_peb_state()
+
+
+async def _run_paid_scheduler_if_due(session: Session) -> bool:
+    if session.runtime == OPENROUTER_RUNTIME:
+        return await run_api_scheduler_if_due(session)
+    if session.runtime == DEVIN_RUNTIME:
+        return await run_devin_scheduler_if_due(session)
+    return False
 
 
 # ══════════════════════════════════════════════
@@ -6467,14 +6935,42 @@ async def startup_load_sessions():
 
     # Restore pebbling state and start app-level worker
     peb_state = load_peb_state()
+    bound_sid = peb_state.get("pebbling_session_id")
+    if bound_sid and bound_sid not in sessions:
+        log.warning("Clearing stale background session binding: %s", bound_sid)
+        peb_state["pebbling_session_id"] = None
+        peb_state["backend_runtime"] = None
+        peb_state["backend_session_id"] = None
+    dashboard_sid = peb_state.get("dashboard_session_id")
+    if dashboard_sid and dashboard_sid not in sessions:
+        peb_state["dashboard_session_id"] = None
     # A process restart has no in-memory normalized request snapshot.  Require
     # one fresh, real API use before autonomous scheduling resumes.
     peb_state["api_scheduler"]["active"] = False
+    if (peb_state["api_scheduler"].get("gateway_session_id")
+            not in sessions):
+        peb_state["api_scheduler"].update({
+            "gateway_session_id": None,
+            "logical_session_id": None,
+            "sticky_session_id": None,
+        })
+    devin_scheduler = _devin_scheduler_state()
+    if devin_scheduler.get("gateway_session_id") not in sessions:
+        devin_scheduler.update({
+            "active": False,
+            "gateway_session_id": None,
+            "backend_session_id": None,
+        })
     save_peb_state()
     log.info(f"Pebbling state loaded: enabled={peb_state.get('enabled')}, "
              f"session={peb_state.get('pebbling_session_id')}, "
              f"pending={len(peb_state.get('pending_messages', []))}")
     pomo_state = load_pomo_state()
+    if (pomo_state.get("session_id")
+            and pomo_state.get("session_id") not in sessions):
+        pomo_state["active"] = False
+        pomo_state["session_id"] = None
+        save_pomo_state()
     log.info(f"Pomodoro state loaded: active={pomo_state.get('active')}, "
              f"session={pomo_state.get('session_id')}")
     if DESIRE_ENABLED:
@@ -6503,10 +6999,7 @@ async def startup_load_sessions():
                 log.warning("WeChat msg: no active session, ignoring")
                 return
 
-            if session.runtime == OPENROUTER_RUNTIME:
-                _bind_api_scheduler(session, real_user=True)
-            else:
-                _suspend_api_scheduler()
+            _bind_runtime_scheduler(session, real_user=True)
 
             # 存用户消息到历史
             append_message(session.id, "user", text, source="wechat")
@@ -6522,6 +7015,14 @@ async def startup_load_sessions():
                     })
                 except Exception:
                     pass
+
+            if (not _session_is_registered(session)
+                    or peb_state.get("pebbling_session_id") != session.id):
+                log.info(
+                    "WeChat turn discarded after session binding moved: %s",
+                    session.id,
+                )
+                return
 
             # 更新 pebbling 状态（跟 chat:send 对齐）
             peb_state["t_cache"] = time_mod.time()
@@ -6703,12 +7204,22 @@ async def websocket_endpoint(ws: WebSocket):
                 sid = data.get("sessionId", "")
                 deleted = sid in sessions
                 if deleted:
+                    dead_session = sessions[sid]
                     path = history_path(sid)
                     if path.exists():
                         path.unlink()
-                    dead_devin_id = sessions[sid].devin_session_id
-                    dead_forge_path = sessions[sid].forge_context_path
-                    dead_cc_id = sessions[sid].cc_session_id
+                    dead_devin_id = dead_session.devin_session_id
+                    dead_forge_path = dead_session.forge_context_path
+                    dead_cc_id = dead_session.cc_session_id
+                    if (dead_devin_id
+                            and dead_devin_id == _devin_background_session_id
+                            and _devin_client is not None):
+                        try:
+                            await _devin_client.cancel(dead_devin_id)
+                        except Exception as exc:
+                            log.warning(
+                                "Session delete: Devin cancel failed: %s", exc
+                            )
                     del sessions[sid]
                     if dead_devin_id and _devin_client is not None:
                         _devin_client.forget(dead_devin_id)
@@ -6723,6 +7234,47 @@ async def websocket_endpoint(ws: WebSocket):
                     if dead_cc_id and dead_cc_id == _tmux_cc_id:
                         await tmux_stop()
                         log.info(f"Session delete: tmux was on {dead_cc_id}, stopped")
+                    last_good = load_last_good()
+                    if last_good and last_good.get("frontend_sid") == sid:
+                        _LAST_GOOD_FILE.unlink(missing_ok=True)
+
+                    # Remove every persisted route to the deleted object. Do
+                    # not guess a replacement for background work; the next
+                    # real message or explicit stone toggle binds one safely.
+                    if peb_state.get("pebbling_session_id") == sid:
+                        peb_state["pebbling_session_id"] = None
+                        peb_state["backend_runtime"] = None
+                        peb_state["backend_session_id"] = None
+                    peb_state["pending_messages"] = [
+                        item for item in peb_state.get("pending_messages", [])
+                        if item.get("session_id") != sid
+                    ]
+                    api_state = _api_scheduler_state()
+                    if api_state.get("gateway_session_id") == sid:
+                        api_state.update({
+                            "active": False,
+                            "gateway_session_id": None,
+                            "logical_session_id": None,
+                            "sticky_session_id": None,
+                        })
+                        _api_keepalive_snapshots.clear()
+                        _set_api_request_context(None)
+                    devin_state = _devin_scheduler_state()
+                    if devin_state.get("gateway_session_id") == sid:
+                        devin_state.update({
+                            "active": False,
+                            "gateway_session_id": None,
+                            "backend_session_id": None,
+                        })
+                    if pomo_state.get("session_id") == sid:
+                        pomo_state["active"] = False
+                        pomo_state["session_id"] = None
+                        save_pomo_state()
+                    for slot in _coread_slots.values():
+                        if (slot.get("session_id") == sid
+                                and slot.get("status") == "pending"):
+                            slot["status"] = "error"
+                            slot["text"] = "绑定的 Session 已删除"
                     if current_session and current_session.id == sid:
                         # Fall back to the most recent surviving session instead
                         # of None — a None current means the next chat:send
@@ -6730,7 +7282,15 @@ async def websocket_endpoint(ws: WebSocket):
                         current_session = (max(sessions.values(), key=lambda s: s.last_active)
                                            if sessions else None)
                         if current_session:
+                            _set_dashboard_session(current_session)
                             log.info(f"Session delete: current fell back to {current_session.id}")
+                        else:
+                            peb_state["dashboard_session_id"] = None
+                    elif peb_state.get("dashboard_session_id") == sid:
+                        peb_state["dashboard_session_id"] = (
+                            current_session.id if current_session else None
+                        )
+                    save_peb_state()
                     log.info(f"Session deleted: {sid}")
                 else:
                     log.warning(f"Session delete: {sid} not found (already gone?)")
@@ -6750,7 +7310,19 @@ async def websocket_endpoint(ws: WebSocket):
                 # session's transcript instead of the one on screen.
                 src_sid = data.get("sessionId") or (current_session.id if current_session else None)
                 src_session = sessions.get(src_sid) if src_sid else None
-                if src_session and src_session.runtime == DEVIN_RUNTIME:
+                try:
+                    src_route = (
+                        forge_route(src_session.runtime, src_session.model)
+                        if src_session else None
+                    )
+                except ValueError as exc:
+                    await ws.send_json({
+                        "event": "session:forge_result",
+                        "ok": False,
+                        "error": str(exc),
+                    })
+                    continue
+                if src_route and src_route["verifier"] == "devin-acp":
                     if not src_session.devin_session_id:
                         await ws.send_json({
                             "event": "session:forge_result",
@@ -6760,6 +7332,7 @@ async def websocket_endpoint(ws: WebSocket):
                         continue
                     _user_msg_active = True
                     try:
+                        await _cancel_devin_background_for_user()
                         await ws.send_json({
                             "event": "session:forge_progress",
                             "stage": "creating",
@@ -6775,6 +7348,9 @@ async def websocket_endpoint(ws: WebSocket):
                             continue
                         current_session = result.pop("session")
                         _set_dashboard_session(current_session)
+                        _adopt_background_session_after_forge(
+                            current_session, request_at=time_mod.time()
+                        )
                         pending_model = current_session.model
                         pending_effort = current_session.effort
                         await ws.send_json({
@@ -6831,8 +7407,8 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
                 route_guard = bool(data.get("route_guard"))
-                if src_session.runtime == OPENROUTER_RUNTIME:
-                    _bind_api_scheduler(src_session, real_user=False)
+                if src_session.runtime in (OPENROUTER_RUNTIME, DEVIN_RUNTIME):
+                    _bind_runtime_scheduler(src_session, real_user=False)
                 _user_msg_active = True  # verifier owns tmux — no oneshots
                 try:
                     diary_path = ""
@@ -6848,7 +7424,7 @@ async def websocket_endpoint(ws: WebSocket):
                     result = forge_session(
                         old_cc_id,
                         retain_tokens=FORGE_RETAIN_TOKENS,
-                        target_model=src_session.model if route_guard else None,
+                        target_model=src_route["model"] if route_guard else None,
                     )
                     if "error" in result:
                         await ws.send_json({"event": "session:forge_result",
@@ -6869,7 +7445,7 @@ async def websocket_endpoint(ws: WebSocket):
                         src_session.api_adaptive_thinking = True
                     try:
                         verdict = await verify_forged_session(
-                            result["new_id"], src_session.model,
+                            result["new_id"], src_route["model"],
                             src_session.effort,
                         )
                     finally:
@@ -6905,10 +7481,10 @@ async def websocket_endpoint(ws: WebSocket):
                     # untouched, so switching back to it still works.
                     sid = uuid.uuid4().hex[:8]
                     session = Session(sid)
-                    session.model = src_session.model
+                    session.model = src_route["model"]
                     session.effort = src_session.effort
                     session.api_adaptive_thinking = True
-                    session.runtime = src_session.runtime
+                    session.runtime = src_route["runtime"]
                     session.transcript_runtime = _active_runtime
                     session.inherited_from = src_session.id
                     session.first_msg_seen = True
@@ -6920,8 +7496,7 @@ async def websocket_endpoint(ws: WebSocket):
                     sessions[sid] = session
                     current_session = session
                     _set_dashboard_session(session)
-                    if session.runtime == OPENROUTER_RUNTIME:
-                        _bind_api_scheduler(session, real_user=False)
+                    _adopt_background_session_after_forge(session)
                     save_session_meta(session)
                     _set_tmux_cc_id(verdict["real_id"])
                     save_last_good(sid, verdict["real_id"])
@@ -7000,10 +7575,7 @@ async def websocket_endpoint(ws: WebSocket):
                     log.warning(f"Auto-cleared stale _in_call for session {current_session.id}")
 
                 # Save user message & update last_active immediately
-                if current_session.runtime == OPENROUTER_RUNTIME:
-                    _bind_api_scheduler(current_session, real_user=True)
-                else:
-                    _suspend_api_scheduler()
+                _bind_runtime_scheduler(current_session, real_user=True)
                 msg_source = "voice_call" if call_mode else None
                 user_msg_idx = append_message(current_session.id, "user", message, source=msg_source)
                 current_session.last_active = datetime.now(SGT)
@@ -7168,8 +7740,7 @@ async def websocket_endpoint(ws: WebSocket):
                 # 通话中不注入 desire（避免打断通话节奏）
                 _desire_key = None
                 _msg_is_libido = False
-                if (DESIRE_ENABLED and desire_st and not call_mode
-                        and current_session.runtime != DEVIN_RUNTIME):
+                if DESIRE_ENABLED and desire_st and not call_mode:
                     _api_passive_desire = _api_desire_is_passive(current_session)
                     _msg_tags = dc.classify(message)
                     _msg_is_libido = any(
@@ -7227,14 +7798,15 @@ async def websocket_endpoint(ws: WebSocket):
             elif event == "config:model":
                 model = data.get("model", "")
                 if model:
-                    if (current_session and current_session.turn_count > 0
-                            and (current_session.runtime in (
-                                    OPENROUTER_RUNTIME, DEVIN_RUNTIME)
-                                 or _runtime_for_model(model) in (
-                                     OPENROUTER_RUNTIME, DEVIN_RUNTIME))):
+                    target_runtime = _runtime_for_model(model)
+                    if (current_session and session_route_change_locked(
+                            current_session.runtime,
+                            target_runtime,
+                            backend_bound=_session_has_backend(current_session),
+                            turn_count=current_session.turn_count)):
                         await ws.send_json({
                             "event": "config:locked",
-                            "message": "该线路的 Session 已开始；模型到下一个 Session 边界再切换",
+                            "message": "该 Session 已绑定后端；请新建 Session 或 Forge 后再切换渠道",
                             "model": current_session.model,
                             "effort": current_session.effort,
                         })
@@ -7242,7 +7814,7 @@ async def websocket_endpoint(ws: WebSocket):
                     pending_model = model
                     if current_session:
                         current_session.model = model
-                        current_session.runtime = _runtime_for_model(model)
+                        current_session.runtime = target_runtime
                         if (current_session.turn_count == 0
                                 and not _session_has_backend(current_session)):
                             current_session.transcript_runtime = current_session.runtime
@@ -7642,6 +8214,15 @@ async def websocket_endpoint(ws: WebSocket):
                     sid = data.get("sessionId") or (current_session.id if current_session else None)
                     if sid:
                         peb_state["pebbling_session_id"] = sid
+                        target_session = sessions.get(sid)
+                        if target_session:
+                            peb_state["backend_runtime"] = target_session.runtime
+                            peb_state["backend_session_id"] = _session_backend_id(
+                                target_session
+                            )
+                            _bind_runtime_scheduler(
+                                target_session, real_user=False
+                            )
                 save_peb_state()
                 log.info(f"Pebbling {'enabled' if enabled else 'disabled'} → session={peb_state.get('pebbling_session_id')}")
                 await ws.send_json({"event": "pebbling:status", "enabled": enabled, "session_id": peb_state.get("pebbling_session_id")})
@@ -7676,6 +8257,8 @@ async def websocket_endpoint(ws: WebSocket):
                 call_session = sessions.get(call_sid) if call_sid else current_session
                 if call_session:
                     current_session = call_session
+                    _set_dashboard_session(call_session)
+                    _bind_runtime_scheduler(call_session, real_user=True)
                     call_session._in_call = True
                     call_session._call_stop.clear()
                     call_session._call_generation_id = uuid.uuid4().hex[:8]
@@ -7692,7 +8275,7 @@ async def websocket_endpoint(ws: WebSocket):
                     now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
                     _accept_idx = append_message(call_session.id, "user", "（接听来电）", source="voice_call")
                     cli_message = f"[voice-call] Jeoi接听了你的来电。\n\n[{now_str} UTC+8 #{_accept_idx + 1}]\n（Jeoi接听了来电）"
-                    await run_claude(cli_message, call_session, ws)
+                    await run_agent_chat(cli_message, call_session, ws)
 
             elif event == "call:reject":
                 call_sid = data.get("sessionId") or (current_session.id if current_session else None)
@@ -7704,7 +8287,9 @@ async def websocket_endpoint(ws: WebSocket):
                     now_str = f"{_now.strftime('%Y-%m-%d')} {_DAY_ABBR[_now.weekday()]} {_now.strftime('%H:%M')}"
                     label = "超时未接听" if reason == "timeout" else "拒绝了来电"
                     notify = f"[{now_str} UTC+8]\n[system] Jeoi{label}。"
-                    text, _, _ = await run_cc_oneshot(notify, call_session, max_turns=1)
+                    text, _, _ = await run_background_oneshot(
+                        notify, call_session, max_turns=1, job="call_reject"
+                    )
                     if text:
                         action, content = parse_action(text)
                         if action != "none" and content:
@@ -7827,6 +8412,7 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
     """Send one turn through Devin ACP and map its events to the existing UI."""
     global _user_msg_active
     _user_msg_active = True
+    await _cancel_devin_background_for_user()
     session.reset_accumulator()
     client = _get_devin_client()
     latest_usage: dict = {}
@@ -7889,6 +8475,7 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
             prompt_text = inherited + "\n\n═══ 本轮 Jeoi 的新消息 ═══\n" + message
             used_forge_bundle = True
 
+        request_started_at = time_mod.time()
         try:
             result = await client.prompt(
                 session.devin_session_id, prompt_text, on_update
@@ -7921,6 +8508,8 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
             )
         if used_forge_bundle and result.stop_reason == "end_turn":
             session.forge_context_injected = True
+        if result.stop_reason == "end_turn":
+            _record_devin_request_success(session, request_started_at)
 
         raw_usage = result.usage
         turn_usage = {
@@ -8140,7 +8729,11 @@ async def run_claude(message: str, session: Session, ws: WebSocket):
             _accumulate_session_usage(session, turn_usage, turn_cost)
         # Always sync session ID to whatever transcript the tailer ended on
         # (handles context compression creating a new transcript mid-turn)
-        real_id = tailer._path.stem if tailer._path else _get_cc_session_id_from_transcript()
+        # Never guess identity from the newest transcript mtime. A Forge or
+        # maintenance script can create a newer file that tmux is not using.
+        # The tailer proves a concrete response path; otherwise the tmux
+        # ledger remains the only authoritative fallback.
+        real_id = tailer._path.stem if tailer._path else _tmux_cc_id
         if real_id:
             _set_tmux_cc_id(real_id)
             session.transcript_runtime = _active_runtime
@@ -8763,6 +9356,11 @@ async def _coread_worker(coread_id: str, session: "Session", body: dict):
     slot = _coread_slots.get(coread_id)
     if not slot:
         return
+    if (not _session_is_registered(session)
+            or peb_state.get("pebbling_session_id") != session.id):
+        slot["status"] = "error"
+        slot["text"] = "绑定的 Session 已删除或已经 Forge"
+        return
 
     # Strip oneshot scaffold from reply
     if text:
@@ -8845,11 +9443,21 @@ async def pebbling_status():
     api_state["snapshot_ready"] = bool(
         api_state.get("sticky_session_id") in _api_keepalive_snapshots
     )
+    devin_state = dict(_devin_scheduler_state())
+    devin_last_request = float(
+        devin_state.get("last_request_at", 0) or 0
+    )
+    devin_state["interval_seconds"] = API_SCHEDULER_INTERVAL
+    devin_state["next_due_at"] = (
+        devin_last_request + API_SCHEDULER_INTERVAL
+        if devin_last_request else None
+    )
     return {
         "status": "ok",
         "time": datetime.now(SGT).isoformat(),
         "events_count": len(get_recent_events(24)),
         "api_scheduler": api_state,
+        "devin_scheduler": devin_state,
     }
 
 

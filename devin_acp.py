@@ -417,9 +417,12 @@ class DevinAcpClient:
     async def prompt(
         self, session_id: str, text: str, callback: EventCallback | None = None
     ) -> DevinPromptResult:
-        if callback:
-            self._callbacks[session_id] = callback
         async with self._prompt_lock:
+            # Install the callback only after this prompt owns the foreground
+            # slot. Otherwise a queued user turn can steal updates from an
+            # in-flight patrol/keepalive turn on the same Devin session.
+            if callback:
+                self._callbacks[session_id] = callback
             result = await self.request("session/prompt", {
                 "sessionId": session_id,
                 "prompt": [{"type": "text", "text": text}],

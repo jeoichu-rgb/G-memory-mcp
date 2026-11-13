@@ -1,6 +1,13 @@
 # API Session 保活与静默调度器
 
-API 通道使用 OpenRouter/Claude Code 时的统一后台调度。Subscription 通道保持原有行为。
+OpenRouter/Claude Code 与 Devin ACP 共用同一套后台仲裁规则。Subscription 通道保持原有行为。
+
+## 渠道开关
+
+- OpenRouter KAL 默认常开，不依赖 Pebbling 石头开关。
+- Devin KAL 跟随 Pebbling 石头开关；打开后 KAL、Patrol、Pebbling 绑定同一个 `devin_session_id`。
+- 两条付费渠道都保持严格 `KAL > desire > pebbling`；Patrol 的 5/10/20 分钟规则独立生效且不修改。
+- Forge 后只允许同渠道继承：OpenRouter 继续使用 Claude tmux/OpenRouter profile，Devin 新建并验证 ACP Session。验证成功后后台绑定才迁到新 Session。
 
 ## 两层 Session 绑定
 
