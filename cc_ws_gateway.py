@@ -6342,6 +6342,31 @@ async def startup_load_sessions():
         if scanner_perm not in allow_list:
             allow_list.append(scanner_perm)
 
+        # Devin/CC shared MCP set selected for this VPS. Keep credentials out
+        # of git: PALACE_SECRET comes from /opt/G-memory-mcp/.env, while
+        # COREADING_TOKEN may override it if the reader gets a separate token.
+        public_base = os.getenv("PUBLIC_BASE_URL", "https://erikssheep.uk").rstrip("/")
+        coreading_url = os.getenv(
+            "COREADING_MCP_URL", "https://read.erikssheep.uk/mcp"
+        )
+        coreading_token = os.getenv("COREADING_TOKEN", PALACE_SECRET)
+        servers["tts"] = {
+            "url": f"{public_base}/tts/{PALACE_SECRET}/http/mcp",
+        }
+        servers["reddit"] = {
+            "url": f"{public_base}/reddit/{PALACE_SECRET}/mcp",
+        }
+        servers["claude_ai_coreading"] = {
+            "url": coreading_url,
+            "headers": {
+                "Authorization": f"Bearer {coreading_token}",
+            },
+        }
+        for mcp_name in ("tts", "reddit", "claude_ai_coreading"):
+            permission = f"mcp__{mcp_name}"
+            if permission not in allow_list:
+                allow_list.append(permission)
+
         # Remove legacy channel MCP if present
         if "erik_channel" in servers:
             del servers["erik_channel"]
