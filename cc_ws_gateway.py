@@ -55,6 +55,7 @@ from devin_acp import (
     DevinModelUnavailable,
     extract_usage as extract_devin_usage,
 )
+from devin_usage import DevinUsageProbe, DevinUsageProbeError
 
 try:
     import desire_engine as de
@@ -416,6 +417,13 @@ DEVIN_FRONTEND_MODEL = DEVIN_MODEL_PREFIX + DEVIN_MODEL_ID
 DEVIN_BINARY = os.getenv("DEVIN_BINARY", "/home/erik/.local/bin/devin")
 DEVIN_USER = os.getenv("DEVIN_USER", "erik")
 DEVIN_HOME = os.getenv("DEVIN_HOME", f"/home/{DEVIN_USER}")
+_DEVIN_USAGE_PROBE = DevinUsageProbe(
+    binary=DEVIN_BINARY,
+    model=DEVIN_MODEL_ID,
+    cwd=CC_CWD,
+    run_as_user=DEVIN_USER,
+    home=DEVIN_HOME,
+)
 SUBSCRIPTION_CONFIG_DIR = Path(f"/home/{CC_USER}/.claude")
 OPENROUTER_CONFIG_DIR = Path(
     os.getenv("OPENROUTER_CLAUDE_CONFIG_DIR", f"/home/{CC_USER}/.claude-openrouter")
@@ -9085,22 +9093,64 @@ async def openrouter_usage(force: int = 0):
     return data
 
 
+_DEVIN_ACCOUNT_USAGE_CACHE = {"ts": 0.0, "data": None}
+
+
 @app.get("/api/usage/devin")
 async def devin_account_usage(force: int = 0):
-    """Account-level Devin quota only.
+    """Read Devin Pro account quota from the official CLI /usage view."""
+    now = time_mod.time()
+    cached = _DEVIN_ACCOUNT_USAGE_CACHE["data"]
+    if (
+        not force
+        and cached
+        and now - _DEVIN_ACCOUNT_USAGE_CACHE["ts"] < _USAGE_CACHE_SECS
+    ):
+        return cached
+    try:
+        data = await asyncio.to_thread(_DEVIN_USAGE_PROBE.query)
+    except (DevinUsageProbeError, OSError) as exc:
+        log.warning("Devin account usage probe failed: %s", exc)
+        return {
+            "ok": False,
+            "configured": True,
+            "source": "devin-cli-/usage",
+            "error": str(exc),
+            "windows": [],
+        }
 
-    ACP usage_update is deliberately not returned here: it describes the
-    current session/context and cannot truthfully stand in for daily/weekly
-    account limits. The Pro account response mapping is added after the first
-    authenticated capture.
-    """
-    return {
-        "ok": False,
-        "configured": False,
-        "source": "account",
-        "error": "等待 Pro 账号 Usage & limits 的真实响应字段",
-        "windows": [],
-    }
+    sid = (
+        peb_state.get("dashboard_session_id")
+        or peb_state.get("pebbling_session_id")
+    )
+    session = sessions.get(sid) if sid else None
+    actual_model = (
+        session.devin_model_actual
+        if session and session.runtime == DEVIN_RUNTIME
+        else ""
+    ) or DEVIN_MODEL_ID
+    model_label = (
+        "Claude Opus 4.6 Thinking"
+        if actual_model == DEVIN_MODEL_ID
+        else actual_model
+    )
+    data.update(
+        {
+            "configured": True,
+            "model_requested": DEVIN_MODEL_ID,
+            "model_actual": actual_model,
+            "model_label": model_label,
+            "context_window": (
+                session.devin_context_window
+                if session and session.runtime == DEVIN_RUNTIME
+                else 200_000
+            ),
+            "session_id": sid,
+        }
+    )
+    _DEVIN_ACCOUNT_USAGE_CACHE["ts"] = now
+    _DEVIN_ACCOUNT_USAGE_CACHE["data"] = data
+    return data
 
 
 # no-cache = 可以缓存但每次必须回源校验（没变就 304，极便宜）。不设这个

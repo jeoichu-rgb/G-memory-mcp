@@ -862,7 +862,7 @@ function fmtReset(key, iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
-  if (key === 'five_hour') {
+  if (key === 'five_hour' || key === 'daily') {
     const m = Math.max(0, Math.round((d - Date.now()) / 60000));
     const t = m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? m % 60 + 'm' : ''}` : `${m}m`;
     return t + '后重置';
@@ -906,8 +906,8 @@ async function loadDevinUsage(force) {
     const suffix = force ? '?force=1' : '';
     const d = await (await fetch(CHAT_GATEWAY_API + '/api/usage/devin' + suffix, { headers: hdr() })).json();
     if (!d.ok || !(d.windows || []).length) {
-      box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">待接入账户额度</div>';
-      sub.textContent = d.error || '升级 Pro 后抓取真实字段';
+      box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">获取失败</div>';
+      sub.textContent = d.error || '点击重试';
       return;
     }
     const ws = ['daily', 'weekly', 'seven_day']
@@ -922,7 +922,9 @@ async function loadDevinUsage(force) {
         + '<div class="gbar"><div class="gfill" style="width:' + pct + '%;background:' + color + ';"></div></div>'
         + '</div>';
     }).join('');
-    sub.textContent = (d.plan || 'Devin') + ' · 点击刷新';
+    const providerLabel = [d.plan || 'Devin', d.model_label || d.model_actual]
+      .filter(Boolean).join(' · ');
+    sub.textContent = providerLabel + ' · 点击刷新';
   } catch {
     box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">离线</div>';
     sub.textContent = '点击重试';
