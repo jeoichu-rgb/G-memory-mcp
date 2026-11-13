@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 
 def choose_background_job(
     *, keepalive_ready: bool, desire_ready: bool, pebbling_due: bool
@@ -14,6 +16,19 @@ def choose_background_job(
     if pebbling_due:
         return "pebbling"
     return None
+
+
+def choose_devin_background_job(
+    *, keepalive_ready: bool, desire_ready: bool, pebbling_due: bool
+) -> str | None:
+    """Devin gives an eligible desire the slot before KAL and pebbling."""
+    if desire_ready:
+        return "desire"
+    return choose_background_job(
+        keepalive_ready=keepalive_ready,
+        desire_ready=False,
+        pebbling_due=pebbling_due,
+    )
 
 
 def scheduler_slot_due(
@@ -32,9 +47,30 @@ def scheduler_slot_due(
 def keepalive_enabled_for_runtime(
     runtime: str, pebbling_enabled: bool,
 ) -> bool:
-    """OpenRouter KAL is always on; Devin KAL follows the stone toggle."""
-    if runtime == "openrouter":
-        return True
-    if runtime == "devin":
-        return pebbling_enabled
-    return False
+    """Paid runtimes keep KAL on independently of the stone toggle."""
+    del pebbling_enabled
+    return runtime in ("openrouter", "devin")
+
+
+def devin_bedtime_window(
+    message: str, now: float, *, duration_seconds: int = 8 * 3600,
+) -> tuple[float, float] | None:
+    """Return the UTC+8 bedtime window opened by a qualifying 晚安 message."""
+    local = datetime.fromtimestamp(now, timezone(timedelta(hours=8)))
+    minute = local.hour * 60 + local.minute
+    in_trigger_hours = minute >= 22 * 60 + 30 or minute <= 2 * 60
+    if "晚安" not in message or not in_trigger_hours:
+        return None
+    return now, now + duration_seconds
+
+
+def devin_night_desire_cap_reached(
+    *, now: float, window_started_at: float, window_until: float,
+    injections: int, limit: int = 2,
+) -> bool:
+    """Limit Desire only while the explicit eight-hour bedtime window is live."""
+    return bool(
+        window_started_at
+        and window_started_at <= now < window_until
+        and injections >= limit
+    )

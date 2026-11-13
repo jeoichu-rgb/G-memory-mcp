@@ -50,6 +50,9 @@ from openrouter_cache import (
 from api_scheduler_diag import write_event as api_diag
 from background_scheduler import (
     choose_background_job,
+    choose_devin_background_job,
+    devin_bedtime_window,
+    devin_night_desire_cap_reached,
     keepalive_enabled_for_runtime,
     scheduler_slot_due,
 )
@@ -603,6 +606,9 @@ def _devin_scheduler_state() -> dict:
         "last_keepalive_error": None,
         "last_keepalive_stop_reason": None,
         "last_keepalive_output_preview": "",
+        "desire_night_started_at": 0.0,
+        "desire_night_until": 0.0,
+        "desire_night_injections": 0,
     }
     for key, value in defaults.items():
         state.setdefault(key, value)
@@ -1735,6 +1741,9 @@ def load_peb_state() -> dict:
             "last_keepalive_error": None,
             "last_keepalive_stop_reason": None,
             "last_keepalive_output_preview": "",
+            "desire_night_started_at": 0.0,
+            "desire_night_until": 0.0,
+            "desire_night_injections": 0,
         },
     }
     if PEBBLING_STATE_PATH.exists():
@@ -4985,8 +4994,30 @@ async def run_devin_keepalive(session: "Session") -> dict:
     return {"success": success, "attempted": True}
 
 
+def _maybe_start_devin_bedtime_window(
+    session: "Session", message: str, now: float,
+) -> bool:
+    if session.runtime != DEVIN_RUNTIME:
+        return False
+    window = devin_bedtime_window(message, now)
+    if not window:
+        return False
+    state = _devin_scheduler_state()
+    if now < float(state.get("desire_night_until", 0) or 0):
+        return False
+    state["desire_night_started_at"], state["desire_night_until"] = window
+    state["desire_night_injections"] = 0
+    save_peb_state()
+    log.info(
+        "Devin bedtime Desire window started: session=%s until=%s",
+        session.id,
+        datetime.fromtimestamp(window[1], SGT).strftime("%Y-%m-%d %H:%M UTC+8"),
+    )
+    return True
+
+
 async def run_devin_scheduler_if_due(session: "Session") -> bool:
-    """One strict 50-minute Devin slot: keepalive > desire > pebbling."""
+    """One strict 50-minute Devin slot: desire > keepalive > pebbling."""
     global desire_st
     state = _devin_scheduler_state()
     now = time_mod.time()
@@ -5027,6 +5058,19 @@ async def run_devin_scheduler_if_due(session: "Session") -> bool:
                 desire_st, _desire_last_proactive, now,
                 jeoi_away_secs=away,
             )
+        if (desire_intent and devin_night_desire_cap_reached(
+                now=now,
+                window_started_at=float(
+                    state.get("desire_night_started_at", 0) or 0
+                ),
+                window_until=float(state.get("desire_night_until", 0) or 0),
+                injections=int(state.get("desire_night_injections", 0) or 0),
+        )):
+            log.info(
+                "Devin bedtime Desire cap reached: session=%s count=%s",
+                session.id, state.get("desire_night_injections", 0),
+            )
+            desire_intent = None
         peb_due, peb_count, elapsed_jeoi = _api_pebbling_due(now)
         peb_due = bool(peb_state.get("enabled") and peb_due)
         keepalive_ready = bool(
@@ -5036,7 +5080,7 @@ async def run_devin_scheduler_if_due(session: "Session") -> bool:
             and session.devin_session_id
             and not state.get("keepalive_breaker")
         )
-        choice = choose_background_job(
+        choice = choose_devin_background_job(
             keepalive_ready=keepalive_ready,
             desire_ready=bool(desire_intent),
             pebbling_due=peb_due,
@@ -5062,6 +5106,12 @@ async def run_devin_scheduler_if_due(session: "Session") -> bool:
             return False
 
         if choice == "desire" and desire_intent:
+            if (float(state.get("desire_night_started_at", 0) or 0)
+                    <= now
+                    < float(state.get("desire_night_until", 0) or 0)):
+                state["desire_night_injections"] = int(
+                    state.get("desire_night_injections", 0) or 0
+                ) + 1
             state["last_job"] = "desire"
             state["last_job_at"] = now
             save_peb_state()
@@ -7576,6 +7626,9 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Save user message & update last_active immediately
                 _bind_runtime_scheduler(current_session, real_user=True)
+                _maybe_start_devin_bedtime_window(
+                    current_session, message, time_mod.time()
+                )
                 msg_source = "voice_call" if call_mode else None
                 user_msg_idx = append_message(current_session.id, "user", message, source=msg_source)
                 current_session.last_active = datetime.now(SGT)
