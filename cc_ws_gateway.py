@@ -75,6 +75,13 @@ from devin_acp import (
     normalize_mcp_servers,
 )
 from devin_usage import DevinUsageProbe, DevinUsageProbeError
+from devin_mcp_config import (
+    DEFAULT_DEVIN_MCP_ALLOWLIST,
+    DevinMcpConfigError,
+    filter_devin_mcp_servers,
+    read_configured_mcp_servers,
+    read_devin_mcp_allowlist,
+)
 
 try:
     import desire_engine as de
@@ -447,6 +454,10 @@ DEVIN_FRONTEND_MODEL = DEVIN_MODEL_PREFIX + DEVIN_MODEL_ID
 DEVIN_BINARY = os.getenv("DEVIN_BINARY", "/home/erik/.local/bin/devin")
 DEVIN_USER = os.getenv("DEVIN_USER", "erik")
 DEVIN_HOME = os.getenv("DEVIN_HOME", f"/home/{DEVIN_USER}")
+DEVIN_MCP_ALLOWLIST_PATH = Path(os.getenv(
+    "DEVIN_MCP_ALLOWLIST_PATH",
+    f"{DEVIN_HOME}/.config/g-memory-mcp/devin_mcp_allowlist.json",
+))
 _DEVIN_USAGE_PROBE = DevinUsageProbe(
     binary=DEVIN_BINARY,
     model=DEVIN_MODEL_ID,
@@ -6374,20 +6385,24 @@ _devin_client: DevinAcpClient | None = None
 
 
 def _devin_mcp_servers() -> list[dict]:
-    """Translate the existing Claude MCP config into ACP's server list."""
-    merged: dict = {}
-    for path in (
-        Path(CC_CWD) / ".claude" / "settings.json",
-        Path(CC_CWD) / ".claude" / "settings.local.json",
-    ):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        servers = data.get("mcpServers")
-        if isinstance(servers, dict):
-            merged.update(servers)
-    return normalize_mcp_servers(merged)
+    """Build the ACP server list from the live Devin-only allowlist."""
+    configured = read_configured_mcp_servers(Path(CC_CWD))
+    try:
+        enabled = read_devin_mcp_allowlist(DEVIN_MCP_ALLOWLIST_PATH)
+    except DevinMcpConfigError as exc:
+        # A malformed runtime file must fail closed to the same safe default,
+        # not silently reconnect every configured MCP server.
+        log.error("%s; falling back to Palace-only", exc)
+        enabled = list(DEFAULT_DEVIN_MCP_ALLOWLIST)
+    selected = filter_devin_mcp_servers(configured, enabled)
+    missing = [name for name in enabled if name not in configured]
+    log.info(
+        "Devin MCP allowlist: enabled=%s disabled=%s missing=%s",
+        list(selected),
+        [name for name in configured if name not in selected],
+        missing,
+    )
+    return normalize_mcp_servers(selected)
 
 
 def _get_devin_client() -> DevinAcpClient:
