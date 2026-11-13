@@ -1,8 +1,10 @@
-"""Async Devin ACP client used by the chat gateway.
+"""Async Devin ACP client used by the chat gateway and bridge.
 
 The Devin CLI exposes an Agent Client Protocol server over newline-delimited
-JSON-RPC on stdin/stdout. This module only owns the subprocess, ACP sessions
-and events; the gateway owns UI and history.
+JSON-RPC on stdin/stdout.  In production the subprocess can be owned by the
+standalone :mod:`devin_acp_bridge` service; the gateway then speaks the same
+wire protocol over a Unix socket.  Keeping both transports behind one client
+lets the bridge survive gateway code reloads without reloading Devin sessions.
 """
 
 from __future__ import annotations
@@ -205,13 +207,19 @@ class DevinAcpClient:
         cwd: str,
         run_as_user: str = "",
         home: str = "",
+        socket_path: str = "",
+        event_callback: EventCallback | None = None,
     ):
         self.binary = binary
         self.model = model
         self.cwd = cwd
         self.run_as_user = run_as_user
         self.home = home
+        self.socket_path = socket_path
+        self._event_callback = event_callback
         self._proc: asyncio.subprocess.Process | None = None
+        self._socket_reader: asyncio.StreamReader | None = None
+        self._socket_writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
         self._next_id = 0
@@ -224,6 +232,11 @@ class DevinAcpClient:
 
     @property
     def running(self) -> bool:
+        if self.socket_path:
+            return (
+                self._socket_writer is not None
+                and not self._socket_writer.is_closing()
+            )
         return self._proc is not None and self._proc.returncode is None
 
     def _command(self) -> list[str]:
@@ -237,6 +250,36 @@ class DevinAcpClient:
         async with self._start_lock:
             if self.running:
                 return
+            if self.socket_path:
+                last_error: OSError | None = None
+                # systemd starts the bridge before the gateway, but the Unix
+                # socket may appear a fraction later.  Retry here instead of
+                # falling back to a gateway-owned Devin process.
+                for attempt in range(20):
+                    try:
+                        reader, writer = await asyncio.open_unix_connection(
+                            self.socket_path
+                        )
+                    except OSError as exc:
+                        last_error = exc
+                        if attempt == 19:
+                            break
+                        await asyncio.sleep(0.25)
+                    else:
+                        self._socket_reader = reader
+                        self._socket_writer = writer
+                        self._reader_task = asyncio.create_task(
+                            self._read_loop()
+                        )
+                        log.info(
+                            "Connected to persistent Devin ACP bridge: %s",
+                            self.socket_path,
+                        )
+                        return
+                raise DevinAcpError(
+                    f"Cannot connect to Devin ACP bridge {self.socket_path}: "
+                    f"{last_error}"
+                ) from last_error
             env = os.environ.copy()
             if self.home:
                 env["HOME"] = self.home
@@ -263,8 +306,16 @@ class DevinAcpClient:
             log.info("Devin ACP started: model=%s", self.model)
 
     async def close(self) -> None:
+        writer, self._socket_writer = self._socket_writer, None
+        self._socket_reader = None
         proc, self._proc = self._proc, None
         current = asyncio.current_task()
+        if writer:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
         if proc and proc.returncode is None:
             proc.terminate()
             try:
@@ -276,16 +327,25 @@ class DevinAcpClient:
             if task and task is not current:
                 task.cancel()
         self._reader_task = self._stderr_task = None
-        error = DevinAcpError("Devin ACP process closed")
+        error = DevinAcpError(
+            "Devin ACP bridge disconnected"
+            if self.socket_path else "Devin ACP process closed"
+        )
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
         self._pending.clear()
 
     async def _send(self, payload: dict[str, Any]) -> None:
+        wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        if self.socket_path:
+            if not self.running or not self._socket_writer:
+                raise DevinAcpError("Devin ACP bridge is not connected")
+            self._socket_writer.write(wire.encode("utf-8"))
+            await self._socket_writer.drain()
+            return
         if not self.running or not self._proc or not self._proc.stdin:
             raise DevinAcpError("Devin ACP is not running")
-        wire = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
         self._proc.stdin.write(wire.encode("utf-8"))
         await self._proc.stdin.drain()
 
@@ -442,7 +502,7 @@ class DevinAcpClient:
     async def _dispatch(self, params: dict[str, Any]) -> None:
         update = normalize_session_update(params)
         session_id = str(update.get("sessionId") or params.get("sessionId") or "")
-        callback = self._callbacks.get(session_id)
+        callback = self._callbacks.get(session_id) or self._event_callback
         if callback:
             value = callback(update)
             if inspect.isawaitable(value):
@@ -470,12 +530,24 @@ class DevinAcpClient:
         await self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
 
     async def _read_loop(self) -> None:
-        assert self._proc and self._proc.stdout
+        if self.socket_path:
+            assert self._socket_reader
+            reader = self._socket_reader
+        else:
+            assert self._proc and self._proc.stdout
+            reader = self._proc.stdout
         try:
             while True:
-                raw = await self._proc.stdout.readline()
+                raw = await reader.readline()
                 if not raw:
-                    raise DevinAcpError("Devin ACP stdout closed")
+                    if self.socket_path and self._socket_writer is None:
+                        # The gateway is shutting down normally.  Closing its
+                        # socket must be quiet and must not imply ACP failure.
+                        return
+                    raise DevinAcpError(
+                        "Devin ACP bridge disconnected"
+                        if self.socket_path else "Devin ACP stdout closed"
+                    )
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
@@ -498,7 +570,7 @@ class DevinAcpClient:
             return
         except Exception as exc:
             log.exception("Devin ACP reader stopped: %s", exc)
-            if self._proc:
+            if self._proc or self._socket_writer:
                 asyncio.create_task(self.close())
 
     async def _stderr_loop(self) -> None:

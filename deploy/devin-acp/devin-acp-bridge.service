@@ -1,0 +1,21 @@
+[Unit]
+Description=Persistent Devin ACP bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/G-memory-mcp
+EnvironmentFile=-/opt/G-memory-mcp/.env
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=g-memory-mcp
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 /opt/G-memory-mcp/devin_acp_bridge.py --socket /run/g-memory-mcp/devin-acp.sock
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
