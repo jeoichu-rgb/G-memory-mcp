@@ -830,12 +830,24 @@ async function loadDash() {
 // Plan usage limits（订阅用量卡片，数据链路：网关 OAuth → main.py 代理）
 // 只展示 5h + 周全模型两条；点卡片带 force=1 跳过网关 60s 缓存强刷
 const USAGE_SHOW = { five_hour: '5 小时', daily: '每日', seven_day: '每周', weekly: '每周' };
-let usageMode = localStorage.getItem('usage-provider-mode') || 'auto';
-let usageProvider = 'official';
+const USAGE_MODE_VERSION = 'devin-default-v1';
+let usageMode = localStorage.getItem('usage-provider-mode') || 'devin';
+if (localStorage.getItem('usage-provider-version') !== USAGE_MODE_VERSION) {
+  usageMode = 'devin';
+  localStorage.setItem('usage-provider-mode', usageMode);
+  localStorage.setItem('usage-provider-version', USAGE_MODE_VERSION);
+}
+let usageProvider = usageMode === 'official' ? 'official' : 'devin';
 function renderUsageTabs() {
-  document.getElementById('u-tab-auto').style.opacity = usageMode === 'auto' ? '1' : '.45';
-  document.getElementById('u-tab-official').style.opacity = usageProvider === 'official' ? '1' : '.45';
-  document.getElementById('u-tab-devin').style.opacity = usageProvider === 'devin' ? '1' : '.45';
+  const auto = document.getElementById('u-tab-auto');
+  const official = document.getElementById('u-tab-official');
+  const devin = document.getElementById('u-tab-devin');
+  auto.style.opacity = usageMode === 'auto' ? '1' : '.45';
+  official.style.opacity = usageProvider === 'official' ? '1' : '.45';
+  devin.style.opacity = usageProvider === 'devin' ? '1' : '.45';
+  auto.style.textDecoration = usageMode === 'auto' ? 'underline' : 'none';
+  official.style.textDecoration = usageMode !== 'auto' && usageProvider === 'official' ? 'underline' : 'none';
+  devin.style.textDecoration = usageMode !== 'auto' && usageProvider === 'devin' ? 'underline' : 'none';
 }
 async function detectUsageProvider() {
   if (usageMode !== 'auto') return;
