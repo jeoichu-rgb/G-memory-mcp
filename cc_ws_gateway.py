@@ -6506,8 +6506,15 @@ async def startup_load_sessions():
                 asyncio.create_task(wechat_gw.push_reply(reply))
 
         wechat_gw.set_message_handler(_wechat_on_message)
-        await wechat_gw.start()
-        log.info(f"WeChat gateway: {wechat_gw.status}")
+        try:
+            await wechat_gw.start()
+        except Exception as exc:
+            log.warning(
+                "WeChat gateway startup failed; continuing without WeChat: %s",
+                exc,
+            )
+        else:
+            log.info(f"WeChat gateway: {wechat_gw.status}")
 
     # Push config check
     log.info(f"TG_BOT_TOKEN={'set ('+TG_BOT_TOKEN[:8]+'...)' if TG_BOT_TOKEN else 'EMPTY'}, "
