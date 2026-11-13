@@ -903,11 +903,16 @@ async function loadDevinUsage(force) {
   const sub = document.getElementById('u-sub');
   if (force) sub.textContent = '刷新中…';
   try {
-    const suffix = force ? '?force=1' : '';
-    const d = await (await fetch(`${API_BASE}/gateway/usage/devin${suffix}`, { headers: hdr() })).json();
+    const params = new URLSearchParams();
+    if (force) params.set('force', '1');
+    params.set('token', secret());
+    const d = await (await fetch(
+      `${API_BASE}/gateway/usage/devin?${params.toString()}`,
+      { headers: hdr(), cache: 'no-store' }
+    )).json();
     if (!d.ok || !(d.windows || []).length) {
       box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">获取失败</div>';
-      sub.textContent = d.error || '点击重试';
+      sub.textContent = d.error || d.detail || '点击重试';
       return;
     }
     const ws = ['daily', 'weekly', 'seven_day']

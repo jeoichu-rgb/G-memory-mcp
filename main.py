@@ -73,6 +73,7 @@ async def _lifespan(app_instance):
 
 app = FastAPI(title="G's Memory Palace", lifespan=_lifespan)
 from starlette.types import ASGIApp, Receive, Scope, Send
+from urllib.parse import parse_qs as _parse_qs
 
 class ProxySchemeMiddleware:
     def __init__(self, app: ASGIApp):
@@ -171,6 +172,15 @@ class CheckSecretMiddleware:
         if auth.startswith("Bearer "):
             secret = auth.split(" ", 1)[1]
 
+        # Dashboard browser requests may carry the password in the URL when
+        # custom headers are stripped by a PWA, proxy, or cross-origin layer.
+        query = _parse_qs(
+            scope.get("query_string", b"").decode("utf-8", "ignore")
+        )
+        query_token = query.get("token", [""])[0]
+        if query_token:
+            secret = query_token
+
         if secret != PALACE_SECRET:
             print(f"Intercepted unauthorized request to: {path}")
             response = JSONResponse(
@@ -212,7 +222,7 @@ button:hover{background:#c4a8ff;color:#1a1612}
 </div><script>
 const K='gmp_pw';
 function load(pw){
-  fetch('/panel',{headers:{'x-secret':pw}}).then(r=>{
+  fetch('/panel?ts='+Date.now(),{headers:{'x-secret':pw},cache:'no-store'}).then(r=>{
     if(r.ok) return r.text();
     throw new Error('auth');
   }).then(html=>{
@@ -227,7 +237,7 @@ if(saved){document.querySelector('.b').style.display='none';load(saved)}
 function go(){
   const v=document.getElementById('p').value.trim();
   if(!v){document.getElementById('e').textContent='请输入密码';return}
-  fetch('/panel',{headers:{'x-secret':v}}).then(r=>{
+  fetch('/panel?ts='+Date.now(),{headers:{'x-secret':v},cache:'no-store'}).then(r=>{
     if(r.ok) return r.text();
     throw new Error('auth');
   }).then(html=>{
@@ -239,7 +249,10 @@ function go(){
 
 @app.get("/")
 async def serve_login():
-    return HTMLResponse(content=MINIMAL_LOGIN)
+    return HTMLResponse(
+        content=MINIMAL_LOGIN,
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 @app.get("/panel")
 async def serve_panel(request: Request):
@@ -252,7 +265,10 @@ async def serve_panel(request: Request):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     try:
         with open("index.html", "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(
+                content=f.read(),
+                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+            )
     except FileNotFoundError:
         return HTMLResponse(content="<h1>index.html not found</h1>", status_code=500)
 
