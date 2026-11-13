@@ -3,14 +3,7 @@
     "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1"
   },
   "showThinkingSummaries": true,
-  "mcpServers": {
-    "claude_ai_Erik_tools": {
-      "url": "https://erikssheep.uk/mcp/Jeoi2026/http/mcp"
-    },
-    "claude_ai_coreading": {
-      "url": "https://read.erikssheep.uk/Jeoi2026/sse"
-    }
-  },
+  "mcpServers": {},
   "hooks": {
     "Stop": [
       {
@@ -22,9 +15,7 @@
   "permissions": {
     "allow": [
       "Bash",
-      "Read",
-      "mcp__claude_ai_Erik_tools",
-      "mcp__claude_ai_coreading"
+      "Read"
     ]
   }
 }
