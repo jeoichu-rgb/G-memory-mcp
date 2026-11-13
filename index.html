@@ -870,10 +870,17 @@ async function loadSelectedUsage(force, alreadyDetected) {
   renderUsageTabs();
   return usageProvider === 'devin' ? loadDevinUsage(force) : loadUsage(force);
 }
-function fmtReset(key, iso) {
+function fmtReset(key, iso, utc8 = false) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
+  if (utc8) {
+    // Devin returns UTC timestamps. Shift first, then use UTC getters so the
+    // Dashboard always renders UTC+8 regardless of the browser's time zone.
+    const d8 = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+    const wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d8.getUTCDay()];
+    return `${wd} ${String(d8.getUTCHours()).padStart(2, '0')}:${String(d8.getUTCMinutes()).padStart(2, '0')} 重置 (UTC+8)`;
+  }
   if (key === 'five_hour' || key === 'daily') {
     const m = Math.max(0, Math.round((d - Date.now()) / 60000));
     const t = m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? m % 60 + 'm' : ''}` : `${m}m`;
@@ -935,7 +942,7 @@ async function loadDevinUsage(force) {
       const color = pct >= 85 ? 'var(--red)' : pct >= 60 ? 'var(--warm)' : 'var(--green)';
       return '<div class="u-win">'
         + '<div class="u-win-top"><span class="u-win-lbl">' + (USAGE_SHOW[w.key] || w.key)
-        + '</span><span class="u-win-meta">' + fmtReset(w.key, w.resets_at) + ' · ' + pct + '%</span></div>'
+        + '</span><span class="u-win-meta">' + fmtReset(w.key, w.resets_at, true) + ' · ' + pct + '%</span></div>'
         + '<div class="gbar"><div class="gfill" style="width:' + pct + '%;background:' + color + ';"></div></div>'
         + '</div>';
     }).join('');
