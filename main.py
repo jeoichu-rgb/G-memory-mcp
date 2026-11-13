@@ -1514,6 +1514,20 @@ async def gateway_usage(force: int = 0):
         return {"ok": False, "error": f"gateway proxy failed: {e}"}
 
 
+@app.get("/gateway/usage/devin")
+async def gateway_devin_usage(force: int = 0):
+    """Proxy Devin account quota through the same-origin Dashboard API."""
+    try:
+        async with _httpx.AsyncClient(timeout=35) as client:
+            r = await client.get(
+                f"{_GATEWAY_BASE}/api/usage/devin",
+                params={"force": force},
+            )
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": f"Devin usage proxy failed: {e}"}
+
+
 @app.get("/gateway/usage/openrouter")
 async def gateway_openrouter_usage(force: int = 0):
     """代理宿主机网关的 OpenRouter API Key 用量。

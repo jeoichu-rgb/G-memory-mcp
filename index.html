@@ -904,7 +904,7 @@ async function loadDevinUsage(force) {
   if (force) sub.textContent = '刷新中…';
   try {
     const suffix = force ? '?force=1' : '';
-    const d = await (await fetch(CHAT_GATEWAY_API + '/api/usage/devin' + suffix, { headers: hdr() })).json();
+    const d = await (await fetch(`${API_BASE}/gateway/usage/devin${suffix}`, { headers: hdr() })).json();
     if (!d.ok || !(d.windows || []).length) {
       box.innerHTML = '<div class="dc-desc" style="margin-top:8px;">获取失败</div>';
       sub.textContent = d.error || '点击重试';
