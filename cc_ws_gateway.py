@@ -4788,10 +4788,10 @@ async def _run_scheduled_desire(session: "Session", intent: dict) -> bool:
 
 
 def _api_desire_is_passive(session: "Session" = None) -> bool:
-    """API-key chat + Desire toggle off means state-only, zero Desire prompts."""
+    """Paid chat + Desire toggle off means state-only, zero Desire prompts."""
     return bool(
         session
-        and session.runtime == OPENROUTER_RUNTIME
+        and session.runtime in (OPENROUTER_RUNTIME, DEVIN_RUNTIME)
         and not peb_state.get("desire_proactive")
     )
 
