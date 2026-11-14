@@ -1050,7 +1050,7 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
       <span class="keepalive-status" id="pebbleStatus"></span>
       <button type="button" id="devinKalButton" aria-label="Devin 缓存保活"
               aria-pressed="false" title="只控制 Devin 缓存保活"
-              onclick="toggleDevinKeepalive()" disabled>KAL</button>
+              onclick="toggleDevinKeepalive()" hidden disabled>KAL</button>
       <label class="memory-toggle" title="番茄钟 (40min学习 + 20min休息)">
         <span id="pomoIcon">🍅</span>
         <input type="checkbox" id="pomoToggle" onchange="togglePomodoro()">
@@ -1360,13 +1360,15 @@ function isDevinModel(model) {
   return String(model || '').startsWith(DEVIN_MODEL_PREFIX);
 }
 
-function setActiveModel(model) {
+function setActiveModel(model, showDevinControls = isDevinModel(model)) {
   if (!model) return;
   const select = document.getElementById('modelSelect');
+  const devin = isDevinModel(model);
   select.value = model;
+  document.getElementById('devinKalButton').hidden = !showDevinControls;
   contextTotal = isOpenRouterModel(model)
     ? OPENROUTER_CONTEXT_TOKENS
-    : (isDevinModel(model) ? DEVIN_CONTEXT_TOKENS : SUBSCRIPTION_CONTEXT_TOKENS);
+    : (devin ? DEVIN_CONTEXT_TOKENS : SUBSCRIPTION_CONTEXT_TOKENS);
   renderContextBar();
 }
 
@@ -1549,7 +1551,7 @@ function handleWSMessage(data) {
       break;
 
     case 'config:defaults':
-      if (data.model) setActiveModel(data.model);
+      if (data.model) setActiveModel(data.model, !currentSessionId && isDevinModel(data.model));
       break;
 
     case 'config:model_changed':
@@ -2416,6 +2418,8 @@ function rejectIncomingCall(reason) {
 
 function switchSession(id) {
   currentSessionId = id;
+  const session = sessions.find(s => s.id === id);
+  document.getElementById('devinKalButton').hidden = session?.runtime !== 'devin';
   localStorage.setItem('last-session-id', id);
   wsSend('session:switch', { sessionId: id });
   clearMessages();
@@ -2432,7 +2436,9 @@ function backToSidebar() {
 ══════════════════════════════════════ */
 function switchModel() {
   const model = document.getElementById('modelSelect').value;
-  setActiveModel(model);
+  const session = sessions.find(s => s.id === currentSessionId);
+  const bound = session && (session.backend_session_id || session.turn_count > 0);
+  setActiveModel(model, bound ? session.runtime === 'devin' : isDevinModel(model));
   wsSend('config:model', { model });
 }
 
@@ -3321,6 +3327,7 @@ function deleteSession(id) {
     // 发消息落进一个看不见的 session
     const next = sessions.find(s => s.id !== id);
     if (next) switchSession(next.id);
+    else document.getElementById('devinKalButton').hidden = true;
   }
 }
 
