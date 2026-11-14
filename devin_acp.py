@@ -23,6 +23,41 @@ log = logging.getLogger("cc-gw.devin")
 EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+def _trace_usage(source: str, session_id: str, payload: dict[str, Any]) -> None:
+    """Log ACP field paths and numeric counters without logging message bodies."""
+    counters: dict[str, int | float | str | None] = {}
+
+    def collect(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                collect(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                collect(child, f"{path}[{index}]")
+        else:
+            name = path.casefold()
+            leaf = name.rsplit(".", 1)[-1]
+            if "token" in name or "cache" in name or leaf in {"used", "size", "usage"}:
+                if value is None or type(value) in (int, float):
+                    counters[path] = value
+                elif (
+                    isinstance(value, str)
+                    and len(value) <= 20
+                    and value.isascii()
+                    and value.isdecimal()
+                ):
+                    counters[path] = value
+                else:
+                    counters[path] = f"<{type(value).__name__}>"
+
+    collect(payload, "$")
+    log.info(
+        "Devin ACP usage trace: source=%s session=%s keys=%s counters=%s",
+        source, session_id[:8], sorted(payload),
+        json.dumps(counters, sort_keys=True),
+    )
+
+
 def normalize_mcp_servers(
     raw_servers: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -230,6 +265,7 @@ class DevinAcpClient:
         # keeps that call site untouched while the systemd drop-in moves it to
         # the persistent bridge transport.
         self.socket_path = socket_path or os.getenv("DEVIN_ACP_SOCKET", "")
+        self.trace_usage = os.getenv("DEVIN_ACP_USAGE_TRACE") == "1"
         self._event_callback = event_callback
         self._proc: asyncio.subprocess.Process | None = None
         self._socket_reader: asyncio.StreamReader | None = None
@@ -501,6 +537,8 @@ class DevinAcpClient:
                 "sessionId": session_id,
                 "prompt": [{"type": "text", "text": text}],
             }, timeout=900)
+            if self.trace_usage:
+                _trace_usage("session/prompt.result", session_id, result)
         return DevinPromptResult(
             stop_reason=str(result.get("stopReason") or ""),
             usage=result.get("usage") if isinstance(result.get("usage"), dict) else {},
@@ -516,6 +554,14 @@ class DevinAcpClient:
     async def _dispatch(self, params: dict[str, Any]) -> None:
         update = normalize_session_update(params)
         session_id = str(update.get("sessionId") or params.get("sessionId") or "")
+        if self.trace_usage:
+            kind = (
+                update.get("sessionUpdate")
+                or update.get("session_update")
+                or update.get("type")
+            )
+            if kind == "usage_update":
+                _trace_usage("session/update.usage_update", session_id, params)
         callback = self._callbacks.get(session_id) or self._event_callback
         if callback:
             value = callback(update)
