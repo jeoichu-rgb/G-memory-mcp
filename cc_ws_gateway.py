@@ -427,6 +427,7 @@ _api_scheduler_lock = asyncio.Lock()
 _devin_scheduler_lock = asyncio.Lock()
 _devin_background_lock = asyncio.Lock()
 _devin_background_session_id: str | None = None
+_devin_background_job: str | None = None
 channel_ws = None  # legacy
 _channel_lock = asyncio.Lock()
 
@@ -621,6 +622,7 @@ def _devin_scheduler_state() -> dict:
         "last_keepalive_hit": None,
         "last_keepalive_cached_tokens": None,
         "last_keepalive_min_cached_tokens": None,
+        "keepalive_enabled": False,
         "keepalive_misses": 0,
         "keepalive_breaker": False,
         "last_job": None,
@@ -4206,7 +4208,7 @@ async def run_devin_background_oneshot(
 ) -> tuple[str, str, list[str], dict | None]:
     """Run patrol/keepalive/desire/pebbling in the bound Devin session."""
     del max_turns  # ACP owns its turn limit; kept for the shared call shape.
-    global _devin_background_session_id
+    global _devin_background_session_id, _devin_background_job
     if (not _session_is_registered(session)
             or not session.devin_session_id or _devin_background_lock.locked()
             or _user_msg_active or session._in_call):
@@ -4257,9 +4259,11 @@ async def run_devin_background_oneshot(
                 session.devin_cost_currency = latest_usage["currency"]
 
     async with _devin_background_lock:
-        if _user_msg_active:
+        if (_user_msg_active or (job == "keepalive"
+                and not _devin_scheduler_state()["keepalive_enabled"])):
             return "", "", [], None
         _devin_background_session_id = session.devin_session_id
+        _devin_background_job = job
         try:
             try:
                 result = await client.prompt(
@@ -4346,6 +4350,7 @@ async def run_devin_background_oneshot(
             return "", "", [], None
         finally:
             _devin_background_session_id = None
+            _devin_background_job = None
 
 
 async def run_background_oneshot(
@@ -5069,6 +5074,7 @@ async def run_devin_keepalive(session: "Session") -> bool:
     )
     state = _devin_scheduler_state()
     if (session is not _active_devin_scheduler_session()
+            or not state["keepalive_enabled"]
             or state["last_keepalive_attempt_at"] != started_at):
         return False
     state["last_keepalive_output_preview"] = " ".join(text.split())[:200]
@@ -5150,6 +5156,7 @@ async def run_devin_scheduler_if_due(session: "Session") -> bool:
         last_request = state["last_request_at"]
         keepalive_due = bool(
             last_request
+            and state["keepalive_enabled"]
             and not state["keepalive_breaker"]
             and now - max(last_request, state["last_keepalive_attempt_at"])
             >= DEVIN_KEEPALIVE_INTERVAL
@@ -6883,6 +6890,35 @@ async def _run_paid_scheduler_if_due(session: Session) -> bool:
     return False
 
 
+def _devin_keepalive_status() -> dict:
+    return {
+        "event": "devin:keepalive_status",
+        "enabled": _devin_scheduler_state()["keepalive_enabled"],
+    }
+
+
+async def _set_devin_keepalive_enabled(enabled: bool) -> None:
+    state = _devin_scheduler_state()
+    if state["keepalive_enabled"] != enabled:
+        state["keepalive_enabled"] = enabled
+        if enabled:
+            state["keepalive_misses"] = 0
+            state["keepalive_breaker"] = False
+            # Begin a new interval even if the last request is already cold.
+            state["last_keepalive_attempt_at"] = time_mod.time()
+        else:
+            state["last_keepalive_attempt_at"] = 0.0
+        save_peb_state()
+        log.info("Devin keepalive %s manually", "enabled" if enabled else "disabled")
+
+    if not enabled and _devin_background_job == "keepalive":
+        if _devin_background_session_id and _devin_client and _devin_client.running:
+            try:
+                await _devin_client.cancel(_devin_background_session_id)
+            except (DevinAcpError, OSError) as exc:
+                log.warning("Could not cancel current Devin keepalive: %s", exc)
+
+
 # ══════════════════════════════════════════════
 #  STARTUP: LOAD SESSIONS FROM DISK
 # ══════════════════════════════════════════════
@@ -7258,6 +7294,7 @@ async def websocket_endpoint(ws: WebSocket):
         "enabled": peb_state.get("enabled", False),
         "session_id": peb_state.get("pebbling_session_id"),
     })
+    await ws.send_json(_devin_keepalive_status())
 
     # Send last-used model so frontend dropdown matches
     await ws.send_json({
@@ -8379,6 +8416,18 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({"event": "event:entry_removed", "slug": slug, "entry_id": entry_id})
 
             # ── Keepalive ──
+
+            elif event == "devin:keepalive_toggle":
+                enabled = data.get("enabled")
+                if isinstance(enabled, bool):
+                    await _set_devin_keepalive_enabled(enabled)
+                    payload = _devin_keepalive_status()
+                    await asyncio.gather(*(
+                        client.send_json(payload)
+                        for client, _sid in list(_frontend_ws_sessions.values())
+                    ), return_exceptions=True)
+                else:
+                    await ws.send_json(_devin_keepalive_status())
 
             elif event in ("keepalive:toggle", "pebbling:toggle"):
                 enabled = data.get("enabled", False)
@@ -9643,6 +9692,7 @@ async def pebbling_status():
         max(devin_last_request, devin_state["last_keepalive_attempt_at"])
         + DEVIN_KEEPALIVE_INTERVAL
         if devin_state["active"] and devin_last_request
+        and devin_state["keepalive_enabled"]
         and not devin_state["keepalive_breaker"] else None
     )
     return {

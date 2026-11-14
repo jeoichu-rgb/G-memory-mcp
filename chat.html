@@ -199,6 +199,13 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
 }
 .keepalive-status.ok { color:var(--context-green); }
 .keepalive-status.fail { color:var(--context-red); }
+#devinKalButton {
+  white-space:nowrap; padding:3px 6px; border-radius:4px;
+  background:transparent; border:1px solid var(--border);
+  color:var(--text-secondary); font:inherit; cursor:pointer;
+}
+#devinKalButton[aria-pressed="true"] { color:var(--context-green); }
+#devinKalButton:disabled { opacity:.6; cursor:default; }
 
 /* Context section */
 .ctx-section {
@@ -1041,6 +1048,9 @@ body { color:var(--text-primary); font-family:var(--font); font-size:14px; }
         <div class="toggle-track"></div>
       </label>
       <span class="keepalive-status" id="pebbleStatus"></span>
+      <button type="button" id="devinKalButton" aria-label="Devin 缓存保活"
+              aria-pressed="false" title="只控制 Devin 缓存保活"
+              onclick="toggleDevinKeepalive()" disabled>KAL</button>
       <label class="memory-toggle" title="番茄钟 (40min学习 + 20min休息)">
         <span id="pomoIcon">🍅</span>
         <input type="checkbox" id="pomoToggle" onchange="togglePomodoro()">
@@ -1417,6 +1427,7 @@ function connectWS() {
 
   ws.onclose = () => {
     if (_wsHeartbeat) { clearInterval(_wsHeartbeat); _wsHeartbeat = null; }
+    resetDevinKeepaliveControl();
     updateStatus('reconnecting...');
     setTimeout(connectWS, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
@@ -1634,6 +1645,14 @@ function handleWSMessage(data) {
       showPebbleStatus(data.enabled ? 'ON' : '', data.enabled ? 'ok' : '');
       localStorage.setItem('pebble-enabled', data.enabled ? '1' : '0');
       break;
+    case 'devin:keepalive_status': {
+      const button = document.getElementById('devinKalButton');
+      const enabled = data.enabled === true;
+      button.setAttribute('aria-pressed', String(enabled));
+      button.textContent = enabled ? 'KAL 开' : 'KAL 关';
+      button.disabled = false;
+      break;
+    }
     case 'pebbling:message':
       addPebblingMessage(data.content, data.source, data.time);
       break;
@@ -3497,6 +3516,21 @@ function showPebbleStatus(text, cls) {
   const el = document.getElementById('pebbleStatus');
   el.textContent = text;
   el.className = 'keepalive-status' + (cls ? ' ' + cls : '');
+}
+
+function resetDevinKeepaliveControl() {
+  const button = document.getElementById('devinKalButton');
+  button.disabled = true;
+  button.textContent = 'KAL';
+}
+
+function toggleDevinKeepalive() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const button = document.getElementById('devinKalButton');
+  const enabled = button.getAttribute('aria-pressed') !== 'true';
+  button.disabled = true;
+  button.textContent = 'KAL …';
+  wsSend('devin:keepalive_toggle', { enabled });
 }
 
 function addPebblingMessage(content, source, time) {
