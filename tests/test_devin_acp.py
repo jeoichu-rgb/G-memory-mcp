@@ -60,6 +60,23 @@ class DevinAcpParsingTests(unittest.TestCase):
         self.assertEqual(extract_usage({"cachedInputTokens": 0})["cached_input_tokens"], 0)
         self.assertIsNone(extract_usage({"used": 20000})["cached_input_tokens"])
 
+    def test_cache_reads_from_devin_prompt_result_and_usage_update(self):
+        for cached in (31108, 0):
+            with self.subTest(cached=cached):
+                self.assertEqual(cache_read_tokens({
+                    "inputTokens": 31466,
+                    "cachedReadTokens": cached,
+                    "cachedWriteTokens": 355,
+                }), cached)
+                self.assertEqual(extract_usage({
+                    "sessionUpdate": "usage_update",
+                    "_meta": {
+                        "cognition.ai/cachedReadTokens": cached,
+                        "cognition.ai/cachedWriteTokens": 355,
+                    },
+                })["cached_input_tokens"], cached)
+        self.assertIsNone(cache_read_tokens({"cachedWriteTokens": 31108}))
+
     def test_sse_mcp_has_required_empty_headers(self):
         servers = normalize_mcp_servers({
             "tools": {

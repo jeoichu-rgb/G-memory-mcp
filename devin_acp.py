@@ -199,11 +199,12 @@ def cache_read_tokens(usage: dict[str, Any]) -> int | None:
     meta = usage.get("_meta")
     if isinstance(meta, dict):
         for key in ("cognition.ai/cachedInputTokens",
-                    "cognition.ai/cacheReadInputTokens"):
+                    "cognition.ai/cacheReadInputTokens",
+                    "cognition.ai/cachedReadTokens"):
             if meta.get(key) is not None:
                 return int(meta[key])
     for key in ("cachedInputTokens", "cacheReadInputTokens",
-                "cache_read_input_tokens", "cached_input_tokens"):
+                "cache_read_input_tokens", "cached_input_tokens", "cachedReadTokens"):
         if usage.get(key) is not None:
             return int(usage[key])
     return None
