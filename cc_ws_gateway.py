@@ -5192,15 +5192,8 @@ async def run_devin_scheduler_if_due(session: "Session") -> bool:
             desire_intent = None
         peb_due, peb_count, elapsed_jeoi = _api_pebbling_due(now)
         peb_due = bool(peb_state.get("enabled") and peb_due)
-        keepalive_ready = bool(
-            keepalive_enabled_for_runtime(
-                session.runtime, bool(peb_state.get("enabled"))
-            )
-            and session.devin_session_id
-            and not state.get("keepalive_breaker")
-        )
         choice = choose_devin_background_job(
-            keepalive_ready=keepalive_ready,
+            keepalive_ready=keepalive_due,
             desire_ready=bool(desire_intent),
             pebbling_due=peb_due,
         )
