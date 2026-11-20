@@ -6639,11 +6639,12 @@ async def _forge_devin_session(src_session: Session) -> dict:
     route = forge_route(src_session.runtime, src_session.model)
     if route["verifier"] != "devin-acp":
         return {"ok": False, "error": "Forge 路由错误：Devin 未使用 ACP 验证"}
-    segments = _diary_segments_for_session(src_session.id)
-    current_diary = _compose_diary_from_segments(segments)
-    previous_diary = _previous_forge_diary(src_session)
+    # Match context:list exactly: every current panel entry, using its latest
+    # saved text. Never recover diary text from an earlier Forge bundle.
     inherited_diary = "\n\n".join(
-        part for part in (previous_diary, current_diary) if part.strip()
+        item.get("content", "")
+        for item in load_context_store().get("items", [])
+        if item.get("content", "").strip()
     )
     recent, tokens, message_count = _recent_history_for_devin_forge(src_session.id)
 

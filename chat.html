@@ -2369,6 +2369,9 @@ function newSession() {
 
 function forgeSession(routeGuard = false) {
   if (!currentSessionId) return;
+  if (sessions.find(s => s.id === currentSessionId)?.runtime === 'devin') {
+    flushDevinContextEdits();
+  }
   const fs = document.getElementById('forgeStatus');
   if (fs) fs.textContent = '正在写总日记并 Forge…';
   // 裁剪源 = 前端当前显示的 session，后端不再自己猜
@@ -3377,14 +3380,35 @@ function renderContextItems(items) {
 }
 
 function deleteContext(id) {
+  if (sessions.find(s => s.id === currentSessionId)?.runtime === 'devin') {
+    clearTimeout(_ctxTimers[id]);
+    delete _ctxTimers[id];
+    delete _ctxPending[id];
+    flushDevinContextEdits();
+  }
   wsSend('context:delete', { id });
 }
 
 const _ctxTimers = {};
+const _ctxPending = {};
+
+function flushDevinContextEdits() {
+  for (const [id, el] of Object.entries(_ctxPending)) {
+    clearTimeout(_ctxTimers[id]);
+    delete _ctxTimers[id];
+    delete _ctxPending[id];
+    wsSend('context:edit', { id, content: el.textContent.trim() });
+  }
+}
+
 function debounceSaveCtx(el, id) {
   clearTimeout(_ctxTimers[id]);
+  if (sessions.find(s => s.id === currentSessionId)?.runtime === 'devin') {
+    _ctxPending[id] = el;
+  }
   const dateEl = el.closest('.ctx-item').querySelector('.ctx-item-date');
   _ctxTimers[id] = setTimeout(() => {
+    delete _ctxPending[id];
     wsSend('context:edit', { id, content: el.textContent.trim() });
     if (dateEl) {
       const orig = dateEl.dataset.orig || dateEl.textContent;
