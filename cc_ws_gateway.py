@@ -2160,7 +2160,8 @@ def _diary_segments_for_session(session_id: str, include_archived: bool = False)
     return sorted(segments, key=lambda x: (int(x.get("start_house", 0)), x.get("created_at", "")))
 
 
-def _find_due_diary_range(session_id: str, current_house: int) -> tuple[int, int] | None:
+def _find_due_diary_range(session_id: str, current_house: int,
+                         retry_missing: bool = True) -> tuple[int, int] | None:
     """Earliest completed 40-message range not yet captured.
 
     `current_house` is Jeoi's just-appended absolute #N.  Only ranges ending
@@ -2168,6 +2169,13 @@ def _find_due_diary_range(session_id: str, current_house: int) -> tuple[int, int
     Missing markers are retried on later Jeoi messages without duplicating a
     successfully stored range.
     """
+    if not retry_missing:
+        # Devin prompts once at #41, #81, ... (dialogue rounds 21, 41, ...).
+        # No stored completion check or retry on subsequent messages.
+        end = current_house - 1
+        if end > 0 and end % DIARY_SEGMENT_MESSAGES == 0:
+            return end - DIARY_SEGMENT_MESSAGES + 1, end
+        return None
     completed_end = ((current_house - 1) // DIARY_SEGMENT_MESSAGES) * DIARY_SEGMENT_MESSAGES
     if completed_end < DIARY_SEGMENT_MESSAGES:
         return None
@@ -2182,7 +2190,17 @@ def _find_due_diary_range(session_id: str, current_house: int) -> tuple[int, int
     return None
 
 
-def _build_diary_checkpoint_prompt(start_house: int, end_house: int) -> str:
+def _build_diary_checkpoint_prompt(start_house: int, end_house: int,
+                                   devin: bool = False) -> str:
+    if devin:
+        return (
+            f"[diary-checkpoint] 这是网关注入，不是Jeoi的话。你已完成#{start_house}-#{end_house}。"
+            "先自然回答当前消息；然后在回复最末尾另写这一段日记。第一人称，只记有重量的几轮，"
+            "总字数250字以内；固定写 **梗概：**（按时序简写）、**细节：**（用【节点名】保留关键原话/状态）、"
+            "**感受：**（整体用【整体】，节点感受用【挂在\"节点名\"】）、**独白：**（当下想说的话）。"
+            "忠于原文，允许不确定；不解释意义、不编造、不强行归一情绪。不要调用日记工具。严格输出：\n"
+            f"<!--diary-segment:#{start_house}-#{end_house}\n日记正文-->"
+        )
     return (
         f"[diary-checkpoint] 这是网关注入，不是Jeoi的话。你已完成#{start_house}-#{end_house}。"
         "先自然回答当前消息；然后在回复最末尾另写这一段日记。只记录指定门牌号，不含当前消息。"
@@ -7813,10 +7831,11 @@ async def websocket_endpoint(ws: WebSocket):
                 # asks the same agent to write that block's diary in-band.  The
                 # visible user message remains untouched in chat_history.
                 diary_prompt = ""
+                devin_diary = current_session.runtime == DEVIN_RUNTIME
                 diary_due = _find_due_diary_range(
-                    current_session.id, current_house)
+                    current_session.id, current_house, retry_missing=not devin_diary)
                 if diary_due and not call_mode:
-                    diary_prompt = _build_diary_checkpoint_prompt(*diary_due)
+                    diary_prompt = _build_diary_checkpoint_prompt(*diary_due, devin=devin_diary)
                     log.info(f"Diary checkpoint injected: {current_session.id} "
                              f"#{diary_due[0]}-#{diary_due[1]} on #{current_house}")
 
