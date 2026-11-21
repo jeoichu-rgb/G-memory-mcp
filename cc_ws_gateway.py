@@ -6626,6 +6626,12 @@ async def _verify_devin_forge(session: Session) -> dict:
                 session.devin_cumulative_cost = usage["cost"]
                 session.devin_cost_currency = usage["currency"]
 
+    log.info(
+        "Devin Forge prepare: reason=verify gateway_session=%s devin_session=%s "
+        "bundle_bytes=%s bundle_sha256=%s previously_injected=%s",
+        session.id, session.devin_session_id, len(prompt.encode("utf-8")),
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest(), session.forge_context_injected,
+    )
     result = await _get_devin_client().prompt(
         session.devin_session_id, prompt, collect
     )
@@ -8719,6 +8725,13 @@ async def run_devin(message: str, session: Session, ws: WebSocket):
                 raise DevinAcpError(f"Forge 恢复材料无法读取：{exc}") from exc
             prompt_text = inherited + "\n\n═══ 本轮 Jeoi 的新消息 ═══\n" + message
             used_forge_bundle = True
+            log.info(
+                "Devin Forge prepare: reason=first_message gateway_session=%s devin_session=%s "
+                "bundle_bytes=%s bundle_sha256=%s previously_injected=%s",
+                session.id, session.devin_session_id, len(inherited.encode("utf-8")),
+                hashlib.sha256(inherited.encode("utf-8")).hexdigest(),
+                session.forge_context_injected,
+            )
 
         request_started_at = time_mod.time()
         try:

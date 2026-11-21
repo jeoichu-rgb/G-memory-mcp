@@ -19,7 +19,7 @@ import signal
 from pathlib import Path
 from typing import Any
 
-from devin_acp import DevinAcpClient, DevinAcpError
+from devin_acp import ACP_STREAM_LIMIT, DevinAcpClient, DevinAcpError
 
 
 log = logging.getLogger("cc-gw.devin-bridge")
@@ -59,7 +59,7 @@ class DevinAcpBridge:
         with contextlib.suppress(FileNotFoundError):
             self.socket_path.unlink()
         self._server = await asyncio.start_unix_server(
-            self._accept, path=str(self.socket_path)
+            self._accept, path=str(self.socket_path), limit=ACP_STREAM_LIMIT
         )
         os.chmod(self.socket_path, 0o660)
         if self.run_as_user:

@@ -17,6 +17,7 @@ class _FakePersistentAcp:
         self.started = False
         self.closed = False
         self._event_callback = None
+        self.replay_update = None
 
     async def start(self):
         self.started = True
@@ -26,6 +27,8 @@ class _FakePersistentAcp:
 
     async def request(self, method, params, timeout=300):
         self.requests.append((method, params, timeout))
+        if method == "session/load" and self.replay_update:
+            await self._event_callback(self.replay_update)
         if method == "session/prompt" and self._event_callback:
             await self._event_callback({
                 "sessionId": params["sessionId"],
@@ -45,15 +48,15 @@ class DevinAcpBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.socket_path = str(Path(self.temp.name) / "devin.sock")
         self.tcp_port = None
 
-        async def start_loopback_server(callback, path):
+        async def start_loopback_server(callback, path, **kwargs):
             del path
-            server = await asyncio.start_server(callback, "127.0.0.1", 0)
+            server = await asyncio.start_server(callback, "127.0.0.1", 0, **kwargs)
             self.tcp_port = server.sockets[0].getsockname()[1]
             return server
 
-        async def open_loopback_connection(path):
+        async def open_loopback_connection(path, **kwargs):
             del path
-            return await asyncio.open_connection("127.0.0.1", self.tcp_port)
+            return await asyncio.open_connection("127.0.0.1", self.tcp_port, **kwargs)
 
         # This execution sandbox disallows AF_UNIX sockets.  Exercise the
         # exact same stream protocol over loopback TCP; production still uses
@@ -147,6 +150,41 @@ class DevinAcpBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply["id"], 7)
         self.assertEqual(reply["result"]["protocolVersion"], 1)
         self.assertEqual(self.fake.requests, [])
+
+    async def test_large_replay_and_prompt_survive_both_bridge_directions(self):
+        text = "[context-forge]" + "恢复材料" * 4200
+        replay = {
+            "sessionId": "large-session",
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": {"type": "text", "text": text},
+                "_meta": {"cognition.ai/message": text},
+            },
+        }
+        self.assertGreater(len(json.dumps(replay, ensure_ascii=False).encode()), 65536)
+        self.fake.replay_update = replay
+        client = self.client()
+        updates = []
+
+        async def collect(update):
+            updates.append(update)
+
+        try:
+            with self.assertLogs("cc-gw.devin", level="INFO") as captured:
+                await client.load_session("large-session", collect)
+                # This request also exceeds the old bridge listener limit.
+                await client.prompt("large-session", text * 2, collect)
+            self.assertEqual(updates[0]["content"]["text"], text)
+            self.assertEqual(updates[0]["_meta"]["cognition.ai/message"], text)
+            self.assertEqual([r[0] for r in self.fake.requests], ["session/load", "session/prompt"])
+            self.assertEqual(self.fake.requests[1][1]["prompt"][0]["text"], text * 2)
+            logs = "\n".join(captured.output)
+            self.assertIn("active_methods=session/load", logs)
+            self.assertIn("meta_message_bytes=", logs)
+            self.assertIn("text_sha256=", logs)
+            self.assertNotIn("恢复材料", logs)
+        finally:
+            await client.close()
 
 
 if __name__ == "__main__":

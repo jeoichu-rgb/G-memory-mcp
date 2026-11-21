@@ -10,6 +10,7 @@ lets the bridge survive gateway code reloads without reloading Devin sessions.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -19,6 +20,10 @@ from typing import Any, Awaitable, Callable
 
 
 log = logging.getLogger("cc-gw.devin")
+
+# session/load may replay a full message in both content and _meta. The
+# default 64 KiB readline limit is too small for ordinary Forge bundles.
+ACP_STREAM_LIMIT = 16 * 1024 * 1024
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
@@ -275,6 +280,7 @@ class DevinAcpClient:
         self._stderr_task: asyncio.Task | None = None
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
+        self._request_context: dict[int, tuple[str, str]] = {}
         self._callbacks: dict[str, EventCallback] = {}
         self._start_lock = asyncio.Lock()
         # Devin processes one foreground prompt at a time. Keeping this
@@ -309,7 +315,7 @@ class DevinAcpClient:
                 for attempt in range(20):
                     try:
                         reader, writer = await asyncio.open_unix_connection(
-                            self.socket_path
+                            self.socket_path, limit=ACP_STREAM_LIMIT
                         )
                     except OSError as exc:
                         last_error = exc
@@ -342,6 +348,7 @@ class DevinAcpClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=ACP_STREAM_LIMIT,
             )
             self._reader_task = asyncio.create_task(self._read_loop())
             self._stderr_task = asyncio.create_task(self._stderr_loop())
@@ -394,11 +401,59 @@ class DevinAcpClient:
                 raise DevinAcpError("Devin ACP bridge is not connected")
             self._socket_writer.write(wire.encode("utf-8"))
             await self._socket_writer.drain()
+            self._monitor_frame("send", payload, len(wire.encode("utf-8")))
             return
         if not self.running or not self._proc or not self._proc.stdin:
             raise DevinAcpError("Devin ACP is not running")
         self._proc.stdin.write(wire.encode("utf-8"))
         await self._proc.stdin.drain()
+        self._monitor_frame("send", payload, len(wire.encode("utf-8")))
+
+    def _monitor_frame(self, direction: str, message: dict[str, Any], size: int) -> None:
+        """Record ACP boundaries and text fingerprints, never message bodies."""
+        method = message.get("method", "")
+        params = message.get("params")
+        params = params if isinstance(params, dict) else {}
+        request_id = message.get("id")
+        pending_method, pending_session = self._request_context.get(request_id, ("", ""))
+        update = params.get("update", params)
+        update = update if isinstance(update, dict) else {}
+        content = update.get("content")
+        text = content.get("text", "") if isinstance(content, dict) else ""
+        text = text if isinstance(text, str) else ""
+        if method == "session/prompt":
+            text = "".join(
+                block.get("text", "") for block in params.get("prompt", [])
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        response = "result" in message or "error" in message
+        if not (
+            method in {"session/new", "session/load", "session/prompt"}
+            or (response and pending_method in {"session/new", "session/load", "session/prompt"})
+            or (method == "session/update" and (size > 65536 or "[context-forge]" in text))
+        ):
+            return
+        meta = update.get("_meta")
+        meta = meta if isinstance(meta, dict) else {}
+        meta_text = meta.get("cognition.ai/message", "")
+        meta_size = len(meta_text.encode("utf-8")) if isinstance(meta_text, str) else 0
+        session_id = params.get("sessionId") or pending_session
+        if response and isinstance(message.get("result"), dict):
+            session_id = message["result"].get("sessionId") or session_id
+        active_methods = ",".join(
+            m for m, sid in self._request_context.values() if sid == session_id and sid
+        )
+        log.info(
+            "ACP monitor: direction=%s transport=%s method=%s request=%s session=%s "
+            "update=%s bytes=%s text_bytes=%s meta_message_bytes=%s text_sha256=%s "
+            "forge_markers=%s active_methods=%s outcome=%s",
+            direction, "socket" if self.socket_path else "process", method or pending_method,
+            request_id, session_id, update.get("sessionUpdate", ""), size,
+            len(text.encode("utf-8")), meta_size,
+            hashlib.sha256(text.encode("utf-8")).hexdigest() if text else "",
+            text.count("[context-forge]"), active_methods,
+            "error" if "error" in message else ("ok" if response else "frame"),
+        )
 
     async def request(
         self, method: str, params: dict[str, Any], *, timeout: float = 300
@@ -409,15 +464,17 @@ class DevinAcpClient:
         request_id = self._next_id
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._send({
-            "jsonrpc": "2.0", "id": request_id,
-            "method": method, "params": params,
-        })
+        self._request_context[request_id] = (method, str(params.get("sessionId") or ""))
         try:
+            await self._send({
+                "jsonrpc": "2.0", "id": request_id,
+                "method": method, "params": params,
+            })
             result = await asyncio.wait_for(future, timeout=timeout)
             return result if isinstance(result, dict) else {"value": result}
         finally:
             self._pending.pop(request_id, None)
+            self._request_context.pop(request_id, None)
 
     async def notify(self, method: str, params: dict[str, Any]) -> None:
         if not self.running:
@@ -614,6 +671,7 @@ class DevinAcpClient:
                 except json.JSONDecodeError:
                     log.warning("Ignoring non-JSON Devin ACP stdout: %r", raw[:300])
                     continue
+                self._monitor_frame("receive", message, len(raw))
                 if "id" in message and ("result" in message or "error" in message):
                     future = self._pending.get(message["id"])
                     if future and not future.done():

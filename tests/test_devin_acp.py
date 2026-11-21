@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import sys
 
 from devin_acp import (
     DevinAcpClient,
@@ -160,6 +161,48 @@ class DevinModelGuardTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DevinPromptSerializationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_subprocess_load_replays_large_frame_without_prompt(self):
+        client = DevinAcpClient(binary="unused", model="model", cwd="/tmp")
+        client.socket_path = ""
+        script = '''
+import json, sys
+text = "[context-forge]" + "恢复材料" * 4200
+for line in sys.stdin:
+    req = json.loads(line)
+    if req["method"] == "session/load":
+        print(json.dumps({"jsonrpc":"2.0", "method":"session/update", "params":{
+            "sessionId":"large-session", "update":{
+                "sessionUpdate":"user_message_chunk",
+                "content":{"type":"text", "text":text},
+                "_meta":{"cognition.ai/message":text}
+            }}}, ensure_ascii=False), flush=True)
+    print(json.dumps({"jsonrpc":"2.0", "id":req["id"], "result":{
+        "sessionId":"large-session"
+    }}), flush=True)
+'''
+        client._command = lambda: [sys.executable, "-u", "-c", script]
+        updates = []
+
+        async def collect(update):
+            updates.append(update)
+
+        try:
+            with self.assertLogs("cc-gw.devin", level="INFO") as captured:
+                await asyncio.wait_for(client.load_session("large-session", collect), 5)
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0]["content"]["text"], "[context-forge]" + "恢复材料" * 4200)
+            logs = "\n".join(captured.output)
+            self.assertIn("transport=process", logs)
+            self.assertIn("direction=receive", logs)
+            self.assertIn("active_methods=session/load", logs)
+            self.assertNotIn("method=session/prompt", logs)
+            self.assertNotIn("恢复材料", logs)
+            self.assertTrue(client.running)
+        finally:
+            if client._reader_task:
+                client._reader_task.cancel()
+            await client.close()
+
     async def test_queued_prompt_does_not_steal_active_callback(self):
         client = DevinAcpClient(
             binary="devin", model="model", cwd="/tmp"
